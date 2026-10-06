@@ -249,6 +249,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-row .tg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .call-row .c-flag:empty { display: none; }
 .call-row .btn.mark { padding: 2px 7px; color: var(--warn); }
+.call-row .btn.locked { color: var(--accent); }
 .call-row .call-details { grid-column: 1 / -1; margin: 4px 0 2px; padding: 8px 12px; background: var(--bg-sunken); border-radius: var(--radius-sm); }
 .call-row .when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 0.9em; }
 .call-row .tg { font-weight: 650; }

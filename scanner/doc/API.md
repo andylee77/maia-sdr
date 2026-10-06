@@ -40,11 +40,12 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/radio/crystal` | crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit) |
 | POST | `/api/v1/radio/crystal/calibrate` | measure the crystal correction on the live control channel now (about 7 s) |
 | POST | `/api/v1/clock` | set the board clock (`unix_ms`, a browser's time) |
-| PUT | `/api/v1/radio/recording` | recording on/off, where new recordings go, how many each store keeps |
+| PUT | `/api/v1/radio/recording` | recording on/off, where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps |
 | GET | `/api/v1/recordings` | recordings newest first (`limit`, `site`), with the stores' state |
 | DELETE | `/api/v1/recordings` | delete every recording of `store` (sd, ram or all) |
 | GET | `/api/v1/recordings/{id}` | one recording's WAV (`{id}` or `{id}.wav`; byte ranges) |
 | DELETE | `/api/v1/recordings/{id}` | delete one recording |
+| PUT | `/api/v1/recordings/{id}/lock` | lock (`locked`: true) or unlock a card recording: kept for the locked days, in the locked tree |
 | GET | `/api/v1/systems` | systems with their sites |
 | GET | `/api/v1/systems/{id}` | one system |
 | PUT | `/api/v1/systems/{id}` | edit a system: its name, identity (P25: WACN and system ID; DMR: model and network) and details (location, county, type, voice) |

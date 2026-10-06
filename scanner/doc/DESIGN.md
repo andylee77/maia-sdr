@@ -308,7 +308,8 @@ label and its own; the history rows and recording file names carry it.
   "traffic_chains": 2,
   "calls": { "hang_ms": 3000, "end_grace_ms": 2000 },
   "recording": { "enabled": true, "every_call": true, "storage": "sd", "ram_max_count": 40,
-                 "sd_max_count": 2000, "sd_max_mb": 2048 },
+                 "sd_keep_days": 30, "locked_keep_days": 365, "sd_max_mb": 8192,
+                 "folder_max_count": 4000 },
   "history": { "retention_days": 365, "sd_max_mb": 2048 },
   "clock": { "source": "site" }
 }
@@ -704,12 +705,21 @@ One module, `services::recordings`, driven by the call:
   - An encrypted call is `Discarded("encrypted")`, not "saving" then "missing" (defect 3's
     in-band side).
 - **Storage** is today's `rec_storage`: RAM ring, SD writer thread with `.part`, fsync and
-  rename, the fallback to RAM, and the retention limits. It moves; it is not rewritten.
+  rename, the fallback to RAM, and the retention limits. It moves; it is not rewritten. A failed
+  card write while the card has room shows as `failing` until a write lands (086).
 - **Naming is unchanged:** `rec_<start_ms>_<call_id>_tg<tg>_from<src>.<site>.wav`. The start is
   the call's own `opened.unix`, not the recorder's clock (defect 13).
-- **The index** is the history's `recordings` table. At boot, the directory listing (names only:
-  on the card's FAT each file's size costs a scan of the whole directory) and the table are
-  reconciled:
+- **Folders (086):** on the card a recording sits in its call's UTC day folder,
+  `p25_recordings/YYYY-MM-DD/` (`YYYY-MM-DD_<n>` past `folder_max_count` files), and a locked one
+  under `p25_recordings/locked/`. FAT32 allows a directory 65,536 entries, 7-8 for each recording,
+  and finds a name by scanning its directory: one flat folder filled at 8,640 files on unit A.
+- **Retention (086):** the card keeps a recording `sd_keep_days` and a locked one
+  `locked_keep_days` (age needs a valid clock), within `sd_max_mb`, where the oldest unlocked go
+  first; RAM keeps `ram_max_count`. A call with alert tones is saved locked; any card recording
+  can be locked or unlocked (`PUT /api/v1/recordings/{id}/lock`), which moves its file.
+- **The index** is the history's `recordings` table. At boot, the listing of the day folders
+  (names only: on the card's FAT each file's size costs a scan of its whole directory) and the
+  table are reconciled:
   - a file in the table takes its size and length from it;
   - a file not in the table is measured, parsed with today's file-name parser, inserted and
     linked to its call once;

@@ -1,5 +1,5 @@
 //! `/api/v1/recordings`: the call recordings, newest first, with the stores' state; one
-//! recording's WAV (with byte ranges, which the browser's `<audio>` asks for); deletes.
+//! recording's WAV (with byte ranges, which the browser's `<audio>` asks for); locking; deletes.
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
-use crate::services::recordings::{Recording, Store, Summary};
+use crate::services::recordings::{LockError, Recording, Store, Summary};
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -85,6 +85,24 @@ pub async fn delete(State(s): State<Arc<AppState>>, Path(raw): Path<String>) -> 
         return Err(ApiError::not_found(format!("recording {id}")));
     }
     Ok(Json(Deleted { deleted: 1 }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockRequest {
+    pub locked: bool,
+}
+
+/// Lock or unlock a card recording: it moves to its day's folder in the locked tree (kept for the
+/// locked days) or back.
+pub async fn lock(State(s): State<Arc<AppState>>, Path(raw): Path<String>, Json(req): Json<LockRequest>) -> ApiResult<Recording> {
+    let id = id_of(&raw)?;
+    match s.recordings.set_locked(id, req.locked).await {
+        Ok(r) => Ok(Json(r)),
+        Err(LockError::Unknown) => Err(ApiError::not_found(format!("recording {id}"))),
+        Err(LockError::InRam) => Err(ApiError::conflict(format!("recording {id} is in RAM: only the card's recordings lock"))),
+        Err(LockError::Failed(e)) => Err(ApiError { status: StatusCode::SERVICE_UNAVAILABLE, message: format!("recording {id}: {e}") }),
+    }
 }
 
 #[derive(Deserialize)]

@@ -443,7 +443,8 @@ function recordingNote(st) {
   if (!st) return '';
   if (!st.enabled) return 'Recording is off (Settings).';
   const where = st.store === 'sd' ? 'SD card' : 'RAM';
-  const sd = st.sd_status.state === 'ok' || st.store !== 'sd' ? '' : ` (SD card ${st.sd_status.state.replace('_', ' ')}: saving to RAM)`;
+  const state = st.sd_status.state;
+  const sd = state === 'ok' || st.store !== 'sd' ? '' : state === 'failing' ? ' (SD card writes failing: saving to RAM until one lands)' : ` (SD card ${state.replace('_', ' ')}: saving to RAM)`;
   return `Recording to ${where}${sd}: ${num(st.sd.count + st.ram.count)} kept, ${bytes(st.sd.bytes + st.ram.bytes)}.`;
 }
 
@@ -494,10 +495,10 @@ function createRow() {
 }
 
 // The recording's player: a button until it is played, then the browser's controls (kept while
-// the list is redrawn); a button per bookmark plays from it.
+// the list is redrawn); a button per bookmark plays from it; on the card, its lock.
 function drawPlay(c, r) {
   const marks = (r && r.bookmarks) || [];
-  const key = r ? `${r.id}|${marks.length}` : '';
+  const key = r ? `${r.id}|${marks.length}|${r.store}` : '';
   if (c.play.dataset.k === key) return;
   c.play.dataset.k = key;
   if (!r) {
@@ -525,7 +526,28 @@ function drawPlay(c, r) {
     onclick: () => start(b.offset_ms / 1000),
   }, icon('bell'), dur(b.offset_ms)));
   const save = h('a', { class: 'btn small icon', href: url, download: r.file, title: 'Download the WAV (its alert tones are cue points)', 'aria-label': 'Download the WAV' }, icon('download'));
-  c.play.replaceChildren(play, ...jumps, save);
+  const lock = r.store === 'sd' ? lockButton(r) : null;
+  c.play.replaceChildren(...[play, ...jumps, save, lock].filter(Boolean));
+}
+
+// Locked recordings are kept for the locked days (Settings). The button changes in place, so a
+// recording being played keeps playing.
+function lockButton(r) {
+  const label = r.locked ? 'Unlock: kept for the normal days again' : 'Lock: kept for the locked days';
+  const b = iconButton(r.locked ? 'lock' : 'unlock', label, { cls: r.locked ? 'locked' : '' });
+  b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      const done = await api.lockRecording(r.id, !r.locked);
+      Object.assign(r, done);
+      toast(done.locked ? 'Locked' : 'Unlocked');
+      b.replaceWith(lockButton(r));
+    } catch (e) {
+      toast(e.message, true);
+      b.disabled = false;
+    }
+  });
+  return b;
 }
 
 // What is known of a call: who, when, its voice and vocoder counts, its channel time, its
@@ -554,7 +576,7 @@ function detailRows(x, ctx) {
   if (x.not_followed) rows.push(['Not followed', NOT_FOLLOWED[x.not_followed] || x.not_followed]);
   const flags = [x.emergency && 'emergency', x.private && 'unit to unit', x.encrypted && 'encrypted'].filter(Boolean);
   if (flags.length) rows.push(['Flags', flags.join(', ')]);
-  rows.push(['Recording', rec ? `${rec.file} (${bytes(rec.bytes)}, ${rec.store === 'sd' ? 'SD card' : 'RAM'})` : x.ended_unix_ms ? 'none' : DASH]);
+  rows.push(['Recording', rec ? `${rec.file} (${bytes(rec.bytes)}, ${rec.store === 'sd' ? 'SD card' : 'RAM'}${rec.locked ? ', locked' : ''})` : x.ended_unix_ms ? 'none' : DASH]);
   for (const a of alerts) rows.push(['Alert tone', `${alertLabel(a)}, ${dur(a.offset_ms)} in, for ${dur(a.duration_ms)}`]);
   return rows;
 }

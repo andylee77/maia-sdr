@@ -36,16 +36,19 @@ function recordingCard(radio, recs) {
   const on = switchInput('Record followed calls', r.enabled, () => {});
   const where = h('select', { class: 'input' }, h('option', { value: 'sd', text: 'SD card' }), h('option', { value: 'ram', text: 'RAM (lost on reboot)' }));
   where.value = r.storage;
-  const count = (value, max) => h('input', { class: 'input num', type: 'number', min: 1, max, step: 1, value });
-  const ramN = count(r.ram_max_count, 10000);
-  const sdN = count(r.sd_max_count, 100000);
-  const sdMb = h('input', { class: 'input num', type: 'number', min: 16, max: 32768, step: 1, value: r.sd_max_mb });
+  const count = (value, min, max, label) => h('input', { class: 'input num', type: 'number', min, max, step: 1, value, 'aria-label': label });
+  const ramN = count(r.ram_max_count, 1, 10000, 'RAM keeps, recordings');
+  const sdDays = count(r.sd_keep_days, 1, 3650, 'SD card keeps, days');
+  const lockedDays = count(r.locked_keep_days, 1, 3650, 'Locked ones, days');
+  const sdMb = count(r.sd_max_mb, 16, 1048576, 'SD card, at most MB');
+  const perFolder = count(r.folder_max_count, 100, 6000, 'Recordings a folder');
   const save = h('button', { class: 'btn primary', type: 'button', text: 'Save' });
   save.addEventListener('click', async () => {
     try {
       const res = await api.setRecording({
         enabled: on.input.checked, every_call: r.every_call, storage: where.value,
-        ram_max_count: Number(ramN.value), sd_max_count: Number(sdN.value), sd_max_mb: Number(sdMb.value),
+        ram_max_count: Number(ramN.value), sd_keep_days: Number(sdDays.value), locked_keep_days: Number(lockedDays.value),
+        sd_max_mb: Number(sdMb.value), folder_max_count: Number(perFolder.value),
       });
       toast(res.deleted ? `Saved; ${res.deleted} oldest recording(s) deleted` : 'Saved');
     } catch (e) {
@@ -71,10 +74,13 @@ function recordingCard(radio, recs) {
     h('div', { class: 'row' }, on.el),
     h('div', { class: 'row' }, h('span', { text: 'New recordings go to' }), h('div', { class: 'spacer' }), where),
     h('div', { class: 'row' }, h('span', { text: 'RAM keeps' }), h('div', { class: 'spacer' }), ramN, h('span', { class: 'dim', text: 'recordings' })),
-    h('div', { class: 'row' }, h('span', { text: 'SD card keeps' }), h('div', { class: 'spacer' }), sdN,
-      h('span', { class: 'dim', text: 'recordings, at most' }), sdMb, h('span', { class: 'dim', text: 'MB' })),
+    h('div', { class: 'row' }, h('span', { text: 'SD card keeps recordings' }), h('div', { class: 'spacer' }), sdDays,
+      h('span', { class: 'dim', text: 'days, locked ones' }), lockedDays, h('span', { class: 'dim', text: 'days' })),
+    h('div', { class: 'row' }, h('span', { text: 'SD card, at most' }), h('div', { class: 'spacer' }), sdMb,
+      h('span', { class: 'dim', text: 'MB,' }), perFolder, h('span', { class: 'dim', text: 'recordings a day folder' })),
     h('div', { class: 'row end' }, save),
-    h('p', { class: 'card-note', text: `SD card (${sd.state.replace('_', ' ')}${free}): ${num(st.sd.count)} recordings, ${bytes(st.sd.bytes)}. RAM: ${num(st.ram.count)}, ${bytes(st.ram.bytes)}.` }),
+    h('p', { class: 'card-note', text: 'Calls with alert tones are locked; any recording on the card can be locked from Now. Past the MB, the oldest unlocked go first.' }),
+    h('p', { class: 'card-note', text: `SD card (${sd.state.replace('_', ' ')}${free}): ${num(st.sd.count)} recordings, ${bytes(st.sd.bytes)}, ${num(st.locked.count)} locked. RAM: ${num(st.ram.count)}, ${bytes(st.ram.bytes)}.${sd.state === 'failing' && sd.detail ? ` The last write failed: ${sd.detail}` : ''}` }),
     h('div', { class: 'row' }, clearBtn('Delete SD recordings', 'sd', 'every recording on the SD card'), clearBtn('Delete RAM recordings', 'ram', 'every recording in RAM')));
   return c.el;
 }

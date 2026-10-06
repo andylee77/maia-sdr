@@ -32,6 +32,12 @@ pub fn iso_utc(ms: u64) -> String {
     format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", secs / 3_600, secs % 3_600 / 60, secs % 60)
 }
 
+/// `YYYY-MM-DD` in UTC.
+pub fn utc_date(ms: u64) -> String {
+    let (year, month, day) = civil_from_days((ms / 86_400_000) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Days since 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -55,5 +61,12 @@ mod tests {
         assert_eq!(iso_utc(0), "1970-01-01 00:00:00");
         assert_eq!(iso_utc(951_782_400_000), "2000-02-29 00:00:00");
         assert_eq!(iso_utc(1_790_851_508_000), "2026-10-01 10:45:08");
+    }
+
+    #[test]
+    fn utc_dates_turn_at_midnight_utc() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_791_244_799_999), "2026-10-05");
+        assert_eq!(utc_date(1_791_244_800_000), "2026-10-06");
     }
 }

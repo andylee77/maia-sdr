@@ -9,7 +9,11 @@
 //!
 //! The alert tones the chunks carry (`audio::alert`) go to the history and the notices for every
 //! followed call, recorded or not, and become its recording's bookmarks: in the list, and in the
-//! WAV as cue points.
+//! WAV as cue points. A recording with alert tones is saved locked: on the card it sits in the
+//! locked tree and is kept for the locked days; any card recording can be locked or unlocked.
+//!
+//! On the card each recording goes in its day's folder (`index`); retention runs after each
+//! recording, on a settings change, after the boot listing and hourly (`storage::evictions`).
 
 pub mod index;
 pub mod storage;
@@ -42,6 +46,8 @@ const STALE: Duration = Duration::from_secs(300);
 const TICK: Duration = Duration::from_millis(100);
 /// The newest alerts kept for the live pages (the history keeps them all).
 const RECENT_ALERTS: usize = 200;
+/// Retention by age runs at least this often.
+const RETENTION_EVERY: Duration = Duration::from_secs(3600);
 
 pub type Ring = Arc<Mutex<VecDeque<Recording>>>;
 
@@ -120,6 +126,8 @@ pub struct Recording {
     pub voice: Option<VoiceCounts>,
     /// Its alert tones.
     pub bookmarks: Vec<Bookmark>,
+    /// Kept for the locked days (on the card, in the locked tree).
+    pub locked: bool,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -193,8 +201,10 @@ impl From<&radio_config::Recording> for Policy {
             store: r.storage.into(),
             retention: Retention {
                 ram_max_count: r.ram_max_count as usize,
-                sd_max_count: r.sd_max_count as usize,
+                sd_keep_days: r.sd_keep_days,
+                locked_keep_days: r.locked_keep_days,
                 sd_max_bytes: r.sd_max_mb.saturating_mul(1024 * 1024),
+                folder_max_count: r.folder_max_count as usize,
             },
         }
     }
@@ -237,8 +247,12 @@ pub struct Summary {
     pub ram: StoreUsage,
     pub ram_max_count: usize,
     pub sd: StoreUsage,
-    pub sd_max_count: usize,
+    /// The card's locked recordings (in `sd` too).
+    pub locked: StoreUsage,
+    pub sd_keep_days: u32,
+    pub locked_keep_days: u32,
     pub sd_max_bytes: u64,
+    pub folder_max_count: usize,
     pub sd_status: SdStatus,
     pub recording_now: usize,
     pub counters: CounterView,
@@ -260,7 +274,30 @@ impl Shared {
     fn policy(&self) -> Policy {
         *lock(&self.policy)
     }
+
+    /// Apply the retention now; the history hears of the recordings gone. Returns how many.
+    fn retain(&self) -> usize {
+        let p = self.policy();
+        let gone = storage::apply_retention(&mut lock(&self.ring), &p.retention, &self.storage, unix_ms());
+        let n = gone.len();
+        if n > 0 {
+            self.history.recordings_gone(gone);
+        }
+        n
+    }
 }
+
+/// Why a recording could not be locked or unlocked.
+#[derive(Debug)]
+pub enum LockError {
+    Unknown,
+    /// Only the card's recordings lock.
+    InRam,
+    Failed(String),
+}
+
+/// How long a lock waits for the card writer (behind whatever it is writing or deleting).
+const MOVE_WAIT: Duration = Duration::from_secs(60);
 
 pub struct Recordings {
     shared: Arc<Shared>,
@@ -293,6 +330,11 @@ impl Recordings {
             recording_now: AtomicU64::new(0),
             alerts: Mutex::new(VecDeque::new()),
         });
+        // The card's recordings past the retention (it may have changed, or days passed, since).
+        let gone = shared.retain();
+        if gone > 0 {
+            tracing::info!("recordings: {gone} past the retention deleted after the listing");
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let recorder = Recorder { shared: shared.clone(), open: HashMap::new() };
         tokio::spawn(recorder.run(rx, audio.subscribe()));
@@ -344,32 +386,73 @@ impl Recordings {
         lock(&self.shared.alerts).iter().filter(|a| a.call_id == call).cloned().collect()
     }
 
-    /// Delete one recording, its file too.
+    /// Delete one recording, its file too (and its card folder when that empties).
     pub fn delete(&self, id: u64) -> bool {
         let mut ring = lock(&self.shared.ring);
         let Some(i) = ring.iter().position(|r| r.id == id) else { return false };
         if let Some(r) = ring.remove(i) {
-            self.shared.storage.remove(&r);
+            let last = r.store == Store::Sd && !ring.iter().any(|o| o.store == Store::Sd && o.path.parent() == r.path.parent());
+            self.shared.storage.remove(&r, last);
             self.shared.history.recordings_gone(vec![r.file]);
         }
         true
     }
 
-    /// Delete every recording of one store, or of both. Returns how many.
+    /// Delete every recording of one store, or of both, and the card folders they leave empty.
+    /// Returns how many.
     pub fn clear(&self, store: Option<Store>) -> usize {
         let mut ring = lock(&self.shared.ring);
-        let mut gone = Vec::new();
-        ring.retain(|r| {
-            let hit = store.is_none_or(|s| r.store == s);
-            if hit {
-                self.shared.storage.remove(r);
-                gone.push(r.file.clone());
+        let (gone, kept): (VecDeque<Recording>, VecDeque<Recording>) = ring.drain(..).partition(|r| store.is_none_or(|s| r.store == s));
+        *ring = kept;
+        let in_use: std::collections::HashSet<_> = ring.iter().filter(|r| r.store == Store::Sd).filter_map(|r| r.path.parent().map(PathBuf::from)).collect();
+        // Each emptied folder goes with its last file's delete.
+        let mut last_of: HashMap<PathBuf, usize> = HashMap::new();
+        for (k, r) in gone.iter().enumerate().filter(|(_, r)| r.store == Store::Sd) {
+            if let Some(f) = r.path.parent() {
+                last_of.insert(f.to_path_buf(), k);
             }
-            !hit
-        });
-        let n = gone.len();
-        self.shared.history.recordings_gone(gone);
+        }
+        let mut files = Vec::with_capacity(gone.len());
+        for (k, r) in gone.iter().enumerate() {
+            let last = r.store == Store::Sd && r.path.parent().is_some_and(|f| !in_use.contains(f) && last_of.get(f) == Some(&k));
+            self.shared.storage.remove(r, last);
+            files.push(r.file.clone());
+        }
+        let n = files.len();
+        self.shared.history.recordings_gone(files);
         n
+    }
+
+    /// Lock or unlock card recording `id`: its file moves to its day's folder in the locked tree,
+    /// or back out of it (behind its own write if that is still queued), and its entry follows.
+    pub async fn set_locked(&self, id: u64, locked: bool) -> Result<Recording, LockError> {
+        let policy = self.policy();
+        let (to, reply) = {
+            let ring = lock(&self.shared.ring);
+            let r = ring.iter().find(|r| r.id == id && r.store == Store::Sd);
+            let Some(r) = r else {
+                return Err(if ring.iter().any(|r| r.id == id) { LockError::InRam } else { LockError::Unknown });
+            };
+            if r.locked == locked {
+                return Ok(r.clone());
+            }
+            let folder = storage::folder_for(&ring, self.shared.storage.sd_dir(), r.started_unix_ms, locked, policy.retention.folder_max_count);
+            (folder.join(&r.file), tokio::sync::oneshot::channel())
+        };
+        let (tx, rx) = reply;
+        if !self.shared.storage.submit_move(id, to, locked, tx) {
+            return Err(LockError::Failed("the card writer is not running".into()));
+        }
+        match tokio::time::timeout(MOVE_WAIT, rx).await {
+            Ok(Ok(Ok(()))) => self.get_on_card(id).ok_or(LockError::Unknown),
+            Ok(Ok(Err(e))) => Err(LockError::Failed(e)),
+            Ok(Err(_)) => Err(LockError::Failed("the card writer stopped".into())),
+            Err(_) => Err(LockError::Failed("the card is busy: the move is still queued".into())),
+        }
+    }
+
+    fn get_on_card(&self, id: u64) -> Option<Recording> {
+        lock(&self.shared.ring).iter().find(|r| r.id == id && r.store == Store::Sd).cloned()
     }
 
     pub fn policy(&self) -> Policy {
@@ -382,15 +465,15 @@ impl Recordings {
         if p.store == Store::Sd {
             self.shared.storage.request_probe();
         }
-        let gone = storage::apply_retention(&mut lock(&self.shared.ring), &p.retention, &self.shared.storage);
-        let n = gone.len();
-        self.shared.history.recordings_gone(gone);
-        n
+        self.shared.retain()
     }
 
     pub fn summary(&self) -> Summary {
         let p = self.policy();
-        let ((ram_n, ram_b), (sd_n, sd_b)) = storage::usage(&lock(&self.shared.ring));
+        let (((ram_n, ram_b), (sd_n, sd_b)), (locked_n, locked_b)) = {
+            let ring = lock(&self.shared.ring);
+            (storage::usage(&ring), storage::locked_usage(&ring))
+        };
         let c = &self.shared.counters;
         let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
         Summary {
@@ -399,8 +482,11 @@ impl Recordings {
             ram: StoreUsage { count: ram_n, bytes: ram_b },
             ram_max_count: p.retention.ram_max_count,
             sd: StoreUsage { count: sd_n, bytes: sd_b },
-            sd_max_count: p.retention.sd_max_count,
+            locked: StoreUsage { count: locked_n, bytes: locked_b },
+            sd_keep_days: p.retention.sd_keep_days,
+            locked_keep_days: p.retention.locked_keep_days,
             sd_max_bytes: p.retention.sd_max_bytes,
+            folder_max_count: p.retention.folder_max_count,
             sd_status: self.shared.storage.sd_status(),
             recording_now: get(&self.shared.recording_now) as usize,
             counters: CounterView {
@@ -463,6 +549,7 @@ impl Recorder {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Input>, mut audio: broadcast::Receiver<AudioChunk>) {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut retained = Instant::now();
         loop {
             tokio::select! {
                 input = rx.recv() => match input {
@@ -483,7 +570,14 @@ impl Recorder {
                     }
                     Err(RecvError::Closed) => break,
                 },
-                _ = tick.tick() => self.tick(),
+                _ = tick.tick() => {
+                    self.tick();
+                    // Days pass with no recording too.
+                    if retained.elapsed() >= RETENTION_EVERY {
+                        self.shared.retain();
+                        retained = Instant::now();
+                    }
+                }
             }
             self.shared.recording_now.store(self.open.len() as u64, Ordering::Relaxed);
         }
@@ -637,6 +731,8 @@ fn save(shared: &Shared, o: Open, bookmarks: Vec<Bookmark>) -> std::io::Result<(
     let bytes = wav::wav_bytes(&o.pcm, &marks);
     let storage = &shared.storage;
     let policy = shared.policy();
+    // A call with alert tones is kept for the locked days.
+    let locked = !bookmarks.is_empty();
     let to_card = policy.store == Store::Sd
         && match storage.sd_ready() {
             Ok(()) => true,
@@ -662,11 +758,11 @@ fn save(shared: &Shared, o: Open, bookmarks: Vec<Bookmark>) -> std::io::Result<(
         channel: s.channel.clone(),
         voice: Some(o.voice),
         bookmarks,
+        locked,
         path: storage.ram_dir().join(&file),
     };
     let queued = if to_card {
         let bytes = Arc::new(bytes);
-        r.path = storage.sd_dir().join(&file);
         r.store = Store::Sd;
         r.pending = Some(bytes.clone());
         Some(bytes)
@@ -674,16 +770,22 @@ fn save(shared: &Shared, o: Open, bookmarks: Vec<Bookmark>) -> std::io::Result<(
         std::fs::create_dir_all(storage.ram_dir()).and_then(|_| std::fs::write(&r.path, &bytes))?;
         None
     };
-    let path = r.path.clone();
     let row = row_of(&r);
-    let gone = {
-        // Listed before the write is queued, so the writer finds the entry it updates.
+    let (path, gone) = {
+        // Listed before the write is queued, so the writer finds the entry it updates; its day
+        // folder is chosen against the list under the same lock.
         let mut ring = lock(&shared.ring);
+        if queued.is_some() {
+            r.path = storage::folder_for(&ring, storage.sd_dir(), s.started_unix_ms, locked, policy.retention.folder_max_count).join(&file);
+        }
+        let path = r.path.clone();
         ring.push_back(r);
-        storage::apply_retention(&mut ring, &policy.retention, storage)
+        (path, storage::apply_retention(&mut ring, &policy.retention, storage, unix_ms()))
     };
     shared.history.recordings(vec![row]);
-    shared.history.recordings_gone(gone);
+    if !gone.is_empty() {
+        shared.history.recordings_gone(gone);
+    }
     if let Some(bytes) = queued {
         storage.submit_sd_write(s.call, path, bytes);
     }

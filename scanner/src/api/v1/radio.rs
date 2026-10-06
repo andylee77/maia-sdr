@@ -81,12 +81,7 @@ pub struct RecordingSet {
 
 /// Apply and keep the recording settings; a lowered retention deletes the oldest at once.
 pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recording>) -> ApiResult<RecordingSet> {
-    if req.ram_max_count == 0 || req.sd_max_count == 0 {
-        return Err(ApiError::bad_request("each store keeps at least one recording"));
-    }
-    if !(SD_MIN_MB..=SD_MAX_MB).contains(&req.sd_max_mb) {
-        return Err(ApiError::bad_request(format!("sd_max_mb is {SD_MIN_MB}..={SD_MAX_MB}")));
-    }
+    req.check().map_err(ApiError::bad_request)?;
     let mut c = s.config.lock().await;
     c.radio.value.recording = req.clone();
     config::save(&s.paths.radio(), &c.radio)?;

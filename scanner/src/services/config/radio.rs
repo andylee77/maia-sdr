@@ -41,10 +41,7 @@ impl RadioConfig {
         if !(500..=30_000).contains(&self.calls.hang_ms) || self.calls.end_grace_ms > 10_000 {
             return Err("hang_ms 500..=30000, end_grace_ms up to 10000".into());
         }
-        let r = &self.recording;
-        if r.ram_max_count == 0 || r.sd_max_count == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&r.sd_max_mb) {
-            return Err(format!("recording: each store keeps at least one, sd_max_mb {SD_MIN_MB}..={SD_MAX_MB}"));
-        }
+        self.recording.check()?;
         if self.history.retention_days == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&self.history.sd_max_mb) {
             return Err(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB"));
         }
@@ -124,13 +121,50 @@ pub struct Recording {
     pub every_call: bool,
     pub storage: Storage,
     pub ram_max_count: u32,
-    pub sd_max_count: u32,
+    /// Days the card keeps a recording, and a locked one (a call with alert tones, or locked by
+    /// hand).
+    pub sd_keep_days: u32,
+    pub locked_keep_days: u32,
+    /// The card's share for recordings: past it the oldest unlocked go.
     pub sd_max_mb: u64,
+    /// Recordings in one day folder (FAT32 allows a directory about 8,000 of them).
+    pub folder_max_count: u32,
 }
+
+/// Days a recording may be kept for.
+pub const KEEP_DAYS: std::ops::RangeInclusive<u32> = 1..=3_650;
+pub const FOLDER_MAX: std::ops::RangeInclusive<u32> = 100..=6_000;
 
 impl Default for Recording {
     fn default() -> Self {
-        Recording { enabled: true, every_call: true, storage: Storage::Sd, ram_max_count: 40, sd_max_count: 2_000, sd_max_mb: 2_048 }
+        Recording {
+            enabled: true,
+            every_call: true,
+            storage: Storage::Sd,
+            ram_max_count: 40,
+            sd_keep_days: 30,
+            locked_keep_days: 365,
+            sd_max_mb: 8_192,
+            folder_max_count: 4_000,
+        }
+    }
+}
+
+impl Recording {
+    pub fn check(&self) -> Result<(), String> {
+        if self.ram_max_count == 0 {
+            return Err("recording: RAM keeps at least one".into());
+        }
+        if !KEEP_DAYS.contains(&self.sd_keep_days) || !(self.sd_keep_days..=*KEEP_DAYS.end()).contains(&self.locked_keep_days) {
+            return Err(format!("recording: sd_keep_days {}..={}, locked_keep_days from it to {}", KEEP_DAYS.start(), KEEP_DAYS.end(), KEEP_DAYS.end()));
+        }
+        if !(SD_MIN_MB..=SD_MAX_MB).contains(&self.sd_max_mb) {
+            return Err(format!("recording: sd_max_mb {SD_MIN_MB}..={SD_MAX_MB}"));
+        }
+        if !FOLDER_MAX.contains(&self.folder_max_count) {
+            return Err(format!("recording: folder_max_count {}..={}", FOLDER_MAX.start(), FOLDER_MAX.end()));
+        }
+        Ok(())
     }
 }
 

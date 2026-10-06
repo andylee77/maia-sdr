@@ -1,12 +1,44 @@
-//! Recording file names, and the listing of the SD card at boot.
+//! Recording file names and folders, and the listing of the SD card at boot.
 //!
 //! A name is `rec_<start ms>_<call id>_tg<tg>[_from<source>][.<site>].wav`, so the list is rebuilt
 //! from the names alone (files made before sites were kept have no site part). Files the parser
 //! does not recognise are left alone, never deleted.
+//!
+//! On the card a recording sits in the folder of its call's UTC date, `YYYY-MM-DD`, or
+//! `YYYY-MM-DD_<n>` once the day's earlier folders hold the cap (FAT32 allows a directory 65,536
+//! entries, 7-8 for each recording, and looks a name up by scanning its directory); locked ones in
+//! the same folders under `locked/`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{wav, Recording, Store};
+use crate::util::time::utc_date;
+
+/// The tree of locked recordings, in the recordings directory.
+pub const LOCKED: &str = "locked";
+
+/// The folder of the `n`th (from 1) of a day's folders.
+pub fn folder_name(day: &str, n: usize) -> String {
+    if n <= 1 { day.to_string() } else { format!("{day}_{n}") }
+}
+
+/// The `n`th (from 1) folder of the day of `started_unix_ms`, in `dir` or in its locked tree.
+pub fn day_folder(dir: &Path, started_unix_ms: u64, locked: bool, n: usize) -> PathBuf {
+    let base = if locked { dir.join(LOCKED) } else { dir.to_path_buf() };
+    base.join(folder_name(&utc_date(started_unix_ms), n))
+}
+
+/// Whether `name` is a day's folder (`YYYY-MM-DD` or `YYYY-MM-DD_<n>`).
+pub fn is_day_folder(name: &str) -> bool {
+    let (day, n) = match name.split_once('_') {
+        Some((d, n)) => (d, Some(n)),
+        None => (name, None),
+    };
+    let b = day.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && digits(0..4) && digits(5..7) && digits(8..10)
+        && n.is_none_or(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
@@ -50,32 +82,52 @@ pub fn parse(name: &str) -> Option<Parsed> {
     Some(Parsed { started_unix_ms, call, tg, source, site })
 }
 
-/// The recordings in `dir`, oldest first, and a note for the status; an error when the
-/// directory cannot be read. Only the names are read: on the card's FAT each file's size costs a
-/// scan of the whole directory (2,260 files took 16 s), so sizes come from the history
-/// (`reconcile`), which measures only the files it does not know.
+/// The recordings in `dir`'s day folders and its locked tree's, oldest first, and a note for the
+/// status; an error when `dir` cannot be read. Only the names are read: on the card's FAT each
+/// file's size costs a scan of its whole directory (2,260 files in one took 16 s), so sizes come
+/// from the history (`reconcile`), which measures only the files it does not know. Listing names
+/// alone is quick: 8,640 in 0.3 s with the caches dropped.
 pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
     let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = Vec::new();
     let mut skipped = 0usize;
+    let mut loose = 0usize;
+    let mut folders: Vec<(PathBuf, bool)> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        let Some(p) = parse(&name) else {
-            skipped += usize::from(name.ends_with(".wav"));
-            continue;
-        };
-        out.push(Recording {
-            id: p.call,
-            site: p.site,
-            tg: p.tg,
-            source: p.source,
-            started_unix_ms: p.started_unix_ms,
-            file: name,
-            store: Store::Sd,
-            sources: p.source.into_iter().collect(),
-            path: e.path(),
-            ..Recording::default()
-        });
+        if is_day_folder(&name) {
+            folders.push((e.path(), false));
+        } else if name == LOCKED {
+            for l in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                if is_day_folder(&l.file_name().to_string_lossy()) {
+                    folders.push((l.path(), true));
+                }
+            }
+        } else {
+            loose += usize::from(name.ends_with(".wav"));
+        }
+    }
+    for (folder, locked) in folders {
+        for e in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(p) = parse(&name) else {
+                skipped += usize::from(name.ends_with(".wav"));
+                continue;
+            };
+            out.push(Recording {
+                id: p.call,
+                site: p.site,
+                tg: p.tg,
+                source: p.source,
+                started_unix_ms: p.started_unix_ms,
+                file: name,
+                store: Store::Sd,
+                sources: p.source.into_iter().collect(),
+                locked,
+                path: e.path(),
+                ..Recording::default()
+            });
+        }
     }
     // Two files with one id (ids restarted after a boot that listed nothing): the newer is
     // listed, the other stays on the card untouched.
@@ -92,7 +144,8 @@ pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
     // Retention removes from the front, so the order is by time, not id.
     out.sort_by_key(|r| (r.started_unix_ms, r.id));
     let skipped = if skipped > 0 { format!(" ({skipped} unrecognised .wav names skipped)") } else { String::new() };
-    let note = format!("indexed {} recording(s) in {}{skipped}", out.len(), dir.display());
+    let loose = if loose > 0 { format!(" ({loose} .wav files outside the day folders not listed)") } else { String::new() };
+    let note = format!("indexed {} recording(s) in {}{skipped}{loose}", out.len(), dir.display());
     Ok((out, note))
 }
 

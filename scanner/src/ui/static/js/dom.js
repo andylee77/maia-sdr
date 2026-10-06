@@ -33,6 +33,8 @@ const ICONS = {
   muted: [['path', { d: 'M4 9.5h3.5L12 5.5v13l-4.5-4H4zM16 9.5l5 5M21 9.5l-5 5' }]],
   bell: [['path', { d: 'M6.5 16.5V11a5.5 5.5 0 0111 0v5.5l1.5 2h-14zM10 20.5a2 2 0 004 0' }]],
   info: [['circle', { cx: '12', cy: '12', r: '9' }], ['path', { d: 'M12 11v6M12 7.5v.5' }]],
+  lock: [['rect', { x: '5', y: '11', width: '14', height: '9.5', rx: '1.5' }], ['path', { d: 'M8 11V8a4 4 0 018 0v3' }]],
+  unlock: [['rect', { x: '5', y: '11', width: '14', height: '9.5', rx: '1.5' }], ['path', { d: 'M8 11V8a4 4 0 017.7-1.5' }]],
 };
 
 export function icon(name) {

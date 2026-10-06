@@ -15,12 +15,15 @@
 //!
 //! The thread also probes the card every 30 s (mounted, read-only, free space), so the API never
 //! touches it. A store change never moves recordings: each store's retention deletes only its own
-//! files.
+//! files. Locking a card recording moves its file to the locked tree through the same queue.
+//!
+//! Retention: the card keeps recordings for days (longer for locked ones) up to a size, which
+//! takes the oldest unlocked first; RAM keeps a count (`evictions`).
 
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,6 +31,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::{index, Recording, Ring, Store};
+use crate::services::clock::site::MIN_VALID_MS;
 use crate::util::time::unix_ms;
 
 /// The RAM store (tmpfs).
@@ -83,6 +87,9 @@ pub enum SdState {
     Full,
     /// The last write failed otherwise.
     Error,
+    /// Mounted with space, but the last write failed (a full directory, for one): new recordings
+    /// still try the card, and the next write that lands clears it.
+    Failing,
 }
 
 impl SdState {
@@ -94,6 +101,7 @@ impl SdState {
             SdState::ReadOnly => "read_only",
             SdState::Full => "full",
             SdState::Error => "error",
+            SdState::Failing => "failing",
         }
     }
 }
@@ -124,17 +132,27 @@ pub struct SdStatus {
     pub writer_running: bool,
 }
 
-/// How many recordings each store keeps; the oldest go first.
+/// What each store keeps; the oldest go first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Retention {
     pub ram_max_count: usize,
-    pub sd_max_count: usize,
+    /// Days the card keeps a recording, and a locked one.
+    pub sd_keep_days: u32,
+    pub locked_keep_days: u32,
     pub sd_max_bytes: u64,
+    /// Recordings in one day folder.
+    pub folder_max_count: usize,
 }
+
+/// Where a locked or unlocked recording's file moved, or why it could not.
+pub type MoveReply = tokio::sync::oneshot::Sender<Result<(), String>>;
 
 enum Job {
     Write { id: u64, path: PathBuf, bytes: Arc<Vec<u8>> },
-    Delete { path: PathBuf },
+    /// `folder` too, when it holds no other recording.
+    Delete { path: PathBuf, folder: Option<PathBuf> },
+    /// Recording `id`'s file to `to` (locked or not), its entry updated once it is there.
+    Move { id: u64, to: PathBuf, locked: bool, reply: MoveReply },
     Probe,
 }
 
@@ -146,6 +164,8 @@ pub struct Storage {
     queue_jobs: AtomicU64,
     /// Unix ms the write in progress started (0 = idle).
     write_started_ms: AtomicU64,
+    /// The last write failed: a probe that finds the card fine says `failing` until one lands.
+    write_failed: AtomicBool,
 }
 
 impl Storage {
@@ -158,6 +178,7 @@ impl Storage {
             queue_bytes: AtomicU64::new(0),
             queue_jobs: AtomicU64::new(0),
             write_started_ms: AtomicU64::new(0),
+            write_failed: AtomicBool::new(false),
         })
     }
 
@@ -219,7 +240,7 @@ impl Storage {
             return Err("sd writer not running".into());
         }
         let state = self.sd_state();
-        if !matches!(state, SdState::Ok | SdState::Unknown) {
+        if !matches!(state, SdState::Ok | SdState::Unknown | SdState::Failing) {
             return Err(format!("sd {}", state.as_str()));
         }
         if self.queue_bytes.load(Ordering::Relaxed) >= self.cfg.max_queue_bytes {
@@ -247,12 +268,13 @@ impl Storage {
     }
 
     /// Delete a recording's file: at once in RAM (tmpfs never stalls), behind the pending
-    /// writes on the card.
-    pub fn remove(&self, r: &Recording) {
+    /// writes on the card, with its folder when `last_in_folder`.
+    pub fn remove(&self, r: &Recording, last_in_folder: bool) {
         match r.store {
             Store::Sd => {
+                let folder = last_in_folder.then(|| r.path.parent().map(Path::to_path_buf)).flatten();
                 self.queue_jobs.fetch_add(1, Ordering::Relaxed);
-                if !self.send(Job::Delete { path: r.path.clone() }) {
+                if !self.send(Job::Delete { path: r.path.clone(), folder }) {
                     self.queue_jobs.fetch_sub(1, Ordering::Relaxed);
                 }
             }
@@ -260,6 +282,18 @@ impl Storage {
                 let _ = std::fs::remove_file(&r.path);
             }
         }
+    }
+
+    /// Move card recording `id`'s file to `to`, behind its own write if that is still queued. The
+    /// writer updates its entry (path, locked) once it is there and answers on `reply`; false when
+    /// no writer runs.
+    pub fn submit_move(&self, id: u64, to: PathBuf, locked: bool, reply: MoveReply) -> bool {
+        self.queue_jobs.fetch_add(1, Ordering::Relaxed);
+        let sent = self.send(Job::Move { id, to, locked, reply });
+        if !sent {
+            self.queue_jobs.fetch_sub(1, Ordering::Relaxed);
+        }
+        sent
     }
 
     /// Probe the card now (the store setting just changed to SD).
@@ -281,10 +315,18 @@ impl Storage {
                     self.queue_bytes.fetch_sub(bytes.len() as u64, Ordering::Relaxed);
                     self.queue_jobs.fetch_sub(1, Ordering::Relaxed);
                 }
-                Ok(Job::Delete { path }) => {
+                Ok(Job::Delete { path, folder }) => {
                     if std::fs::remove_file(&path).is_ok() {
                         lock(&self.status).deletes += 1;
                     }
+                    // Fails, harmlessly, when a file the list does not know is left in it.
+                    if let Some(f) = folder {
+                        let _ = std::fs::remove_dir(f);
+                    }
+                    self.queue_jobs.fetch_sub(1, Ordering::Relaxed);
+                }
+                Ok(Job::Move { id, to, locked, reply }) => {
+                    let _ = reply.send(self.relocate(id, &to, locked, &ring));
                     self.queue_jobs.fetch_sub(1, Ordering::Relaxed);
                 }
                 Ok(Job::Probe) | Err(RecvTimeoutError::Timeout) => {
@@ -304,17 +346,18 @@ impl Storage {
     fn write(&self, id: u64, path: &Path, bytes: &Arc<Vec<u8>>, ring: &Ring) {
         let t0 = Instant::now();
         self.write_started_ms.store(unix_ms().max(1), Ordering::Relaxed);
-        let res = write_durable(path, bytes);
+        let res = in_folder(path).and_then(|()| write_durable(path, bytes));
         self.write_started_ms.store(0, Ordering::Relaxed);
         let ms = t0.elapsed().as_millis() as u64;
         match res {
             Ok(()) => {
+                self.write_failed.store(false, Ordering::Relaxed);
                 {
                     let mut g = lock(&self.status);
                     g.writes_ok += 1;
                     g.last_write_ms = Some(ms);
                     g.max_write_ms = g.max_write_ms.max(ms);
-                    if matches!(g.state, SdState::Error | SdState::Unknown) {
+                    if matches!(g.state, SdState::Error | SdState::Unknown | SdState::Failing) {
                         g.state = SdState::Ok;
                         g.detail = None;
                     }
@@ -326,6 +369,7 @@ impl Storage {
             Err(err) => {
                 let msg = format!("write {}: {err}", path.display());
                 tracing::warn!("recording {id}: SD {msg}; saving to RAM instead");
+                self.write_failed.store(true, Ordering::Relaxed);
                 {
                     let mut g = lock(&self.status);
                     g.writes_failed += 1;
@@ -352,23 +396,56 @@ impl Storage {
                         }
                     }
                 }
-                // A transient error, or a card that came back, is ok again at once.
+                // A card that went away or read-only shows at once; one that is fine says
+                // `failing` until a write lands.
                 self.probe(false);
             }
         }
     }
 
+    /// Move recording `id`'s file to `to` and update its entry.
+    fn relocate(&self, id: u64, to: &Path, locked: bool, ring: &Ring) -> Result<(), String> {
+        let from = lock(ring).iter().find(|r| r.id == id && r.store == Store::Sd).map(|r| r.path.clone());
+        let Some(from) = from else { return Err(format!("recording {id} is not on the card")) };
+        if from != to {
+            in_folder(to).and_then(|()| std::fs::rename(&from, to)).map_err(|e| format!("move {} to {}: {e}", from.display(), to.display()))?;
+            // The folder it left, when that was its last file.
+            if let Some(f) = from.parent() {
+                if !lock(ring).iter().any(|r| r.id != id && r.store == Store::Sd && r.path.parent() == Some(f)) {
+                    let _ = std::fs::remove_dir(f);
+                }
+            }
+        }
+        if let Some(r) = lock(ring).iter_mut().find(|r| r.id == id && r.store == Store::Sd) {
+            r.path = to.to_path_buf();
+            r.locked = locked;
+        }
+        Ok(())
+    }
+
     fn probe(&self, initial: bool) {
-        let (state, detail, total, free) = probe_sd(&self.cfg);
+        let (mut state, mut detail, total, free) = probe_sd(&self.cfg);
         if initial && state == SdState::Ok {
             remove_stale_parts(&self.cfg.sd_dir);
         }
         let mut g = lock(&self.status);
+        if state == SdState::Ok && self.write_failed.load(Ordering::Relaxed) {
+            state = SdState::Failing;
+            detail = g.last_error.clone();
+        }
         g.state = state;
         g.detail = detail;
         g.total_bytes = total;
         g.free_bytes = free;
         g.last_probe_unix_ms = Some(unix_ms());
+    }
+}
+
+/// Make `path`'s folder.
+fn in_folder(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(p) => std::fs::create_dir_all(p),
+        None => Ok(()),
     }
 }
 
@@ -479,30 +556,58 @@ fn probe_sd(cfg: &StorageConfig) -> (SdState, Option<String>, Option<u64>, Optio
     (SdState::Ok, None, total, free)
 }
 
-/// Remove the `.part` files of writes a crash or power cut interrupted.
+/// Remove the `.part` files of writes a crash or power cut interrupted, in the day folders.
 fn remove_stale_parts(dir: &Path) {
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let n = e.file_name();
-        let n = n.to_string_lossy();
-        if n.starts_with('.') && n.ends_with(".part") {
-            let _ = std::fs::remove_file(e.path());
+    let day_folders = |d: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| index::is_day_folder(&e.file_name().to_string_lossy()))
+            .map(|e| e.path())
+            .collect()
+    };
+    let mut folders = day_folders(dir);
+    folders.extend(day_folders(&dir.join(index::LOCKED)));
+    for f in folders {
+        for e in std::fs::read_dir(&f).into_iter().flatten().flatten() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with('.') && n.ends_with(".part") {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
 }
 
-/// Positions (ascending) of the recordings beyond each store's retention: oldest first, and the
-/// newest recording of a store is always kept.
-pub fn evictions(ring: &VecDeque<Recording>, r: &Retention) -> Vec<usize> {
-    let (mut ram_n, mut sd_n, mut sd_bytes) = (0usize, 0usize, 0u64);
+const DAY_MS: u64 = 86_400_000;
+
+/// Positions (ascending) of the recordings beyond each store's retention at `now_ms`, the newest
+/// recording of each store always kept (the ring is in time order). On the card: one older than
+/// its days (a locked one's days when locked), when the clock and its start are both valid (the
+/// board's clock starts in 1970); then, past the size, every older unlocked one (locked ones count
+/// towards the size, but stay). In RAM: past the count.
+pub fn evictions(ring: &VecDeque<Recording>, r: &Retention, now_ms: u64) -> Vec<usize> {
+    let aged = |e: &Recording| {
+        let days = if e.locked { r.locked_keep_days } else { r.sd_keep_days };
+        now_ms >= MIN_VALID_MS && e.started_unix_ms >= MIN_VALID_MS && now_ms.saturating_sub(e.started_unix_ms) > u64::from(days) * DAY_MS
+    };
+    let (mut ram_n, mut sd_n, mut sd_bytes, mut over) = (0usize, 0usize, 0u64, false);
     let mut out = Vec::new();
     for (i, e) in ring.iter().enumerate().rev() {
         match e.store {
             Store::Sd => {
                 sd_n += 1;
-                sd_bytes = sd_bytes.saturating_add(e.bytes);
-                if sd_n > r.sd_max_count.max(1) || (sd_n > 1 && sd_bytes > r.sd_max_bytes) {
+                if sd_n > 1 && aged(e) {
                     out.push(i);
+                    continue;
                 }
+                if sd_n > 1 && !e.locked && (over || sd_bytes.saturating_add(e.bytes) > r.sd_max_bytes) {
+                    over = true;
+                    out.push(i);
+                    continue;
+                }
+                sd_bytes = sd_bytes.saturating_add(e.bytes);
             }
             Store::Ram => {
                 ram_n += 1;
@@ -524,13 +629,53 @@ pub fn usage(ring: &VecDeque<Recording>) -> ((usize, u64), (usize, u64)) {
     })
 }
 
-/// Drop the recordings beyond the retention and delete their files. Returns their names.
-pub fn apply_retention(ring: &mut VecDeque<Recording>, retention: &Retention, storage: &Storage) -> Vec<String> {
-    let idx = evictions(ring, retention);
+/// (count, bytes) of the card's locked recordings.
+pub fn locked_usage(ring: &VecDeque<Recording>) -> (usize, u64) {
+    ring.iter().filter(|e| e.locked && e.store == Store::Sd).fold((0, 0), |(n, b), e| (n + 1, b + e.bytes))
+}
+
+/// The folder a new card recording started at `started_unix_ms` goes to: the first of its day's
+/// (in the locked tree when `locked`) holding fewer than `max` of the listed recordings.
+pub fn folder_for(ring: &VecDeque<Recording>, dir: &Path, started_unix_ms: u64, locked: bool, max: usize) -> PathBuf {
+    let mut n = 1;
+    loop {
+        let folder = index::day_folder(dir, started_unix_ms, locked, n);
+        let held = ring.iter().filter(|e| e.store == Store::Sd && e.path.parent() == Some(folder.as_path())).count();
+        if held < max.max(1) {
+            return folder;
+        }
+        n += 1;
+    }
+}
+
+/// Drop the recordings beyond the retention at `now_ms` and delete their files, and a card folder
+/// they leave empty. Returns their names.
+pub fn apply_retention(ring: &mut VecDeque<Recording>, retention: &Retention, storage: &Storage, now_ms: u64) -> Vec<String> {
+    let idx = evictions(ring, retention, now_ms);
+    if idx.is_empty() {
+        return Vec::new();
+    }
+    let gone_set: std::collections::HashSet<usize> = idx.iter().copied().collect();
+    // The card folders still holding a recording once these are gone.
+    let in_use: std::collections::HashSet<PathBuf> = ring
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| e.store == Store::Sd && !gone_set.contains(i))
+        .filter_map(|(_, e)| e.path.parent().map(Path::to_path_buf))
+        .collect();
+    // Removed newest first, so the oldest of a folder's files is its last delete: the folder goes
+    // with that one.
+    let mut oldest: std::collections::HashMap<PathBuf, usize> = std::collections::HashMap::new();
+    for &i in &idx {
+        if let Some(f) = ring.get(i).filter(|e| e.store == Store::Sd).and_then(|e| e.path.parent()) {
+            oldest.entry(f.to_path_buf()).or_insert(i);
+        }
+    }
     let mut gone = Vec::with_capacity(idx.len());
     for &i in idx.iter().rev() {
         if let Some(old) = ring.remove(i) {
-            storage.remove(&old);
+            let last = old.path.parent().is_some_and(|f| !in_use.contains(f) && oldest.get(f) == Some(&i));
+            storage.remove(&old, last);
             gone.push(old.file);
         }
     }

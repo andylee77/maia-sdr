@@ -116,11 +116,12 @@ routes! {
     put "/api/v1/radio/crystal" => v1::radio::put_crystal, "crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit)";
     post "/api/v1/radio/crystal/calibrate" => v1::radio::calibrate_crystal, "measure the crystal correction on the live control channel now (about 7 s)";
     post "/api/v1/clock" => v1::radio::set_time, "set the board clock (`unix_ms`, a browser's time)";
-    put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how many each store keeps";
+    put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps";
     get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
     delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";
     get "/api/v1/recordings/{id}" => v1::recordings::file, "one recording's WAV (`{id}` or `{id}.wav`; byte ranges)";
     delete "/api/v1/recordings/{id}" => v1::recordings::delete, "delete one recording";
+    put "/api/v1/recordings/{id}/lock" => v1::recordings::lock, "lock (`locked`: true) or unlock a card recording: kept for the locked days, in the locked tree";
     get "/api/v1/systems" => v1::systems::list, "systems with their sites";
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
     put "/api/v1/systems/{id}" => v1::systems::put_system, "edit a system: its name, identity (P25: WACN and system ID; DMR: model and network) and details (location, county, type, voice)";

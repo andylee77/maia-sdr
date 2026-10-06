@@ -5,6 +5,28 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-06] 086: Recordings in dated folders, kept by age, alert calls locked
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** unit A stopped saving recordings to its card on 2026-10-05 at 21:21 UTC. Its one folder
+  held 8,640 files, FAT32's 65,536 directory entries at 7-8 a long name, so every write failed with
+  "No space left on device" (56.6 GB free) and went to RAM, which keeps 40; the card's status
+  still said `ok`. Record and Andy's decisions: `doc/changes/086_recordings_by_date.md`.
+- **Layout:** `p25_recordings/<UTC day>/` (`_<n>` past 4,000 files), and `locked/<day>/`; names
+  and the history unchanged; the boot listing walks the day folders (names only: 8,640 in 0.3 s
+  cold).
+- **Retention:** 30 days, locked recordings 365 (age needs a valid clock), within 8 GB, where the
+  oldest unlocked go first; RAM keeps its count. Runs after each recording, on a settings change,
+  after the boot listing and hourly. `sd_max_count` is gone.
+- **Locking:** calls with alert tones are saved locked; `PUT /api/v1/recordings/{id}/lock` moves a
+  card recording between the trees; Now has a lock button, Settings the new rows.
+- **The card's status:** `failing` while writes fail on a card with room, until one lands.
+- **On unit A:** the 8,640 moved into day folders (218 locked) and the 41 in RAM saved onto the
+  card; build `2026-10-06-rec1` lists 8,681 and writes in 12 ms. `API_FIELDS.md` regenerated, with
+  the meanings 082 and 085 had left out.
+
 ## [2026-10-05] 085: Bake D, the 8-VSB receiver in the PL, live ATSC TV
 
 **Branch:** fishball-p25 (local)

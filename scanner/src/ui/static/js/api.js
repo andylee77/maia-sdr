@@ -60,6 +60,7 @@ export const api = {
   atscLiveStop: () => request('POST', '/api/v1/atsc/live/stop'),
   recordings: (limit, site) => request('GET', `/api/v1/recordings?limit=${limit}${site ? `&site=${encodeURIComponent(site)}` : ''}`),
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
+  lockRecording: (id, locked) => request('PUT', `/api/v1/recordings/${id}/lock`, { locked }),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
 };

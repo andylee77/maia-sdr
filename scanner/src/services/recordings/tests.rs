@@ -82,9 +82,17 @@ fn file_names_parse_back() {
     assert_eq!(index::file_name(1000, 7, 300, None, "a/b"), "rec_1000_7_tg300.wav");
 }
 
+fn retention(ram_max_count: usize, sd_max_bytes: u64) -> Retention {
+    Retention { ram_max_count, sd_keep_days: 30, locked_keep_days: 365, sd_max_bytes, folder_max_count: 4_000 }
+}
+
+/// A time the clock counts as valid: 2026-10-06 00:00 UTC.
+const NOW: u64 = 1_791_244_800_000;
+const DAY: u64 = 86_400_000;
+
 #[test]
 fn retention_is_per_store_and_sd_has_a_size_cap() {
-    let r = Retention { ram_max_count: 2, sd_max_count: 3, sd_max_bytes: 250 };
+    let r = retention(2, 250);
     // Oldest first: RAM 1, SD 2 (100 B), RAM 3, SD 4 (100 B), SD 5 (100 B), RAM 6.
     let ring: VecDeque<Recording> = vec![
         entry(1, Store::Ram, 10),
@@ -95,49 +103,103 @@ fn retention_is_per_store_and_sd_has_a_size_cap() {
         entry(6, Store::Ram, 10),
     ]
     .into();
+    let gone = |ring: &VecDeque<Recording>, r: &Retention| -> Vec<u64> { evictions(ring, r, NOW).into_iter().map(|i| ring[i].id).collect() };
     // RAM keeps 3 and 6; SD keeps 5 and 4 (200 B), 2 would make 300 B.
-    let gone: Vec<u64> = evictions(&ring, &r).into_iter().map(|i| ring[i].id).collect();
-    assert_eq!(gone, vec![1, 2]);
+    assert_eq!(gone(&ring, &r), vec![1, 2]);
     // A lowered RAM limit never deletes SD recordings.
-    let r1 = Retention { ram_max_count: 1, ..r };
-    let gone: Vec<u64> = evictions(&ring, &r1).into_iter().map(|i| ring[i].id).collect();
-    assert_eq!(gone, vec![1, 2, 3]);
+    assert_eq!(gone(&ring, &Retention { ram_max_count: 1, ..r }), vec![1, 2, 3]);
     // The newest recording of a store is kept even when it alone exceeds the size cap.
     let tiny = Retention { sd_max_bytes: 1, ..r };
-    let gone: Vec<u64> = evictions(&ring, &tiny).into_iter().map(|i| ring[i].id).collect();
-    assert_eq!(gone, vec![1, 2, 4]);
+    assert_eq!(gone(&ring, &tiny), vec![1, 2, 4]);
     assert_eq!(usage(&ring), ((3, 30), (3, 300)));
+    // A locked recording counts towards the size but stays; the unlocked ones older go.
+    let mut locked = ring.clone();
+    locked[3].locked = true;
+    assert_eq!(gone(&locked, &tiny), vec![1, 2]);
+    assert_eq!(locked_usage(&locked), (1, 100));
 }
 
 #[test]
-fn the_index_lists_card_recordings_oldest_first_by_name() {
+fn the_card_keeps_recordings_for_days_and_locked_ones_longer() {
+    let at = |id: u64, days_ago: u64, locked: bool| Recording {
+        started_unix_ms: NOW - days_ago * DAY - 1,
+        locked,
+        ..entry(id, Store::Sd, 10)
+    };
+    // Oldest first.
+    let ring: VecDeque<Recording> = vec![at(1, 400, true), at(2, 366, true), at(3, 364, true), at(4, 31, false), at(5, 30, false), at(6, 29, false), at(7, 0, false)].into();
+    let r = retention(40, 1 << 30);
+    let gone: Vec<u64> = evictions(&ring, &r, NOW).into_iter().map(|i| ring[i].id).collect();
+    assert_eq!(gone, vec![1, 2, 4, 5], "past 365 days locked, past 30 unlocked");
+    // With the clock unset (the board starts in 1970) nothing goes for its age.
+    assert!(evictions(&ring, &r, 5_000).is_empty());
+    // Nor does a recording stamped before the clock was set.
+    let stale: VecDeque<Recording> = vec![Recording { started_unix_ms: 9_000, ..entry(1, Store::Sd, 10) }, at(2, 0, false)].into();
+    assert!(evictions(&stale, &r, NOW).is_empty());
+    // The newest stays whatever its age.
+    let lone: VecDeque<Recording> = vec![at(1, 90, false)].into();
+    assert!(evictions(&lone, &r, NOW).is_empty());
+}
+
+#[test]
+fn a_recording_goes_to_its_days_folder_until_the_folder_holds_the_cap() {
+    let sd = PathBuf::from("/card/p25_recordings");
+    let day = sd.join("2026-10-06");
+    let in_folder = |id: u64, folder: &Path| Recording { path: folder.join(format!("rec_{id}.wav")), ..entry(id, Store::Sd, 10) };
+    let mut ring: VecDeque<Recording> = (1..=2).map(|id| in_folder(id, &day)).collect();
+    assert_eq!(folder_for(&ring, &sd, NOW + 5, false, 3), day);
+    ring.push_back(in_folder(3, &day));
+    assert_eq!(folder_for(&ring, &sd, NOW + 5, false, 3), sd.join("2026-10-06_2"));
+    assert_eq!(folder_for(&ring, &sd, NOW + 5, true, 3), sd.join("locked").join("2026-10-06"), "the locked tree counts its own");
+    assert_eq!(folder_for(&ring, &sd, NOW - 1, false, 3), sd.join("2026-10-05"), "the day is the call's, in UTC");
+    // RAM recordings do not count.
+    ring.iter_mut().for_each(|r| r.store = Store::Ram);
+    assert_eq!(folder_for(&ring, &sd, NOW + 5, false, 3), day);
+    assert!(index::is_day_folder("2026-10-06") && index::is_day_folder("2026-10-06_12"));
+    for bad in ["2026-10-6", "2026-10-06_", "2026-10-06_x", "locked", "20261006", "2026_10_06"] {
+        assert!(!index::is_day_folder(bad), "{bad}");
+    }
+}
+
+#[test]
+fn the_index_lists_the_day_folders_and_the_locked_ones_oldest_first_by_name() {
     let (ram, sd) = dirs("index");
-    let wav = |name: &str, ms: u64| std::fs::write(sd.join(name), vec![0u8; 44 + 16 * ms as usize]).unwrap();
-    wav("rec_2000_12_tg300_from1014.wav", 1_440);
-    wav("rec_1000_7_tg300_from3436046.wav", 1_620);
-    wav("rec_3000_12_tg300.wav", 100); // same id, newer (ids restarted)
-    wav("rec_5000_2_tg300.clay.wav", 100); // a low id, but the newest
-    wav("rec_6000_9_tg87926.clay_electric.wav", 100);
-    std::fs::write(sd.join(".rec_4000_13_tg300.wav.part"), b"half").unwrap();
+    let wav = |folder: &str, name: &str, ms: u64| {
+        let f = sd.join(folder);
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(f.join(name), vec![0u8; 44 + 16 * ms as usize]).unwrap();
+    };
+    wav("1970-01-01", "rec_2000_12_tg300_from1014.wav", 1_440);
+    wav("1970-01-01", "rec_1000_7_tg300_from3436046.wav", 1_620);
+    wav("1970-01-01_2", "rec_3000_12_tg300.wav", 100); // same id, newer (ids restarted)
+    wav("locked/1970-01-01", "rec_5000_2_tg300.clay.wav", 100); // a low id, but the newest
+    wav("1970-01-01", "rec_6000_9_tg87926.clay_electric.wav", 100);
+    wav("1970-01-01", ".rec_4000_13_tg300.wav.part", 1);
+    wav("1970-01-01", "rec_odd.wav", 1);
+    wav("old", "rec_7000_14_tg300.wav", 1); // not a day folder
     std::fs::write(sd.join("notes.txt"), b"x").unwrap();
-    std::fs::write(sd.join("rec_odd.wav"), b"x").unwrap();
+    std::fs::write(sd.join("rec_8000_15_tg300.wav"), b"x").unwrap(); // the old flat layout
     let (list, note) = index(&cfg(&ram, &sd)).unwrap();
     let ids: Vec<u64> = list.iter().map(|e| e.id).collect();
     assert_eq!(ids, vec![7, 12, 2, 9], "{note}");
     assert!(list.iter().all(|r| r.bytes == 0), "the names only");
     assert_eq!((list[0].tg, list[0].source), (300, Some(3436046)));
     assert_eq!(list[1].started_unix_ms, 3_000, "the newer of the duplicate id is listed");
+    assert_eq!(list[1].path, sd.join("1970-01-01_2").join("rec_3000_12_tg300.wav"));
     assert_eq!((list[3].tg, list[3].site.as_str()), (87_926, "clay_electric"));
+    assert_eq!(list.iter().map(|e| e.locked).collect::<Vec<_>>(), vec![false, false, true, false], "the locked tree's");
     assert!(list.iter().all(|e| e.store == Store::Sd && e.pending.is_none()));
-    assert!(note.contains("indexed 4") && note.contains("1 unrecognised"), "{note}");
+    assert!(note.contains("indexed 4") && note.contains("1 unrecognised") && note.contains("1 .wav files outside"), "{note}");
 }
 
 #[test]
 fn reconcile_takes_lengths_from_the_history_and_measures_the_rest() {
     let (ram, sd) = dirs("reconcile");
     // 1.62 s unknown to the history; 0.5 s it knows, with 120 bytes of cue points after the audio.
-    std::fs::write(sd.join("rec_1000_7_tg300.clay.wav"), vec![0u8; 44 + 16 * 1_620]).unwrap();
-    std::fs::write(sd.join("rec_2000_8_tg300.clay.wav"), vec![0u8; 44 + 16 * 500 + 120]).unwrap();
+    let day = sd.join("1970-01-01");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join("rec_1000_7_tg300.clay.wav"), vec![0u8; 44 + 16 * 1_620]).unwrap();
+    std::fs::write(day.join("rec_2000_8_tg300.clay.wav"), vec![0u8; 44 + 16 * 500 + 120]).unwrap();
     let db = sd.join("history.sqlite");
     let history = HistoryStore::open(&db).unwrap();
     let known = RecordingRow {
@@ -163,7 +225,9 @@ fn a_card_write_lands_then_drops_the_ram_copy() {
     let (ram, sd) = dirs("write");
     let bytes = Arc::new(vec![7u8; 44 + 16 * 1_440]);
     let mut e = entry(21, Store::Sd, bytes.len() as u64);
-    let path = sd.join(&e.file);
+    // Its day folder is made with the first write.
+    let folder = sd.join("2026-10-06");
+    let path = folder.join(&e.file);
     e.path = path.clone();
     e.pending = Some(bytes.clone());
     let ring = ring_of(vec![e]);
@@ -175,24 +239,29 @@ fn a_card_write_lands_then_drops_the_ram_copy() {
     assert_eq!(std::fs::read(&path).unwrap(), *bytes);
     let s = st.sd_status();
     assert_eq!((s.writes_ok, s.queue_bytes), (1, 0));
-    assert!(!sd.join(format!(".{}.part", ring.lock().unwrap()[0].file)).exists());
+    assert!(!folder.join(format!(".{}.part", ring.lock().unwrap()[0].file)).exists());
 
-    // Deletes go through the queue too.
+    // Deletes go through the queue too, with the folder its last recording leaves.
     let gone = ring.lock().unwrap()[0].clone();
-    st.remove(&gone);
-    wait_for("delete", || !path.exists());
+    st.remove(&gone, true);
+    wait_for("delete", || !path.exists() && !folder.exists());
 }
 
 #[test]
-fn a_failed_card_write_falls_back_to_ram() {
+fn a_failed_card_write_falls_back_to_ram_and_the_card_says_failing_until_one_lands() {
     let (ram, sd) = dirs("fallback");
     let bytes = Arc::new(vec![1u8; 1_000]);
     let mut e = entry(5, Store::Sd, 1_000);
-    // A directory that does not exist on the "card": the create fails.
-    let path = sd.join("gone").join(&e.file);
+    // A file where its folder would be: the write fails, though the card has room (as a full
+    // FAT directory does).
+    std::fs::write(sd.join("blocked"), b"x").unwrap();
+    let path = sd.join("blocked").join(&e.file);
     e.path = path.clone();
     e.pending = Some(bytes.clone());
-    let ring = ring_of(vec![e]);
+    let mut good = entry(6, Store::Sd, 1_000);
+    good.path = sd.join("2026-10-06").join(&good.file);
+    good.pending = Some(bytes.clone());
+    let ring = ring_of(vec![e, good.clone()]);
     let st = Storage::start(cfg(&ram, &sd), ring.clone());
     wait_for("first probe", || st.sd_state() == SdState::Ok);
     st.submit_sd_write(5, path, bytes.clone());
@@ -203,7 +272,18 @@ fn a_failed_card_write_falls_back_to_ram() {
     assert_eq!(std::fs::read(&e.path).unwrap(), *bytes);
     let s = st.sd_status();
     assert_eq!((s.writes_failed, s.fallbacks_to_ram), (1, 1));
-    assert!(s.last_error.unwrap().contains("gone"));
+    assert!(s.last_error.unwrap().contains("blocked"));
+    // The probe after it finds the card fine, and does not call it ok.
+    assert_eq!(st.sd_state(), SdState::Failing);
+    assert!(st.sd_status().detail.unwrap().contains("blocked"));
+    st.request_probe();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(st.sd_state(), SdState::Failing);
+    // New recordings still try the card, and one that lands clears it.
+    assert!(st.sd_ready().is_ok());
+    st.submit_sd_write(6, good.path.clone(), bytes.clone());
+    wait_for("write", || st.sd_state() == SdState::Ok);
+    assert!(good.path.exists());
 }
 
 #[test]
@@ -257,7 +337,7 @@ fn an_unusable_card_is_reported_without_a_writer_touching_it() {
 }
 
 fn policy(store: Store) -> Policy {
-    Policy { enabled: true, every_call: true, store, retention: Retention { ram_max_count: 40, sd_max_count: 2_000, sd_max_bytes: 1 << 30 } }
+    Policy { enabled: true, every_call: true, store, retention: retention(40, 1 << 30) }
 }
 
 fn call(id: u64) -> CallStart {
@@ -289,7 +369,8 @@ async fn play(audio: &Audio, id: u64) {
 #[tokio::test]
 async fn a_followed_call_is_saved_to_the_card_and_ids_continue_past_the_card() {
     let (ram, sd) = dirs("recorder");
-    std::fs::write(sd.join("rec_1000_41_tg300.clay.wav"), vec![0u8; 44 + 1_600]).unwrap();
+    std::fs::create_dir_all(sd.join("1970-01-01")).unwrap();
+    std::fs::write(sd.join("1970-01-01").join("rec_1000_41_tg300.clay.wav"), vec![0u8; 44 + 1_600]).unwrap();
     let c = cfg(&ram, &sd);
     let audio = Audio::start(&[Lane::One]);
     let rec = Recordings::start(c.clone(), policy(Store::Sd), index(&c).unwrap(), &audio, Default::default(), Default::default());
@@ -311,14 +392,31 @@ async fn a_followed_call_is_saved_to_the_card_and_ids_continue_past_the_card() {
     assert_eq!(r.voice.map(|v| v.frames), Some(9));
     assert_eq!(r.sources, vec![1014, 3412754]);
     assert!(rec.get(42).unwrap().pending.is_none(), "on the card");
-    assert_eq!(std::fs::read(sd.join(&r.file)).unwrap().len(), 44 + 180 * 16);
+    // In its call's day folder (2026-10-01 UTC).
+    let day = sd.join("2026-10-01");
+    assert_eq!(rec.get(42).unwrap().path, day.join(&r.file));
+    assert_eq!(std::fs::read(day.join(&r.file)).unwrap().len(), 44 + 180 * 16);
+    assert!(!r.locked);
     let s = rec.summary();
     assert_eq!((s.counters.saved, s.counters.no_audio, s.sd.count), (1, 1, 2));
 
+    // Locked, it moves to the day's folder in the locked tree, the day folder going with it;
+    // unlocked, it comes back.
+    let locked = rec.set_locked(42, true).await.unwrap();
+    let in_locked = sd.join("locked").join("2026-10-01").join(&r.file);
+    assert_eq!((locked.locked, locked.path.clone()), (true, in_locked.clone()));
+    assert!(in_locked.exists() && !day.exists());
+    assert_eq!(rec.summary().locked.count, 1);
+    let back = rec.set_locked(42, false).await.unwrap();
+    assert_eq!((back.locked, back.path.clone()), (false, day.join(&r.file)));
+    assert!(day.join(&r.file).exists() && !sd.join("locked").join("2026-10-01").exists());
+    assert!(matches!(rec.set_locked(99, true).await, Err(LockError::Unknown)));
+
     assert!(rec.delete(42));
-    wait_for("delete", || !sd.join(&r.file).exists());
+    wait_for("delete", || !day.join(&r.file).exists() && !day.exists());
     assert_eq!(rec.clear(Some(Store::Ram)), 0);
     assert_eq!(rec.clear(None), 1);
+    wait_for("clear", || !sd.join("1970-01-01").exists());
 }
 
 #[tokio::test]
@@ -382,6 +480,7 @@ async fn an_alert_tone_is_a_bookmark_a_history_row_and_a_notice() {
 
     let r = rec.get(9).unwrap();
     assert_eq!(r.duration_ms, 1_200);
+    assert!(r.locked, "a call with alert tones is kept longer");
     assert_eq!(r.bookmarks.len(), 1);
     let b = &r.bookmarks[0];
     assert_eq!((b.offset_ms, b.duration_ms, b.label.as_str(), b.kind.as_str()), (40, 1_140, "warble 806.5/1506.0 Hz", "warble"));
