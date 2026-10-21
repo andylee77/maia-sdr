@@ -8,6 +8,7 @@
 
 import { h, setText, card, toast, table, icon } from '../dom.js';
 import { api } from '../api.js';
+import { recordingPlayer } from '../audio/recording.js';
 import { packetDataCard } from './packet_data.js';
 import { dur, num, bytes, tgLabel, unitLabel, DASH, dayTime as when } from '../format.js';
 
@@ -62,12 +63,9 @@ function stamp(ms) {
 function playCall(callId, offsetMs, text, title) {
   const btn = h('button', { class: 'btn small', type: 'button', title }, icon('play'), text);
   btn.addEventListener('click', () => {
-    const audio = h('audio', { controls: true, preload: 'auto', src: `/api/v1/recordings/${callId}.wav` });
-    btn.replaceWith(audio);
-    audio.addEventListener('loadedmetadata', () => {
-      audio.currentTime = offsetMs / 1000;
-      audio.play().catch(() => { /* another tap */ });
-    }, { once: true });
+    const rec = recordingPlayer(`/api/v1/recordings/${callId}.wav`);
+    btn.replaceWith(rec.el);
+    rec.play(offsetMs / 1000);
   });
   return btn;
 }

@@ -12,6 +12,7 @@ import { refresh } from '../store.js';
 import { mhz, ago, pct, num, dur, clock, bytes, unitLabel, DASH, NOT_FOLLOWED, CLOSE_REASON } from '../format.js';
 import { protocol } from '../protocols.js';
 import { player } from '../audio/player.js';
+import { recordingPlayer } from '../audio/recording.js';
 import { getPrefs, setLane, onPrefs } from '../prefs.js';
 
 // A control channel with no message for this long is shown as silent.
@@ -304,7 +305,7 @@ function idleLine(s, ch) {
 function laneAudio(lane) {
   const i = lane - 1;
   const mute = h('button', { class: 'btn small icon', type: 'button' });
-  const slider = h('input', { class: 'vol', type: 'range', min: '0', max: '200', step: '5', 'aria-label': `Traffic ${lane} volume` });
+  const slider = h('input', { class: 'vol', type: 'range', min: '0', max: '100', step: '5', 'aria-label': `Traffic ${lane} volume` });
   mute.addEventListener('click', () => setLane(i, { muted: !getPrefs().lanes[i].muted }));
   slider.addEventListener('input', () => player.setLaneVolume(i, slider.value / 100));
   slider.addEventListener('change', () => setLane(i, { volume: slider.value / 100, muted: false }));
@@ -318,7 +319,7 @@ function laneAudio(lane) {
     setClass(mute, 'muted', l.muted);
     setClass(slider, 'off', l.muted);
     if (document.activeElement !== slider) slider.value = String(Math.round(l.volume * 100));
-    slider.title = `Traffic ${lane} volume ${Math.round(l.volume * 100)} %${l.muted ? ' (muted)' : ''}`;
+    slider.title = `Traffic ${lane} volume ${slider.value} %${l.muted ? ' (muted)' : ''}`;
   });
   return { el: h('span', { class: 'lane-audio' }, mute, slider), stop };
 }
@@ -494,8 +495,8 @@ function createRow() {
   return el;
 }
 
-// The recording's player: a button until it is played, then the browser's controls (kept while
-// the list is redrawn); a button per bookmark plays from it; on the card, its lock.
+// The recording's player: a button until it is played, then its player (audio/recording.js, kept
+// while the list is redrawn); a button per bookmark plays from it; on the card, its lock.
 function drawPlay(c, r) {
   const marks = (r && r.bookmarks) || [];
   const key = r ? `${r.id}|${marks.length}|${r.store}` : '';
@@ -507,18 +508,13 @@ function drawPlay(c, r) {
   }
   const url = `/api/v1/recordings/${r.id}.wav`;
   const play = h('button', { class: 'btn small', type: 'button', title: `Play the recording (${r.store === 'sd' ? 'SD card' : 'RAM'})` }, icon('play'), dur(r.duration_ms));
-  let audio = null;
+  let rec = null;
   const start = at => {
-    if (!audio) {
-      audio = h('audio', { controls: true, preload: 'auto', src: url });
-      play.replaceWith(audio);
+    if (!rec) {
+      rec = recordingPlayer(url);
+      play.replaceWith(rec.el);
     }
-    const go = () => {
-      if (at !== null) audio.currentTime = at;
-      audio.play().catch(() => { /* some phones need another tap */ });
-    };
-    if (at !== null && audio.readyState < 1) audio.addEventListener('loadedmetadata', go, { once: true });
-    else go();
+    rec.play(at);
   };
   play.addEventListener('click', () => start(null));
   const jumps = marks.map(b => h('button', {

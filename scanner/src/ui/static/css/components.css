@@ -229,6 +229,10 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .lane-audio .vol { width: 76px; }
 .lane-audio .vol.off { opacity: 0.4; }
 .btn.muted { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
+/* A recording's player (audio/recording.js): play and pause, its position and its time. */
+.rec-player { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.rec-player .seek { flex: 1 1 auto; width: 110px; min-width: 60px; accent-color: var(--voice); cursor: pointer; }
+.rec-player .rec-time { font-size: 0.84em; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ── Calls ────────────────────────────────────────────────── */
 .calls { display: grid; }
@@ -256,7 +260,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .call-row .dur { font-variant-numeric: tabular-nums; text-align: right; }
 .call-row .play { display: flex; align-items: center; gap: 8px; justify-content: flex-end; min-width: 0; }
-.call-row audio { height: 30px; width: 100%; max-width: 240px; min-width: 120px; }
+.call-row .rec-player { flex: 1 1 auto; max-width: 260px; }
 .call-row .why { font-size: 0.82em; color: var(--text-faint); font-style: italic; }
 .calls-empty { padding: 18px 16px; color: var(--text-dim); }
 .calls-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 16px 10px; }
@@ -276,7 +280,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   .call-row .c-dur { grid-area: dur; }
   .call-row .c-freq { grid-area: freq; }
   .call-row .c-play { grid-area: play; justify-content: flex-start; margin-top: 4px; }
-  .call-row audio { max-width: none; }
+  .call-row .rec-player { max-width: none; }
 }
 
 /* ── Tables ───────────────────────────────────────────────── */

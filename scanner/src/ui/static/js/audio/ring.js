@@ -11,11 +11,13 @@
 // is shared by the AudioWorklet (its source text is injected into the worklet, see sources.js, so
 // it may use no imports or globals) and the ScriptProcessor fallback. `now` is in seconds.
 //
-// Volume normalization (`norm`): the vocoder's AGC restarts at unity gain on every call and takes
-// about a second to settle, so a quiet or loud talker is heard at their own level first. The
-// leveler measures each transmission from its first 20 ms of voice (a silence of 1.5 s starts a
-// new one), follows loud peaks fast and quiet passages slowly, holds its gain through silence (no
-// noise pumping), and a soft limiter above -2 dBFS keeps boosted peaks from clipping.
+// Volume normalization (`norm`): the server's AGC starts a transmission at its radio's recent level
+// (else at unity) and settles over about a second; the leveler evens out what is left. It measures
+// each transmission from its first 20 ms of voice (a silence of 1.5 s starts a new one), follows
+// loud peaks fast and quiet passages slowly, and holds its gain through silence (no noise pumping).
+// Every stream then passes a soft knee above 0.8 (-2 dBFS) after the interpolator, so neither a
+// boosted peak nor the waveform between samples, which can rise past the samples themselves,
+// reaches full scale.
 
 export class Ring {
   constructor(base) {
@@ -84,12 +86,8 @@ export class Ring {
     }
     for (let i = 0; i < d.length; i++) {
       let v = d[i] * scale;
-      if (this.norm) {
-        // Gain ramps across the block (no zipper noise); soft knee at 0.8.
-        v *= g0 + (g1 - g0) * (i / d.length);
-        const a = Math.abs(v);
-        if (a > 0.8) v = Math.sign(v) * (0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2));
-      }
+      // Gain ramps across the block (no zipper noise).
+      if (this.norm) v *= g0 + (g1 - g0) * (i / d.length);
       this.buf[this.w] = v;
       this.pan[this.w] = pan;
       this.w = (this.w + 1) % this.N;
@@ -115,7 +113,10 @@ export class Ring {
         s0 += buf[k] * taps[t0 + j];
         s1 += buf[k] * taps[t0 + TAPS + j];
       }
-      const v = (s0 + mu * (s1 - s0)) * this.vol, p = this.pan[this.r];
+      // The soft knee above 0.8 (see the header).
+      const s = s0 + mu * (s1 - s0), a = Math.abs(s);
+      const v = (a > 0.8 ? Math.sign(s) * (0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2)) : s) * this.vol;
+      const p = this.pan[this.r];
       if (R) { if (p <= 0) L[i] += v; if (p >= 0) R[i] += v; } else L[i] += v;
       this.frac += this.ratio;
       while (this.frac >= 1) {

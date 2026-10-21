@@ -31,7 +31,7 @@ class Player {
     this.listeners = new Set();
     this.alertListeners = new Set();
     this.spn = null;
-    this.volume = 1; // linear gain, 0..2
+    this.volume = 1; // linear gain, 0..1
     this.laneVol = [1, 1];
     this.pans = [0, 0];
     this.gate = new AlertGate();
@@ -42,13 +42,13 @@ class Player {
   }
 
   setVolume(v) {
-    this.volume = Math.max(0, Math.min(2, Number(v) || 0));
+    this.volume = Math.max(0, Math.min(1, Number(v) || 0));
     if (this.gain) this.gain.gain.value = this.volume;
   }
 
-  // One lane's volume (0: Traffic 1), 0..2; 0 mutes it.
+  // One lane's volume (0: Traffic 1), 0..1; 0 mutes it.
   setLaneVolume(lane, v) {
-    this.laneVol[lane] = Math.max(0, Math.min(2, Number(v) || 0));
+    this.laneVol[lane] = Math.max(0, Math.min(1, Number(v) || 0));
     if (this.mode === 'worklet' && this.node) this.node.port.postMessage({ type: 'vol', lane, v: this.laneVol[lane] });
     if (this.spn) this.spn[lane].vol = this.laneVol[lane];
   }

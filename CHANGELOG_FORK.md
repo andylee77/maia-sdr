@@ -5,6 +5,22 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-20] 088: One volume: recordings at the header's volume, every volume to full scale
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy wanted the header's volume to be the only one, at most 100 %. Above 100 % its gain
+  lifted the mix past full scale, and he had to turn the PC down to stop the clipping. 087's
+  interpolator overshot the samples on loud peaks: 12 of 30 calls reached full scale with the
+  leveller off. Record: `doc/changes/088_one_volume.md`.
+- **UI:** the header's volume (0-100 %) sets live audio and recordings; the Traffic volumes also
+  run 0-100 %. Recordings play in `audio/recording.js` (play and pause, position, time) in place
+  of the browser's controls, so they have no volume of their own.
+- **`ring.js`:** the soft knee above 0.8 comes after the interpolator, with or without the
+  leveller. With the leveller off, no call reaches full scale; with it on, 20 of 30 calls drive
+  peaks to the knee's top (the leveller is left as it is).
+
 ## [2026-10-20] 087: Live audio through a windowed-sinc interpolator
 
 **Branch:** fishball-p25 (local)

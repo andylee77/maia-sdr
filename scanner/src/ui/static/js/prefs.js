@@ -6,7 +6,7 @@ const KEY = 'scanner.listen';
 const DEFAULTS = {
   // Listen was on: it starts again when the page loads.
   listening: false,
-  // Every lane, 0 to 2.
+  // Live audio and recordings, 0 to 1.
   volume: 1,
   // Evens out loud and quiet talkers (ring.js).
   normalize: true,
