@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-20. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** in the checkout; unit A still runs `2026-10-06-rec1` without it.
+**Status:** unit A runs the test build `2026-10-20-audio1` in RAM. A reboot returns it to the SD
+image `2026-10-06-rec1` until an image with this change is built.
 
 ## Why
 
@@ -61,7 +62,12 @@ class as source text. The 16 samples of look-ahead (2 ms) sit inside the 150 ms 
   - no underruns at 48 or 44.1 kHz;
   - about four times the old file's cost: 200-300× real time per lane on the PC.
 - `node --check` on `ring.js`, `sources.js`, `player.js` and `gate.js`; their imports are unchanged.
+- Host tests 515; ARM release build with the image's CPU flags.
 
 ## Status log
 
-- 2026-10-20: in the checkout.
+- 2026-10-20: committed (8ab7116). The test build `2026-10-20-audio1` went onto unit A at 02:00
+  UTC (binary only):
+  - live on Clay within 24 s, with control decode at 100 %;
+  - the card's 56,271 recordings indexed, and the first new one written in 11 ms;
+  - `ring.js` served byte for byte from `ui/2026-10-20-audio1.104ec311/`.
