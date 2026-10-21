@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-20. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** in the checkout.
+**Status:** unit A runs the test build `2026-10-20-audio2` in RAM. A reboot returns it to the SD
+image `2026-10-06-rec1`.
 
 ## Why
 
@@ -67,4 +68,10 @@ scale.
 
 ## Status log
 
-- 2026-10-20: in the checkout.
+- 2026-10-20: committed (4582aa6). The test build `2026-10-20-audio2` went onto unit A (binary
+  only):
+  - live on Clay, with control decode at 100 %;
+  - the UI files served byte for byte;
+  - in headless Chrome against A, a Now call's recording and an Activity dispatch ("call #151740,
+    4.1 s") play in the new player, with no `audio[controls]`, and the header at 0 silences the
+    recording.
