@@ -1,6 +1,8 @@
 // One live audio stream's jitter buffer: an 8 kHz ring resampled to the output rate by a slow
-// PLL on ring fill (target 150 ms). An empty ring re-primes at once: the next transmission (often
-// < 1 s after the last) waits for 150 ms of audio instead of playing each 20 ms frame as it lands.
+// PLL on ring fill (target 150 ms), through a windowed-sinc interpolator (32 taps, cut off at
+// 3.76 kHz) so the voice band leaves no images above 4 kHz. An empty ring re-primes at once: the
+// next transmission (often < 1 s after the last) waits for 150 ms of audio instead of playing each
+// 20 ms frame as it lands.
 //
 // Each sample keeps the pan of its talkgroup (-1 left, 0 both, +1 right), so a talkgroup change
 // inside the buffer switches speaker exactly. One ring per lane, mixed into the output at the
@@ -26,6 +28,33 @@ export class Ring {
     this.priming = true; this.underruns = 0; this.dryAt = -1;
     this.norm = false; this.lvl = 0; this.gain = 1; this.lastVoice = -10;
     this.vol = 1;
+    this.TAPS = 32; this.PHASES = 128;
+    this.taps = Ring.interpolator(this.TAPS, this.PHASES);
+  }
+
+  // The interpolator's taps for PHASES + 1 positions between two samples (row p at p / PHASES),
+  // each over samples r - TAPS/2 + 1 .. r + TAPS/2: a Kaiser-windowed sinc (beta 7) cut off at
+  // 0.47 of the 8 kHz rate, every row summing to one.
+  static interpolator(taps, phases) {
+    const half = taps / 2, fc = 0.47, beta = 7;
+    const i0 = x => {
+      let s = 1, t = 1;
+      for (let k = 1; k < 25; k++) { t *= (x / (2 * k)) ** 2; s += t; }
+      return s;
+    };
+    const rows = new Float32Array((phases + 1) * taps);
+    for (let p = 0; p <= phases; p++) {
+      const row = rows.subarray(p * taps, (p + 1) * taps);
+      let sum = 0;
+      for (let j = 0; j < taps; j++) {
+        const t = j - half + 1 - p / phases, a = 2 * Math.PI * fc * t;
+        const w = i0(beta * Math.sqrt(Math.max(0, 1 - (t / half) ** 2))) / i0(beta);
+        row[j] = 2 * fc * (a === 0 ? 1 : Math.sin(a) / a) * w;
+        sum += row[j];
+      }
+      for (let j = 0; j < taps; j++) row[j] /= sum;
+    }
+    return rows;
   }
 
   // Gain for the next block from its RMS (see the header).
@@ -75,10 +104,18 @@ export class Ring {
     let dev = this.KP * (this.avail - this.TARGET);
     dev = Math.max(-this.MAXDEV, Math.min(this.MAXDEV, dev));
     this.ratio = this.base * (1 + dev);
+    const { N, TAPS, PHASES, buf, taps } = this;
     for (let i = 0; i < L.length; i++) {
       if (this.avail <= 1) { this.dryAt = now; this.priming = true; return; }
-      const a = this.buf[this.r], b = this.buf[(this.r + 1) % this.N];
-      const v = (a + (b - a) * this.frac) * this.vol, p = this.pan[this.r];
+      // Samples past the newest one count as zero.
+      const n = Math.min(TAPS, this.avail + TAPS / 2 - 1);
+      const q = this.frac * PHASES, ph = q | 0, mu = q - ph;
+      let s0 = 0, s1 = 0;
+      for (let j = 0, k = (this.r - TAPS / 2 + 1 + N) % N, t0 = ph * TAPS; j < n; j++, k = (k + 1) % N) {
+        s0 += buf[k] * taps[t0 + j];
+        s1 += buf[k] * taps[t0 + TAPS + j];
+      }
+      const v = (s0 + mu * (s1 - s0)) * this.vol, p = this.pan[this.r];
       if (R) { if (p <= 0) L[i] += v; if (p >= 0) R[i] += v; } else L[i] += v;
       this.frac += this.ratio;
       while (this.frac >= 1) {

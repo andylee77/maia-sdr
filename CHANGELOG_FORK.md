@@ -5,6 +5,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-20] 087: Live audio through a windowed-sinc interpolator
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Clay dispatch sounded "tingy" live. Same IMBE frames through our vocoder and SDRTrunk
+  agree within ±0.5 dB from 150 Hz to 3.4 kHz (231 calls), and the consoles' thin sound comes and
+  goes by day in the frames they send. The live player's linear-interpolation resampler, though,
+  left images above 4 kHz at −19.7 dB to the speech band and drooped 4.3 dB at 3.4 kHz. Record:
+  `doc/changes/087_live_audio_interpolator.md`.
+- **Player:** `ring.js` resamples through a 32-tap Kaiser-windowed sinc cut off at 3.76 kHz (a
+  table of 128 positions between samples). Images fall to −61 dB, and the voice band is flat to
+  3.2 kHz (−0.33 dB at 3.4 kHz). Recordings and the server are unchanged.
+
 ## [2026-10-06] 086: Recordings in dated folders, kept by age, alert calls locked
 
 **Branch:** fishball-p25 (local)
