@@ -2,7 +2,8 @@
 
 **Date:** 2026-11-09. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed; the test build `2026-11-09-dates1` is not on a unit yet.
+**Status:** unit A runs the test build `2026-11-09-dates2` in RAM. A reboot returns it to the SD
+image `2026-10-06-rec1`.
 
 ## Why
 
@@ -34,6 +35,9 @@ All in `scanner/src/ui/static/js/views/activity.js`.
   a reload (Show more, or the automatic one).
 - **The automatic reload waits while a recording plays,** so the list does not move under it. It
   looks again every 2 s.
+- **A load asked for takes the waiting reload's place.** Before, a reload waiting on the 7 or
+  30 days' pace (2 or 5 minutes) stayed in force after a change to 24 h, and nothing reloaded
+  until it ran out.
 
 ## Measured
 
@@ -75,4 +79,13 @@ A radio or talkgroup can only be picked from the 25 busiest of the period. Clay'
 
 ## Status log
 
-- 2026-11-09: committed.
+- 2026-11-09: committed (2620d55), and `2026-11-09-dates1` went onto unit A (binary only). The
+  check run against A itself showed the waiting reload outliving a change of period; fixed as
+  `2026-11-09-dates2`, which replaced it on A:
+  - live on Clay within 40 s, control decode 100 %, 100,264 recordings indexed;
+  - `activity_dates.mjs` with A serving both the page and the history: the 13 steps above pass;
+  - a recording played from the newest alert (looped, muted) for 45 s on the 24 h period: no
+    reload was asked for, though one is due every 30 s; 6 s after it was paused the page had
+    reloaded once, and the row was still in it.
+- The first run of that step played the looped recording aloud on Andy's PC for 45 s (headless
+  Chrome plays through the speakers). The check mutes it now.

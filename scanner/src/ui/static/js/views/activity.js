@@ -480,9 +480,13 @@ export function mount(host) {
 
   let seq = 0;
   let loadedAt = 0;
+  // The automatic reload that is waiting, if any: a load asked for sooner takes its place.
+  let later = null;
   async function load() {
     const my = ++seq;
     loadedAt = Date.now();
+    clearTimeout(later);
+    later = null;
     renderFilter();
     try {
       const sites = await api.activity('sites');
@@ -524,7 +528,6 @@ export function mount(host) {
   // while a recording plays, so the list does not move under it. Picked dates are not reloaded.
   const playing = () => [...newestRows.querySelectorAll('audio')].some(a => !a.paused);
   let seenCalls = null;
-  let later = null;
   const reload = () => {
     if (playing()) {
       later = setTimeout(reload, PLAYING_CHECK_MS);
