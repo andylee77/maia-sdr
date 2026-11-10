@@ -1,12 +1,13 @@
 // Activity: the per-site history: who talks, on which talkgroups, how much, what is encrypted,
 // per hour or per day, and the alert tones heard (consoles' warbles and beeps, two-tone pages).
+// It shows the last 24 hours, 7 or 30 days, or the hours between two dates.
 //
 // Two kinds of time are shown apart. Voice is decoded on the voice channel (followed calls) and
 // is measured. Grant time is all that is known of a call that was not followed (encrypted, or no
 // lane free): from the grant to its last update on the control channel. It includes hang time and
 // any other radio keying up on the grant, and is credited to the radio granted.
 
-import { h, setText, card, toast, table, icon } from '../dom.js';
+import { h, setText, card, toast, table, icon, keyedList } from '../dom.js';
 import { api } from '../api.js';
 import { recordingPlayer } from '../audio/recording.js';
 import { packetDataCard } from './packet_data.js';
@@ -18,6 +19,14 @@ const PERIODS = [
   { key: '7d', label: '7 days', hours: 168, bucket: 'hour', refresh: 120000 },
   { key: '30d', label: '30 days', hours: 720, bucket: 'day', refresh: 300000 },
 ];
+const HOUR = 3600000;
+// Picked dates up to this long are drawn per hour, longer ones per day.
+const HOURLY_MAX = 168 * HOUR;
+// A list shows its newest rows: this many, twice as many each time more are asked for, at most LIST_MAX.
+const LIST_ROWS = 50;
+const LIST_MAX = 800;
+// How often a reload held back by a playing recording looks again.
+const PLAYING_CHECK_MS = 2000;
 const ALERT_NOTE = 'Found in the decoded audio of followed calls. The vocoder rebuilds a tone to within about 1 % of what '
   + 'was sent, so the same tones read a little differently from call to call. The dispatch is what the alert announced: '
   + 'the next transmission of the same radio on the talkgroup with 4 s of voice, each of its key-ups within 10 s of its last '
@@ -84,6 +93,49 @@ function playAlert(a) {
 
 function encBadge(n) {
   return n ? h('span', { class: 'badge enc', text: String(n) }) : '0';
+}
+
+// A time as a date-and-hour input's value, and back, in this browser's time zone. The history
+// counts by the hour, so a picked range runs on whole hours: minutes are dropped.
+function hourValue(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:00`;
+}
+
+function hourOf(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setMinutes(0, 0, 0);
+  return d.getTime();
+}
+
+// An alert's row: the same alert with the same dispatch keeps its row, and the recording it plays.
+function alertKey(a) {
+  const d = a.dispatch;
+  return [a.site, a.call_id, a.at_ms, a.recorded ? 1 : 0, d ? `${d.call_id}:${d.recorded ? 1 : 0}` : ''].join('|');
+}
+
+function alertRow(a) {
+  return h('tr', null,
+    h('td', { text: stamp(a.at_ms) }),
+    h('td', { text: tgLabel(a.tg, a.tg_name) }),
+    h('td', { text: unitLabel(a.source, a.source_name) }),
+    h('td', null, h('span', { class: 'badge alert', text: kindLabel(a.kind) })),
+    h('td', { text: tonesLabel(a.tones_hz) }),
+    h('td', { text: a.dispatch ? dur(a.dispatch.voice_ms) : DASH, title: a.dispatch ? `Call #${a.dispatch.call_id}` : 'No transmission of 3 s from the same radio followed, each key-up within 10 s' }),
+    h('td', null, playAlert(a)));
+}
+
+// Under a list of the newest rows: how many it shows, and a button for more. `total` is null
+// when only the rows read are known; nothing is shown under a list that has them all.
+function moreRow(shown, total, rows, what, onMore) {
+  if (total === null ? shown < rows : shown >= total) return null;
+  const count = total === null ? `The newest ${num(shown)} ${what}.` : `The newest ${num(shown)} of ${num(total)} ${what}.`;
+  if (rows >= LIST_MAX) return h('p', { class: 'card-note', text: `${count} Pick dates to see the others.` });
+  const btn = h('button', { class: 'btn small', type: 'button', text: 'Show more' });
+  btn.addEventListener('click', () => onMore(Math.min(LIST_MAX, rows * 2)));
+  return h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { class: 'dim', text: count }), btn);
 }
 
 // Stacked bars: voice, clear grant-only, encrypted grant-only, per bucket.
@@ -177,27 +229,61 @@ function chart() {
 }
 
 export function mount(host) {
-  const st = { period: PERIODS[0], site: null, filter: null, detail: null };
+  // `range` ({ from, to }, unix ms on whole hours) is the picked dates; without it the page shows
+  // the last `period`. `alertRows` and `callRows` are how many rows the two lists ask for.
+  const st = { period: PERIODS[0], range: null, site: null, filter: null, detail: null, alertRows: LIST_ROWS, callRows: LIST_ROWS };
   const tz = -new Date().getTimezoneOffset();
+  const firstRows = () => { st.alertRows = LIST_ROWS; st.callRows = LIST_ROWS; };
 
   // Controls.
   const ctl = card('Activity');
   const siteSel = h('select', { 'aria-label': 'Site' });
   const chips = PERIODS.map(p => {
     const b = h('button', { type: 'button', class: 'chip', text: p.label });
-    b.addEventListener('click', () => { st.period = p; load(); });
+    b.addEventListener('click', () => { st.period = p; st.range = null; firstRows(); load(); });
     return [p, b];
   });
+  const datesChip = h('button', {
+    type: 'button', class: 'chip', text: 'Dates',
+    title: 'Show the hours between two dates. Picked dates stay as they are: they are not reloaded as calls close.',
+  });
+  const fromIn = h('input', { class: 'input', type: 'datetime-local', step: '3600', 'aria-label': 'From' });
+  const toIn = h('input', { class: 'input', type: 'datetime-local', step: '3600', 'aria-label': 'To' });
+  const dates = h('div', { class: 'row', style: { gap: '6px' }, hidden: true },
+    h('span', { class: 'dim', text: 'From' }), fromIn, h('span', { class: 'dim', text: 'to' }), toIn);
   const csv = h('a', { class: 'btn small', text: 'Export CSV', href: '#' });
   const filterNote = h('span', { class: 'row', style: { gap: '6px' } });
   const store = h('p', { class: 'card-note' });
   ctl.body.append(
     h('div', { class: 'row', style: { gap: '10px', flexWrap: 'wrap' } },
       h('label', { class: 'row', style: { gap: '6px' } }, h('span', { text: 'Site' }), siteSel),
-      h('div', { class: 'row', style: { gap: '6px' } }, ...chips.map(c => c[1])),
-      csv, filterNote),
+      h('div', { class: 'row', style: { gap: '6px' } }, ...chips.map(c => c[1]), datesChip),
+      dates, csv, filterNote),
     store);
-  siteSel.addEventListener('change', () => { st.site = siteSel.value; st.filter = null; st.detail = null; load(); });
+  siteSel.addEventListener('change', () => { st.site = siteSel.value; st.filter = null; st.detail = null; firstRows(); load(); });
+  // The dates start as the period shown, ending with the hour now running.
+  datesChip.addEventListener('click', () => {
+    if (st.range) return;
+    const to = hourOf(Date.now()) + HOUR;
+    st.range = { from: to - st.period.hours * HOUR, to };
+    firstRows();
+    load();
+  });
+  const pickDates = () => {
+    const from = hourOf(fromIn.value);
+    const to = hourOf(toIn.value);
+    // A date still being typed has no value yet.
+    if (from === null || to === null) return;
+    if (from >= to) {
+      toast('The dates end before they start.', true);
+      return;
+    }
+    st.range = { from, to };
+    firstRows();
+    load();
+  };
+  fromIn.addEventListener('change', pickDates);
+  toIn.addEventListener('change', pickDates);
 
   // Summary + chart.
   const sum = card('Summary');
@@ -218,7 +304,15 @@ export function mount(host) {
     h('div', { style: { marginTop: '14px' } }, plot.el),
     h('p', { class: 'card-note', text: GRANT_NOTE }));
 
+  // The alerts: their groups, then the newest. A row stays while its alert is listed, so a
+  // recording played from it plays on through a reload.
   const alertCard = card('Alert tones');
+  const alertGroups = h('div');
+  const newest = table(['Time', 'Talkgroup', 'From', 'Alert', 'Tones', 'Dispatch', ''], []);
+  const newestRows = newest.querySelector('tbody');
+  const newestBox = h('div', { hidden: true }, h('h3', { text: 'Newest' }), newest);
+  const alertMore = h('div');
+  alertCard.body.append(alertGroups, newestBox, alertMore, h('p', { class: 'card-note', text: ALERT_NOTE }));
   const tgCard = card('Talkgroups');
   const radioCard = card('Radios');
   const detailCard = card('Details');
@@ -230,7 +324,7 @@ export function mount(host) {
 
   // `st.site` is a site id, or `system:<id>` for every site of a system.
   function query(extra = {}) {
-    const q = new URLSearchParams({ hours: String(st.period.hours) });
+    const q = new URLSearchParams(st.range ? { from: String(st.range.from), to: String(st.range.to) } : { hours: String(st.period.hours) });
     if (st.site && st.site.startsWith('system:')) q.set('system', st.site.slice(7));
     else if (st.site) q.set('site', st.site);
     for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== null) q.set(k, String(v));
@@ -243,7 +337,14 @@ export function mount(host) {
   function setFilter(f) {
     st.filter = f;
     st.detail = f;
+    firstRows();
     load();
+  }
+  // The chart's buckets: the period's, or by the length of the picked dates, with days starting
+  // at the midnight of the dates' first day.
+  function buckets() {
+    if (!st.range) return { bucket: st.period.bucket, tz };
+    return { bucket: st.range.to - st.range.from <= HOURLY_MAX ? 'hour' : 'day', tz: -new Date(st.range.from).getTimezoneOffset() };
   }
 
   function renderSites(d) {
@@ -328,7 +429,7 @@ export function mount(host) {
   }
 
   function renderAlerts(d) {
-    const groups = d.groups.length
+    alertGroups.replaceChildren(d.groups.length
       ? table(['Alert', 'Tones', 'Times', 'Sent by', 'Talkgroups', 'First', 'Last'], d.groups.map(g => h('tr', null,
         h('td', null, h('span', { class: 'badge alert', text: kindLabel(g.kind) })),
         h('td', { text: tonesLabel(g.tones_hz) }),
@@ -337,21 +438,16 @@ export function mount(host) {
         h('td', { text: g.talkgroups.join(', ') }),
         h('td', { text: when(g.first_ms) }),
         h('td', { text: when(g.last_ms) }))))
-      : h('p', { class: 'card-note', text: 'No alert tones in this period.' });
-    const newest = d.items.length
-      ? table(['Time', 'Talkgroup', 'From', 'Alert', 'Tones', 'Dispatch', ''], d.items.map(a => h('tr', null,
-        h('td', { text: stamp(a.at_ms) }),
-        h('td', { text: tgLabel(a.tg, a.tg_name) }),
-        h('td', { text: unitLabel(a.source, a.source_name) }),
-        h('td', null, h('span', { class: 'badge alert', text: kindLabel(a.kind) })),
-        h('td', { text: tonesLabel(a.tones_hz) }),
-        h('td', { text: a.dispatch ? dur(a.dispatch.voice_ms) : DASH, title: a.dispatch ? `Call #${a.dispatch.call_id}` : 'No transmission of 3 s from the same radio followed, each key-up within 10 s' }),
-        h('td', null, playAlert(a)))))
-      : null;
-    alertCard.body.replaceChildren(groups, ...(newest ? [h('h3', { text: 'Newest' }), newest] : []), h('p', { class: 'card-note', text: ALERT_NOTE }));
+      : h('p', { class: 'card-note', text: 'No alert tones in this period.' }));
+    keyedList(newestRows, d.items, alertKey, alertRow, () => {});
+    newestBox.hidden = !d.items.length;
+    const total = d.groups.reduce((n, g) => n + g.count, 0);
+    const more = moreRow(d.items.length, total, st.alertRows, 'alerts', rows => { st.alertRows = rows; load(); });
+    alertMore.replaceChildren(...(more ? [more] : []));
   }
 
   function renderCalls(items) {
+    const more = moreRow(items.length, null, st.callRows, 'calls', rows => { st.callRows = rows; load(); });
     callsCard.body.replaceChildren(items.length
       ? table(['Start', 'Talkgroup', 'Radios', 'Voice', 'Grant', ''], items.map(c => h('tr', null,
         h('td', { text: when(c.started_unix_ms) }),
@@ -361,11 +457,17 @@ export function mount(host) {
         h('td', { text: dur(c.grant_ms) }),
         h('td', null, c.encrypted ? h('span', { class: 'badge enc', text: 'enc' })
           : (c.not_followed ? h('span', { class: 'badge hang', text: c.not_followed }) : '')))))
-      : h('p', { class: 'card-note', text: 'No calls in this period.' }));
+      : h('p', { class: 'card-note', text: 'No calls in this period.' }), ...(more ? [more] : []));
   }
 
   function renderFilter() {
-    chips.forEach(([p, b]) => b.classList.toggle('on', p === st.period));
+    chips.forEach(([p, b]) => b.classList.toggle('on', !st.range && p === st.period));
+    datesChip.classList.toggle('on', !!st.range);
+    dates.hidden = !st.range;
+    if (st.range) {
+      fromIn.value = hourValue(st.range.from);
+      toIn.value = hourValue(st.range.to);
+    }
     filterNote.replaceChildren();
     if (st.filter) {
       const clear = h('button', { type: 'button', class: 'btn small', text: 'Show all' });
@@ -394,13 +496,13 @@ export function mount(host) {
       const site = st.site && !st.site.startsWith('system:') ? st.site : null;
       const [s, series, tgs, radios, calls, det, data, alerts] = await Promise.all([
         api.activity('summary', query()),
-        api.activity('series', query({ bucket: st.period.bucket, tz, ...f })),
+        api.activity('series', query({ ...buckets(), ...f })),
         api.activity('talkgroups', query({ limit: 25 })),
         api.activity('radios', query({ limit: 25 })),
-        api.activity('calls', query({ limit: 50, ...f })),
+        api.activity('calls', query({ limit: st.callRows, ...f })),
         detail,
         api.data(site ? new URLSearchParams({ site }).toString() : ''),
-        api.activity('alerts', query({ limit: 50, ...f })),
+        api.activity('alerts', query({ limit: st.alertRows, ...f })),
       ]);
       if (my !== seq) return;
       renderSummary(s.summary);
@@ -418,20 +520,26 @@ export function mount(host) {
 
   load();
   // The history changes as calls close (the store has them pushed): reload then, at most as
-  // often as the period's `refresh`; a close inside it reloads when it is over.
+  // often as the period's `refresh`; a close inside it reloads when it is over. A reload waits
+  // while a recording plays, so the list does not move under it. Picked dates are not reloaded.
+  const playing = () => [...newestRows.querySelectorAll('audio')].some(a => !a.paused);
   let seenCalls = null;
   let later = null;
+  const reload = () => {
+    if (playing()) {
+      later = setTimeout(reload, PLAYING_CHECK_MS);
+      return;
+    }
+    later = null;
+    if (!st.range) load();
+  };
   return {
     update(s) {
       if (!s.calls || s.calls.recent === seenCalls) return;
       const first = seenCalls === null;
       seenCalls = s.calls.recent;
-      if (first || later) return;
-      const wait = Math.max(0, loadedAt + st.period.refresh - Date.now());
-      later = setTimeout(() => {
-        later = null;
-        load();
-      }, wait);
+      if (first || later || st.range) return;
+      later = setTimeout(reload, Math.max(0, loadedAt + st.period.refresh - Date.now()));
     },
     unmount() {
       clearTimeout(later);

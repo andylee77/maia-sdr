@@ -5,6 +5,21 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-09] 089: Activity: dates, more rows, and a playing recording left alone
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy could not review past alerts or calls: Activity showed the last 24 hours, 7 or
+  30 days, and its lists the newest 50 rows, while the history keeps 365 days. A reload also
+  stopped the recording he was playing. Record: `doc/changes/089_activity_dates.md`.
+- **Dates:** a fourth chip with a From and a To on whole hours. The summary, chart, talkgroups,
+  radios, alerts, calls and CSV export cover the picked dates (the API already took `from` and
+  `to`). Up to 7 days are drawn per hour, longer dates per day. Picked dates are not reloaded.
+- **Lists:** "Show more" under the newest alerts and the recent calls (twice as many rows each
+  press, up to 800). An alert's row is kept while its alert is listed, so its recording plays on
+  through a reload, and the automatic reload waits while a recording plays.
+
 ## [2026-10-20] 088: One volume: recordings at the header's volume, every volume to full scale
 
 **Branch:** fishball-p25 (local)
