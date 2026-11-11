@@ -47,8 +47,8 @@ export const MODULES = [
     icon: 'tower',
     pages: [
       { key: 'now', label: 'Now', view: now, fill: true },
-      { key: 'activity', label: 'Activity', view: activity },
-      { key: 'systems', label: 'Systems', view: systems },
+      { key: 'activity', label: 'Activity', view: activity, fill: true },
+      { key: 'systems', label: 'Systems', view: systems, fill: true },
     ],
     line: scannerLine,
     // The module is doing its work (the header's dot).

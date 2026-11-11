@@ -1,11 +1,11 @@
-// The scan card (Systems page): pick the bands and settings; follow the scan as /ws/live reports
-// it (the band, the window, what it is listening to); then a card per found system to fill in
-// and add. Found sites already configured are left out, and a card goes once its sites are
-// added; a system already configured keeps its own name and details.
+// The scan for systems (Systems page): pick the bands and settings; follow the scan as the
+// radio pushes it (the band, the window, what it is listening to); then a card per found system
+// to fill in and add. Found sites already configured are left out, and a card goes once its sites
+// are added; a system already configured keeps its own name and details.
 
-import { h, card, toast } from '../dom.js';
+import { h, toast } from '../dom.js';
 import { mhz, num, pct } from '../format.js';
-import { api, wsUrl } from '../api.js';
+import { api } from '../api.js';
 import { refresh } from '../store.js';
 import { protocol } from '../protocols.js';
 import { systemHead, siteTable, inline } from './cards.js';
@@ -13,6 +13,7 @@ import { systemHead, siteTable, inline } from './cards.js';
 const RUNNING = ['sweeping', 'probing', 'restoring'];
 const MHZ0 = hz => (hz / 1e6).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const range = ([low, high]) => `${MHZ0(low)}–${MHZ0(high)} MHz`;
+const channels = n => `${num(n)} control channel${n === 1 ? '' : 's'}`;
 
 // A found site's reception.
 const reception = f => `${pct(f.ok_pct)} · ${num(f.msgs_per_s, 1)} msg/s${f.modulation ? ` · ${f.modulation.toUpperCase()}` : ''}${f.via_neighbour ? ' · from a neighbour' : ''}`;
@@ -28,22 +29,31 @@ function groups(s) {
   return [...out.values()];
 }
 
-export function scanCard(onAdded) {
-  const c = card('Find systems');
-  let ws = null;
-  let retry = null;
-  let closed = false;
+export const scanRunning = scan => !!scan && RUNNING.includes(scan.state);
+
+// The scan in a line: what it is doing, or what the last one found.
+export function scanLine(scan) {
+  if (!scan || scan.state === 'idle') return 'Scan the bands for control channels';
+  if (scan.state === 'restoring') return 'Handing the radio back';
+  if (scanRunning(scan)) return scan.band ? `Scanning · window ${scan.step} of ${scan.steps}` : `Scanning · carrier ${scan.probed + 1} of ${scan.to_probe}`;
+  const found = `${channels(scan.sites.length)} found`;
+  return scan.state === 'done' ? `Last scan: ${found}` : scan.state === 'cancelled' ? `Cancelled: ${found}` : `Failed: ${found}`;
+}
+
+// `el` to show and `update(store)` at each push; `onAdded` when a found system's sites were added.
+export function scanPane(onAdded) {
+  const el = h('div', { class: 'scan-pane' }, h('p', { class: 'dim', text: 'Asking the radio what it can scan…' }));
   // The scan whose cards are on screen (`id:state`): drawn once, so what is typed stays.
   let shown = null;
   let configured = [];
   let options = null;
+  // The store's parts last drawn, and the store itself for the draw once the options are read.
+  let store = null;
+  let seenScan = null;
+  let seenSystems = null;
 
   // The setup: bands, settings, and what they come to.
   function setup() {
-    if (!options) {
-      c.body.replaceChildren(h('p', { class: 'dim', text: "The radio did not say what it can scan; reload the page." }));
-      return;
-    }
     const d = options.defaults;
     const bands = options.bands.map(b => {
       const tick = h('input', { type: 'checkbox' });
@@ -84,8 +94,8 @@ export function scanCard(onAdded) {
     }
     go.addEventListener('click', async () => {
       try {
-        const number = (el, what, lo, hi) => {
-          const v = Number(el.value);
+        const number = (input, what, lo, hi) => {
+          const v = Number(input.value);
           if (!(v >= lo && v <= hi)) throw new Error(`${what}: ${lo} to ${hi}`);
           return v;
         };
@@ -104,7 +114,8 @@ export function scanCard(onAdded) {
       }
     });
     sum();
-    c.body.replaceChildren(h('div', { class: 'stack' },
+    el.replaceChildren(h('div', { class: 'stack' },
+      h('h2', { text: 'Find systems' }),
       h('div', { class: 'chips' }, ...bands.map(b => b.el),
         h('span', { class: 'chip' }, h('span', { class: 'dim', text: 'and' }), from, h('span', { class: 'dim', text: 'to' }), to, h('span', { class: 'dim', text: 'MHz' }))),
       h('div', { class: 'scan-settings' },
@@ -120,7 +131,7 @@ export function scanCard(onAdded) {
   function progress(s) {
     const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
     cancel.addEventListener('click', () => api.scanCancel().catch(e => toast(e.message, true)));
-    const named = s.band && options && options.bands.find(b => b.low_hz === s.band[0] && b.high_hz === s.band[1]);
+    const named = s.band && options.bands.find(b => b.low_hz === s.band[0] && b.high_hz === s.band[1]);
     const where = s.band ? `${named ? `${named.name} · ` : ''}${range(s.band)} · window ${s.step} of ${s.steps}` : `Window ${s.step} of ${s.steps} done`;
     let doing;
     if (s.state === 'restoring') doing = 'Handing the radio back to the live site';
@@ -128,7 +139,8 @@ export function scanCard(onAdded) {
     else if (s.probing_hz && s.state === 'probing') doing = `Listening to ${mhz(s.probing_hz)} for a control channel (carrier ${s.probed + 1} of ${s.to_probe})`;
     else doing = `Reading the spectrum around ${mhz(s.lo_hz)}`;
     const found = groups(s);
-    c.body.replaceChildren(h('div', { class: 'stack' },
+    el.replaceChildren(h('div', { class: 'stack' },
+      h('h2', { text: 'Finding systems' }),
       h('div', null, h('strong', { text: where })),
       h('div', { class: 'dim', text: doing }),
       h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
@@ -151,11 +163,11 @@ export function scanCard(onAdded) {
     const p = protocol(f.protocol);
     const near = hz => Math.abs(hz - f.freq_hz) <= 3000;
     const key = p.siteKey(f.identity);
-    for (const sys of configured.filter(s => s.protocol === f.protocol)) {
-      for (const s of sys.sites) {
-        if (near(s.control.freq_hz)) return { site: s, moved: false };
-        const same = key && p.sameSystem(sys.identity || {}, f.identity) && p.siteKey(s.identity || {}) === key;
-        if (same || (s.control.alternates_hz || []).some(near)) return { site: s, moved: true };
+    for (const sys of configured.filter(x => x.protocol === f.protocol)) {
+      for (const site of sys.sites) {
+        if (near(site.control.freq_hz)) return { site, moved: false };
+        const same = key && p.sameSystem(sys.identity || {}, f.identity) && p.siteKey(site.identity || {}) === key;
+        if (same || (site.control.alternates_hz || []).some(near)) return { site, moved: true };
       }
     }
     return null;
@@ -214,7 +226,8 @@ export function scanCard(onAdded) {
         add.disabled = true;
         const r = await api.scanAdd({ ...sys, sites });
         toast(`${sys.label.trim()}: ${r.sites.length} site${r.sites.length === 1 ? '' : 's'} added`);
-        await loadConfigured();
+        // The systems as they are now, without waiting for the push.
+        configured = await api.systems();
         prune();
         await refresh();
         onAdded();
@@ -237,13 +250,15 @@ export function scanCard(onAdded) {
   function results(s) {
     const again = h('button', { class: 'btn', type: 'button', text: 'New scan' });
     again.addEventListener('click', setup);
-    const summary = `${s.state === 'done' ? 'Found' : s.state === 'cancelled' ? 'Cancelled; found' : 'Failed; found'} ${s.sites.length} control channel${s.sites.length === 1 ? '' : 's'}`
+    const summary = `${s.state === 'done' ? 'Found' : s.state === 'cancelled' ? 'Cancelled; found' : 'Failed; found'} ${channels(s.sites.length)}`
       + ` (and ${s.traffic.length} traffic channels, ${s.other.length} other carriers) in ${s.bands.map(range).join(', ')}.` + (s.error ? ` ${s.error}` : '');
     cards = groups(s).filter(g => g.sites.some(toAdd)).map(foundCard);
     cardList = h('div', { class: 'stack' }, ...cards.map(x => x.el));
     if (s.sites.length && !cards.length) cardList.append(h('p', { class: 'dim', text: 'Every system found is added.' }));
     const none = s.sites.length ? [] : [h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' })];
-    c.body.replaceChildren(h('div', { class: 'stack' }, h('p', { class: 'dim', text: summary }), cardList, ...none, h('div', { class: 'row' }, again)));
+    el.replaceChildren(h('div', { class: 'stack' },
+      h('div', { class: 'row' }, h('h2', { text: 'Found' }), h('div', { class: 'spacer' }), again),
+      h('p', { class: 'dim', text: summary }), cardList, ...none));
   }
 
   function show(s) {
@@ -259,35 +274,31 @@ export function scanCard(onAdded) {
     }
   }
 
-  async function loadConfigured() {
-    try {
-      configured = await api.systems();
-    } catch { /* every find shows as new */ }
+  function draw() {
+    if (!store || !options) return;
+    if (store.systems && store.systems !== seenSystems) {
+      seenSystems = store.systems;
+      configured = store.systems;
+      prune();
+    }
+    if (store.scan && store.scan !== seenScan) {
+      seenScan = store.scan;
+      show(store.scan);
+    }
   }
 
-  function connect(backoff = 1000) {
-    if (closed) return;
-    ws = new WebSocket(wsUrl('/ws/live'));
-    ws.onopen = () => { backoff = 1000; };
-    ws.onmessage = e => {
-      const m = JSON.parse(e.data);
-      if (m.type === 'snapshot' || m.type === 'scan') show(m.scan);
-      else if (m.type === 'changed' && m.what === 'systems') loadConfigured().then(prune);
-    };
-    ws.onclose = () => {
-      if (!closed) retry = setTimeout(() => connect(Math.min(backoff * 2, 30000)), backoff);
-    };
-  }
+  api.scanOptions().then(o => {
+    options = o;
+    draw();
+  }).catch(e => {
+    el.replaceChildren(h('p', { class: 'dim', text: `The radio did not say what it can scan (${e.message}); reload the page.` }));
+  });
 
-  Promise.all([loadConfigured(), api.scanOptions().then(o => { options = o; })])
-    .catch(e => toast(e.message, true))
-    .finally(() => connect());
   return {
-    el: c.el,
-    stop() {
-      closed = true;
-      clearTimeout(retry);
-      if (ws) ws.close();
+    el,
+    update(s) {
+      store = s;
+      draw();
     },
   };
 }

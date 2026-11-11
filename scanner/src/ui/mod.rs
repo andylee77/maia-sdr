@@ -52,6 +52,7 @@ const ASSETS: &[Asset] = assets![
     "js/aliases.js",
     "js/views/now.js",
     "js/views/now_calls.js",
+    "js/views/call_rows.js",
     "js/views/talkgroups.js",
     "js/views/systems.js",
     "js/views/settings.js",

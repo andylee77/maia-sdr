@@ -1,8 +1,8 @@
-// Packet data on the Activity page, from /api/v1/data: the data channel, totals by kind, the radios
+// Activity's packet data, from /api/v1/data: the data channel, totals by kind, the radios
 // with packet data and the recent packets. Network to radio only: radios transmit on the uplink,
 // which the receiver does not cover. Kept in memory since the last start.
 
-import { h, card, table } from '../dom.js';
+import { h, table } from '../dom.js';
 import { num, unitLabel, DASH, dayTime } from '../format.js';
 
 // What a data record is, in words.
@@ -31,8 +31,8 @@ function recordKind(r) {
   return kindName(r.format);
 }
 
-export function packetDataCard() {
-  const c = card('Packet data');
+export function packetDataPane() {
+  const el = h('div');
 
   function update(d) {
     const body = [];
@@ -65,8 +65,8 @@ export function packetDataCard() {
         h('td', null, r.crc_ok === false ? h('span', { class: 'badge bad', text: 'CRC' })
           : r.bad_blocks ? h('span', { class: 'badge hang', text: r.bad_blocks + ' bad' }) : '')))));
     }
-    c.body.replaceChildren(...body);
+    el.replaceChildren(...body);
   }
 
-  return { el: c.el, update };
+  return { el, update };
 }

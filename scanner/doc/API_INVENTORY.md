@@ -60,8 +60,9 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/activity/radio/{unit}` | A radio's talkgroups and affiliation/registration events | UI Activity | No `limit` |
 | `GET /api/v1/activity/talkgroup/{tg}` | A talkgroup's radios and encryption history | UI Activity | — |
 | `GET /api/v1/activity/series` | Calls and time per hour or day (`tz`, `tg`, `unit`) | UI Activity chart | — |
-| `GET /api/v1/activity/calls` | Calls newest first in `/calls`' shape with names; `format=csv` streams the history rows as a file | UI Activity | — |
-| `GET /api/v1/data` | Packet data per site (or all): counts, radios with names, recent PDUs with IP decode | UI Activity card | Memory only: lost on restart. No `system` parameter |
+| `GET /api/v1/activity/calls` | Calls newest first in `/calls`' shape with names, recordings and alert tones; `format=csv` streams the history rows as a file | UI Activity (its calls; an alert's call, read by its grant time); UI Now (the calls older than the pushed ones) | No call by its id: see "What a code review may change" |
+| `GET /api/v1/activity/alerts` | The alert tones heard in followed calls: grouped by kind and tones, and the newest each with its call and the call that carried what it announced | UI Activity's alerts | The dispatch has its call's id and grant time, not the call |
+| `GET /api/v1/data` | Packet data per site (or all): counts, radios with names, recent PDUs with IP decode | UI Activity's packet data | Memory only: lost on restart. No `system` parameter |
 
 ## Radio settings
 
@@ -84,14 +85,14 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/systems/{id}` | One system | Nothing | — |
 | `PUT /api/v1/systems/{id}` | Edit a system: name, identity, details | UI Systems | — |
 | `GET`/`PUT /api/v1/systems/{id}/aliases`, `PUT …/listening`, `PUT …/talkgroups/{tg}` | Aliases (names, priorities, recording, speakers), listening settings, one talkgroup's controls | UI Now's talkgroup bank (`…/talkgroups/{tg}`: followed or not, speaker, priority, name); nothing uses the other two yet | No SDRTrunk playlist import or export (UI_BRIEF). `…/talkgroups/{tg}`: see "What a code review may change" |
-| `POST /api/v1/systems/{id}/radioreference`, `…/preview` | Import a RadioReference CSV of talkgroups or sites | UI Systems | — |
+| `POST /api/v1/systems/{id}/radioreference`, `…/preview` | Import a RadioReference CSV of talkgroups or sites | Nothing yet | No page offers the import |
 | `PUT /api/v1/systems/{system}/sites/{site}` | Edit a site; the live one goes live again | UI Systems | The edit is saved before re-activation, so a failed re-activation still keeps it |
-| `DELETE /api/v1/systems/{id}`, `DELETE …/sites/{site}` | Remove a system (with its sites and aliases) or a site; not the live one | Nothing yet | No create by hand: sites come only from a scan |
+| `DELETE /api/v1/systems/{id}`, `DELETE …/sites/{site}` | Remove a system (with its sites and aliases) or a site; not the live one | UI Systems | No create by hand: sites come only from a scan |
 | `GET /api/v1/sites` | Every site, flattened, live one marked | Nothing | Repeats `/systems`; no single-site GET |
 | `POST /api/v1/sites/{id}/activate`, `…/stop` | Make a site live; stop it | UI Systems; `scanner_live_check.py` | — |
 | `GET /api/v1/sites/{id}/learned` | Band plan, grants per channel, encrypted talkgroups, neighbours, secondary control channels, data channel | UI Systems | Neighbours keep 4 of the 10 decoded fields (no LRA, service class, conventional, failure, valid, active) |
-| `GET /api/v1/sites/{id}/plan`, `POST …/recentre` | The receive window against the site's channels; move it now | UI Systems | `{id}` must be the live site |
-| `GET`/`POST /api/v1/scan`, `…/options`, `…/cancel`, `…/add` | Find systems on the air; add the ticked ones | UI Systems scan card | A DMR site added by a scan has no LCN plan. Results are in memory only |
+| `GET /api/v1/sites/{id}/plan`, `POST …/recentre` | The receive window against the site's channels; move it now | UI Diagnostics' receive window | `{id}` must be the live site |
+| `GET`/`POST /api/v1/scan`, `…/options`, `…/cancel`, `…/add` | Find systems on the air; add the ticked ones | UI Systems (the scan's state itself is pushed on `/ws/live`) | A DMR site added by a scan has no LCN plan. Results are in memory only |
 
 ## Mode and ATSC
 
@@ -192,9 +193,10 @@ The list below follows them.
 
 ### What a code review may change
 
-Written with changes 090 to 092 (2026-11-10), which built the module rail, the new Now page,
-the packet data switch, TV's Watch page and the kept TV scan on these routes. Each row is something the pages lean
-on that a review of the API is likely to move, with what would have to follow in the UI.
+Written with changes 090 to 093 (2026-11-10), which built the module rail, the new Now page,
+the packet data switch, TV's Watch page, the kept TV scan and the new Activity and Systems pages
+on these routes. Each row is something the pages lean on that a review of the API is likely to
+move, with what would have to follow in the UI.
 
 | Route or field | What may change | What follows in the UI |
 |----------------|-----------------|------------------------|
@@ -214,6 +216,10 @@ on that a review of the API is likely to move, with what would have to follow in
 | The kept TV scan (092) | The last finished scan comes back after a restart as `state: done` with nothing to tell it from one run since, and without its spectra (`…/scan/channel/{n}` is a 404). A review may mark it (`kept: true`), keep the spectra on the card, or let a scan of some channels add to the kept list where it now replaces it | Channels reads the 404 as "not kept across a restart"; Watch shows the scan's date in the programme's Read row |
 | `PUT /api/v1/hold` with `lane` | The site's hold and a lane's share a route and two status fields (`hold`, `lane_holds`) | Now's traffic cards |
 | `recording.every_call` | No route or page sets it apart from the whole recording setting, so the per-talkgroup `record` flag has no control in the bank | When it gets one, the bank gains a Record control (`record` is already in `PUT …/talkgroups/{tg}`) |
+| `GET /api/v1/activity/calls`: no call by its id (093) | An alert names its call and its dispatch's by id and grant time. To show one in the picked call's panel, Activity asks for the talkgroup's calls granted in that one millisecond (`site`, `tg`, `from` the grant time, `to` one more, `limit=8`) and takes the one with the id. A review may add a `call` filter, or put the call in the alert | `pickAlert` in `views/activity.js` |
+| `GET /api/v1/activity/summary` ignores `tg` and `unit` (093) | Narrowed to a talkgroup or a radio, Activity adds up the chart's buckets (`…/series` takes both) for the calls, the encrypted ones and the three times; the followed count, the estimate and the counts of talkgroups and radios are shown for a whole site only. The summary counts from the start of the window's first hour, a call listing from `from`, so the count beside the list can pass the list's rows | `renderSummary` in `views/activity.js` |
+| `GET /api/v1/activity/talkgroups`, `…/radios` `limit` (093) | Activity lists the 200 busiest and reaches any other by its number (`…/talkgroup/{tg}`, `…/radio/{unit}`), which answer for an id never heard with empty lists rather than a 404. A review may add a search by name or number | `renderWho` in `views/activity.js` |
+| `/ws/live` `scan` and the snapshot's `scan` (093) | The scan for systems comes whole at each change, with every site found so far. The Systems page takes it from the store; it no longer opens a second socket | `store.scan`; `scanPane` in `views/scan.js` |
 
 ### For the UI session
 

@@ -131,6 +131,10 @@ that apart yet), an alias's colour and group, and range aliases as rows of their
 
 ### Systems
 
+Done in change 093 as far as the routes go: the scan and the configured systems in a list on the
+left, the picked one on the right (a system edited in place, or the scan). Still to come: adding
+by hand, the SDRTrunk playlist, and a page for the RadioReference import.
+
 - Systems, then their sites:
   - edit;
   - stop the live site;
@@ -158,7 +162,9 @@ Per system, SDRTrunk's alias list as a table:
 
 ### Activity, Diagnostics, Settings
 
-- **Activity:** the history views.
+- **Activity:** the history views. Done in change 093, filling the screen: who talks (the
+  talkgroups or the radios, one picked narrowing the page to it), the totals with the airtime
+  chart, the calls, the alerts or the packet data, and the picked call with its recording.
 - **Diagnostics:** the receivers, the event log and the spectrum. Eye and IQ plots come later
   for every received signal.
 - **Settings:** the radio settings, and the configuration (export, import, factory reset).

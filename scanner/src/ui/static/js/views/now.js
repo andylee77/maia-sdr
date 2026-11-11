@@ -2,7 +2,7 @@
 // (talkgroups.js). In the middle the site strip (the system and the site to listen to, picked
 // from two lists, and whether its control channel decodes), the two traffic channels side by
 // side (lane 1 on the left speaker, lane 2 on the right, each with this browser's volume and
-// mute for it) and the site's calls. On the right the picked call (now_calls.js). The control
+// mute for it) and the site's calls. On the right the picked call (call_rows.js). The control
 // channel's counters are on Diagnostics. Everything comes from the store, which the radio pushes.
 
 import { h, toast, setText, setClass, icon } from '../dom.js';
@@ -14,7 +14,8 @@ import { player } from '../audio/player.js';
 import { getPrefs, setLane, onPrefs } from '../prefs.js';
 import { tgLabel, nameOf } from '../aliases.js';
 import { talkgroupBank, knownTalkgroups, heardVersion } from './talkgroups.js';
-import { callsPane, alertLabel, boardNow, channel, SIDE } from './now_calls.js';
+import { callsPane, boardNow } from './now_calls.js';
+import { alertLabel, channel, SIDE } from './call_rows.js';
 
 // A control channel with no message for this long is shown as silent.
 const SILENT_MS = 5000;

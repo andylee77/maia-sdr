@@ -39,6 +39,8 @@ const ICONS = {
   close: [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
   up: [['path', { d: 'M6 15l6-6 6 6' }]],
   down: [['path', { d: 'M6 9l6 6 6-6' }]],
+  back: [['path', { d: 'M15 6l-6 6 6 6' }]],
+  search: [['circle', { cx: '11', cy: '11', r: '6.5' }], ['path', { d: 'M16 16l4.5 4.5' }]],
   fullscreen: [['path', { d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' }]],
   tower: [['path', { d: 'M12 13v8M7.5 5.5a6.4 6.4 0 000 9M16.5 5.5a6.4 6.4 0 010 9M4.6 3a10.2 10.2 0 000 14M19.4 3a10.2 10.2 0 010 14' }], ['circle', { cx: '12', cy: '10', r: '2' }]],
   tv: [['rect', { x: '3', y: '6', width: '18', height: '12', rx: '2' }], ['path', { d: 'M8 21h8M9 3l3 3 3-3' }]],

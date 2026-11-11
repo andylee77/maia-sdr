@@ -118,6 +118,7 @@ table.sites td.end .dim { font-size: 0.9em; }
 table.sites tbody tr:last-child td { border-bottom: 0; }
 table.sites td.end { text-align: right; white-space: nowrap; }
 table.sites td.end > * + * { margin-left: 6px; }
+table.sites td.end > * { vertical-align: middle; }
 table.sites .list { cursor: text; border: 1px solid transparent; border-radius: 4px; padding: 1px 4px; display: inline-block; min-width: 4ch; }
 table.sites .list:hover { border-color: var(--line-strong); }
 table.sites .list .heard { color: var(--text-faint); font-style: italic; }
@@ -213,11 +214,11 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .now { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
 .now-site { order: 1; }
 .now-traffic { order: 2; display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.now-detail { order: 3; }
+.call-detail { order: 3; }
 .now-bank { order: 4; }
 .now-calls { order: 5; }
 .now-bank .card-body { max-height: 34vh; overflow-y: auto; }
-.now-detail.empty { display: none; }
+.call-detail.empty { display: none; }
 @media (max-width: 860px) {
   .now-traffic { grid-template-columns: minmax(0, 1fr); }
 }
@@ -231,11 +232,11 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   .now-site { grid-area: site; }
   .now-traffic { grid-area: traffic; }
   .now-calls { grid-area: calls; }
-  .now-bank, .now-detail { grid-area: side; }
-  .now-detail { z-index: 1; }
+  .now-bank, .call-detail { grid-area: side; }
+  .call-detail { z-index: 1; }
   .now-bank, .now-calls { min-height: 0; display: flex; flex-direction: column; }
   .now-bank .card-body, .now-calls .card-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
-  .now-detail { min-height: 0; overflow-y: auto; }
+  .call-detail { min-height: 0; overflow-y: auto; }
 }
 @media (min-width: 1360px) and (min-height: 600px) {
   .now {
@@ -243,8 +244,8 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
     grid-template-areas: "bank site detail" "bank traffic detail" "bank calls detail";
   }
   .now-bank { grid-area: bank; }
-  .now-detail { grid-area: detail; }
-  .now-detail.empty { display: block; }
+  .call-detail { grid-area: detail; }
+  .call-detail.empty { display: block; }
 }
 
 /* The site strip. */
@@ -352,8 +353,8 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   .call-row .c-src, .call-row .c-freq { display: none; }
 }
 
-/* The picked call. */
-.now-detail { padding: 16px 18px; }
+/* The picked call (Now's and Activity's). */
+.call-detail { padding: 16px 18px; }
 .detail-empty { color: var(--text-dim); }
 .detail-body { display: grid; gap: 14px; }
 .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
@@ -364,7 +365,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   width: 40px; height: 40px; min-height: 40px; flex: none; border-radius: 50%;
   background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
 }
-.now-detail .row:empty, .detail-alerts:empty { display: none; }
+.call-detail .row:empty, .detail-alerts:empty { display: none; }
 .detail-alerts { display: grid; gap: 6px; }
 .detail-alert {
   display: flex; align-items: center; gap: 8px;
@@ -372,9 +373,134 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   background: color-mix(in srgb, var(--warn) 15%, var(--bg-raised)); color: var(--warn);
   font-size: 0.92em;
 }
-.now-detail .btn.mark { color: var(--warn); }
-.now-detail .btn.locked { color: var(--accent); }
-.now-detail .kv { font-size: 0.9em; }
+.call-detail .btn.mark { color: var(--warn); }
+.call-detail .btn.locked { color: var(--accent); }
+.call-detail .kv { font-size: 0.9em; }
+
+/* ── Activity: the bar (site and period), who talks, the totals with the chart, the lists
+   (calls, alerts, packet data) and the picked call. One column on a narrow or short screen, where
+   the page scrolls. On a wider one the page fills the screen and each pane scrolls on its own:
+   who talks has a column beside the lists, and the picked call covers it until it is closed.
+   From 1600 px (the lists need more width than Now's) who talks is on the left and the picked
+   call keeps the right. ── */
+.activity { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.act-bar { order: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; }
+.act-sum { order: 2; }
+.act-who { order: 4; }
+.act-list { order: 5; }
+.act-bar select.pick { font-weight: 600; max-width: 24em; }
+.act-bar .input[type="datetime-local"] { min-height: 28px; padding: 2px 8px; }
+.act-kept { color: var(--text-faint); font-size: 0.86em; }
+.act-kept.warn { color: var(--warn); }
+.act-who .card-body { max-height: 46vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.act-who .card-head { padding-bottom: 10px; margin-bottom: 0; }
+.act-who .card-head .input { width: 9.5em; min-height: 28px; padding: 3px 9px; }
+.act-list .card-head { flex-wrap: wrap; padding-bottom: 10px; margin-bottom: 0; }
+.act-list .card-body { border-top: 1px solid var(--line); }
+.act-list .card-note { margin: 0; padding: 12px 16px 0; }
+.act-pad { padding: 12px 16px; }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .activity {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "bar bar" "sum side" "list side";
+  }
+  .act-bar { grid-area: bar; }
+  .act-sum { grid-area: sum; }
+  .act-list { grid-area: list; }
+  .act-who, .activity > .call-detail { grid-area: side; }
+  .activity > .call-detail.empty { display: none; }
+  .act-who, .act-list { min-height: 0; display: flex; flex-direction: column; }
+  .act-who .card-body, .act-list .card-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+}
+@media (min-width: 1600px) and (min-height: 600px) {
+  .activity {
+    grid-template-columns: 340px minmax(0, 1fr) 340px;
+    grid-template-areas: "bar bar bar" "who sum detail" "who list detail";
+  }
+  .act-who { grid-area: who; }
+  .activity > .call-detail { grid-area: detail; }
+  .activity > .call-detail.empty { display: block; }
+}
+
+/* The totals and the airtime chart. */
+.act-sum { display: grid; gap: 10px; padding: 12px 16px; }
+.act-sum .card-head { margin-bottom: 0; }
+.act-metrics { display: grid; gap: 8px 12px; align-items: end; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
+.act-metrics .m-value { white-space: nowrap; }
+.act-plot { width: 100%; height: 150px; display: block; }
+@media (max-height: 900px) {
+  .act-plot { height: 104px; }
+}
+.act-under { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-top: 6px; font-size: 0.84em; }
+.act-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.act-key { display: inline-flex; align-items: center; gap: 6px; }
+.act-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.act-readout { margin-left: auto; color: var(--text-dim); min-height: 1.45em; white-space: pre-wrap; text-align: right; }
+.act-sum .card-note { margin: 0; }
+
+/* Who talks: a talkgroup or a radio a row, its time on the air as a bar against the busiest. */
+.who-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 1px 10px;
+  width: 100%; padding: 8px 14px 9px;
+  border: 0; border-top: 1px solid var(--line);
+  background: transparent; text-align: left; cursor: pointer;
+}
+.who-row:first-child { border-top: 0; }
+.who-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.who-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.who-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-time { font-family: var(--mono); font-size: 0.9em; color: var(--text-dim); white-space: nowrap; }
+.who-row .sub { grid-column: 1 / -1; font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-bar { grid-column: 1 / -1; display: flex; height: 4px; margin-top: 5px; border-radius: 2px; overflow: hidden; background: var(--bg-control); }
+.who-bar span { height: 100%; }
+.who-bar .v { background: var(--voice); }
+.who-bar .g { background: var(--acquire); }
+.who-bar .e { background: var(--danger); }
+.who-bar .m { background: var(--idle); }
+.who-scope { min-width: 0; }
+.who-title { font-size: 1.15em; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+.who-part {
+  padding: 12px 14px 6px; border-top: 1px solid var(--line);
+  font-size: 0.78em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+}
+.act-who .kv + .who-part, .act-who .who-part:first-child { border-top: 0; }
+
+/* Activity's rows carry the day, and an alert's row the alert in place of the radio. */
+.activity .call-row { grid-template-columns: 8.4em minmax(0, 1.5fr) minmax(0, 1fr) 9.5em 8.5em; }
+.activity .call-row.alert-row { grid-template-columns: 8.4em minmax(0, 1.4fr) minmax(0, 1.2fr) 6em 8.5em; }
+.alert-row .c-src .badge { vertical-align: middle; }
+@media (max-width: 860px) {
+  .activity .call-row, .activity .call-row.alert-row { grid-template-columns: 8.4em minmax(0, 1fr) auto; }
+}
+
+/* ── Systems: the scan and the configured systems as a list, the picked one beside it. One
+   column on a narrow or short screen; on a wider one the page fills the screen and each side
+   scrolls on its own. ── */
+.systems { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.sys-list .card-head { padding-bottom: 10px; margin-bottom: 0; }
+.sys-list .card-body { max-height: 40vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.sys-pane { padding: 16px 18px; }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .systems { min-height: 0; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .sys-list { min-height: 0; display: flex; flex-direction: column; }
+  .sys-list .card-body { flex: 1; min-height: 0; max-height: none; }
+  .sys-pane { min-height: 0; overflow-y: auto; }
+}
+.sys-pick {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1px 10px;
+  width: 100%; min-height: 54px; padding: 7px 14px;
+  border: 0; border-top: 1px solid var(--line);
+  background: transparent; text-align: left; cursor: pointer;
+}
+.sys-pick:first-child { border-top: 0; }
+.sys-pick:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.sys-pick.sel { background: var(--bg-control); }
+.sys-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sys-pick .name { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-pick .sub { grid-column: 1 / -1; font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-pane h2 { font-size: 1.06em; }
 
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }

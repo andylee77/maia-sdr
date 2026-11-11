@@ -5,6 +5,25 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-10] 093: Scanner: the Activity and Systems pages in the rail's layout
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the Scanner module's other two pages after Now and TV. Activity was
+  one 1,280 px column 7,200 px long with no way to play a call, and Systems showed one system
+  at a time from a pull-down under an always-open scan form. Record:
+  `doc/changes/093_activity_systems.md`.
+- **Activity** fills the screen: who talks on the left (the 200 busiest talkgroups or radios
+  with their airtime as bars; any other reached by its number), the totals and the chart in the
+  middle with the calls, the alerts or the packet data under them, and the picked call on the
+  right. A talkgroup or radio picked narrows the whole page to it. Calls and alerts play in the
+  picked call's panel, so the lists reload under a playing recording.
+- **Systems** lists the scan and the systems on the left and shows the picked one on the right.
+  The scan's progress comes on the page's one socket.
+- **Shared:** `views/call_rows.js` holds the call row and the picked call's panel for Now and
+  Activity.
+
 ## [2026-11-10] 092: The TV scan is kept across a restart
 
 **Branch:** fishball-p25 (local)
