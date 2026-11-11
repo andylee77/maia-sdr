@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::audio::live::Audio;
+use crate::services::access::Access;
 use crate::services::atsc::sweep::Atsc;
 use crate::services::burst::BurstCheck;
 use crate::services::clock::Clock;
@@ -29,6 +30,8 @@ use crate::trunking::site::LiveSite;
 use crate::trunking::trunk::Trunking;
 
 pub struct AppState {
+    /// Who may reach the radio.
+    pub access: Access,
     pub paths: Paths,
     pub config: Arc<Mutex<Config>>,
     pub tuner: Arc<RadioTuner>,

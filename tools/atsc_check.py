@@ -27,6 +27,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import scanner_token
+
 ROOT = Path(__file__).resolve().parent.parent
 # The US plan: (first channel, last channel, lower edge of the first, Hz).
 BANDS = [(2, 4, 54_000_000), (5, 6, 76_000_000), (7, 13, 174_000_000), (14, 36, 470_000_000)]
@@ -72,6 +74,7 @@ def main() -> int:
     ap.add_argument("--keep-mode", action="store_true", help="leave the unit in ATSC mode")
     ap.add_argument("--no-names", action="store_true", help="find the channels only, no station names")
     args = ap.parse_args()
+    scanner_token.install(args.host)
     unit = f"http://{args.host}:8080"
     run = ROOT / "runs" / "atsc" / time.strftime("%Y%m%d_%H%M%S")
     run.mkdir(parents=True, exist_ok=True)

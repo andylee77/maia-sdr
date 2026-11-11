@@ -30,6 +30,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import scanner_token
+
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
        "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10"]
 VLC = "C:/Program Files/VideoLAN/VLC/vlc.exe"
@@ -275,6 +277,7 @@ def main() -> int:
     w.add_argument("--ssh", action="store_true")
     w.add_argument("--vlc", action="store_true")
     args = ap.parse_args()
+    scanner_token.install(args.host)
 
     run = Path(args.out) / f"{args.host}_{args.mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     run.mkdir(parents=True, exist_ok=True)

@@ -751,6 +751,16 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .files-line { margin: 0; flex: 1 1 14em; overflow-wrap: anywhere; }
 a.btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 
+/* ── Access (the radio's Settings): its state, then its parts under a heading each. ── */
+.access-state { margin: 0 0 12px; }
+.access-state.warn { color: var(--warn); }
+.access-part { margin: 18px 0 6px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.78em; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.access-part + .set-row { border-top: 0; padding-top: 0; }
+.access-made { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: var(--radius-sm); display: grid; gap: 8px; }
+.access-made .card-note { margin: 0; }
+.access-token { width: 100%; font-size: 0.86em; }
+.access-names { min-width: 16em; }
+
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
 .table th { text-align: left; font-weight: 550; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--line); }

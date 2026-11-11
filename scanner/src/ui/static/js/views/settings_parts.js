@@ -51,10 +51,11 @@ export function section(title) {
   };
 }
 
-// A settings page in two columns. `read()` gives what its cards show; `build(data)` gives the
-// cards, [left, right], each { el, show(data), stop? }. `link` is a line over them saying where
-// the other settings are.
-export function settingsPage(el, { read, build, link }) {
+// A settings page in two columns. `read()` gives what its cards show; `build(data, reload)`
+// gives the cards, [left, right], each { el, show(data), stop? } (`reload()` reads the page
+// again). `link` is a line over them saying where the other settings are. `rev(store)` is what
+// moves when the page's settings changed on the radio: the radio's settings unless said.
+export function settingsPage(el, { read, build, link, rev = s => s.radioRev }) {
   const left = h('div', { class: 'stack' });
   const right = h('div', { class: 'stack' });
   el.append(h('div', { class: 'settings' }, link ? h('p', { class: 'card-note set-where' }, ...link) : null, left, right));
@@ -76,7 +77,7 @@ export function settingsPage(el, { read, build, link }) {
       const data = await read();
       if (gone) return;
       if (!cards) {
-        cards = build(data);
+        cards = build(data, load);
         left.append(...cards[0].map(c => c.el));
         right.append(...cards[1].map(c => c.el));
       }
@@ -95,9 +96,10 @@ export function settingsPage(el, { read, build, link }) {
 
   return {
     update(s) {
-      if (seen === null) seen = s.radioRev;
-      else if (s.radioRev !== seen) {
-        seen = s.radioRev;
+      const now = rev(s);
+      if (seen === null) seen = now;
+      else if (now !== seen) {
+        seen = now;
         load();
       }
     },

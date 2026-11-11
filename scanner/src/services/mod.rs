@@ -3,6 +3,7 @@
 //! board's health, the unit's mode with ATSC TV's channel finder, and the radio core's burst
 //! timing check.
 
+pub mod access;
 pub mod atsc;
 pub mod burst;
 pub mod clock;

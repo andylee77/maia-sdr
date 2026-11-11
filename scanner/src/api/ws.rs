@@ -18,12 +18,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::api::access::Shown;
 use crate::api::v1;
 use crate::api::v1::calls::{attach, named_alerts, NamedCall, Names};
 use crate::api::v1::status::status;
@@ -44,9 +45,9 @@ pub struct AudioParams {
     pub v: Option<u8>,
 }
 
-pub async fn audio(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Query(p): Query<AudioParams>) -> impl IntoResponse {
+pub async fn audio(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>, Query(p): Query<AudioParams>) -> impl IntoResponse {
     let tagged = p.v == Some(2);
-    ws.on_upgrade(move |socket| stream(socket, s, tagged))
+    ws.on_upgrade(move |socket| stream(socket, s, tagged, shown))
 }
 
 struct Listener(Arc<AppState>);
@@ -57,10 +58,11 @@ impl Drop for Listener {
     }
 }
 
-async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool) {
+async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool, shown: Shown) {
     s.audio.listeners.fetch_add(1, Ordering::Relaxed);
     let _listener = Listener(s.clone());
     let mut rx = s.audio.subscribe();
+    let mut access = s.access.changes();
     let (mut out, mut inbound) = socket.split();
     let mut announced: [Option<(u32, u64, Side)>; 2] = [None; 2];
     // Each lane's last alert sent: (call, seq).
@@ -106,21 +108,33 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool) {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                 Some(Ok(_)) => {}
             },
+            // Signed out, or its token revoked: no more audio.
+            changed = access.changed() => {
+                if changed.is_err() || !shown.still_known(&s.access) {
+                    break;
+                }
+            },
         }
     }
 }
 
 /// `/ws/events`: a text frame per notice (`{"type":"call_opened",...}`), for pages to refresh
 /// at once; `{"type":"lag"}` when some were missed.
-pub async fn events(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| notices(socket, s))
+pub async fn events(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| notices(socket, s, shown))
 }
 
-async fn notices(socket: WebSocket, s: Arc<AppState>) {
+async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
     let mut rx = s.notices.subscribe();
+    let mut access = s.access.changes();
     let (mut out, mut inbound) = socket.split();
     loop {
         tokio::select! {
+            changed = access.changed() => {
+                if changed.is_err() || !shown.still_known(&s.access) {
+                    break;
+                }
+            },
             n = rx.recv() => {
                 let text = match n {
                     Ok(n) => serde_json::to_string(&n).unwrap_or_default(),
@@ -149,8 +163,8 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
 /// `window`, `crystal`, `atsc_live` and `files` messages.
-pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| live_feed(socket, s))
+pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| live_feed(socket, s, shown))
 }
 
 /// How often what a page asked for is looked at.
@@ -350,8 +364,9 @@ fn named_call(s: &AppState, names: &Names, id: u64) -> Option<NamedCall> {
     Some(c)
 }
 
-async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
+async fn live_feed(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
     let mut notices = s.notices.subscribe();
+    let mut access = s.access.changes();
     let mut live = s.live.subscribe();
     let (mut out, mut inbound) = socket.split();
     let mut names = Names::load(&s).await;
@@ -377,6 +392,12 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
         let mut traffic_now = false;
         let mut talkgroups_now = false;
         tokio::select! {
+            // Signed out, or its token revoked: the page learns nothing more.
+            changed = access.changed() => {
+                if changed.is_err() || !shown.still_known(&s.access) {
+                    break;
+                }
+            }
             _ = feed.tick(), if wants.any() => msgs.extend(feeds(&s, &mut wants, &mut sent).await),
             _ = tick.tick() => {
                 msgs.push(message("status", "status", status(&s)));

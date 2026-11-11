@@ -93,7 +93,7 @@ What each goal needs from each layer, and where that layer stands.
 | A system or a site added by hand | **decided**, not built | G1 |
 | Settings and Diagnostics split: the whole radio, and a part per module | **exists** (100: a module's own are tabs of it, the rail's two are the radio's) | G1, G3 |
 | Files: what is on the card, to download | **exists** (101), the radio's own, in the rail | G1 |
-| Login, and who is signed in | not built (Q8) | G1 |
+| Login, and who is signed in | **exists** (102): the sign-in page, the header, the Access card in the radio's Settings | G1 |
 | The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
 | Data's module (Scan, Devices, Captures), a waterfall | **decided** (`DATA_MODE.md` §7), not built | G3 |
 | ADS-B's module | **open** (Q11) | G3 |
@@ -126,33 +126,34 @@ On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
 
 ### Security
 
-What a client on the network can do today, from the code and unit A's open ports:
+What a client on the network can do, from the code and unit A's open ports (102 built the
+guard; a unit is open until its administrator's password is set, and unit A's is not set yet):
 
-| Door | Today |
-|------|-------|
-| HTTP on 8080 | Open to anyone who can reach the unit. No login |
-| HTTPS on 8443 | The same API under a self-made certificate, which names 192.168.x.1 and not the unit's Ethernet address, so a browser warns twice |
-| Reads | All open: the live audio, every recording, the history, the whole configuration, the control channel's IQ |
-| Writes | Refused only when a browser says the page came from another host (`Origin` against `Host`, `api/mod.rs`). A client that sends no `Origin` (curl, a script) may write anything, a factory reset included. A page whose name was re-pointed at the unit (DNS rebinding) passes, because `Host` is not checked against the unit's own names |
-| `/ws/live`, `/ws/audio`, `/ws/events` | No check at all. A web page on any site can open them in the user's browser and read the state and the audio |
-| libiio (`iiod`, port 30431) | Open: anyone can retune the AD9361 under the scanner |
-| SSH (dropbear, port 22) | Root, by password or key |
-| The legacy `/api/*` routes for the bench | Open, as the rest |
+| Door | Open unit (no password) | With a password (102) |
+|------|-------------------------|-----------------------|
+| HTTP on 8080 | Anyone who can reach the unit | Every route asks who the client is. Still plain HTTP: a password crosses the network in the clear until Q9's redirect is built |
+| HTTPS on 8443 | The same API under a self-made certificate, which names 192.168.x.1 and not the unit's Ethernet address, so a browser warns twice | The same guard; the session's cookie is sent over TLS only |
+| Reads | All open: the live audio, every recording, the history, the whole configuration, the control channel's IQ | A listener's session or token, or the administrator's |
+| Writes | Anyone but a page of another origin | The administrator's session or token |
+| `/ws/live`, `/ws/audio`, `/ws/events` | Anyone but a page of another origin (since 102, with or without a password) | A session or a token at the upgrade; closed when it is revoked |
+| A name pointed at the unit by another's DNS | Refused (since 102): the unit answers to its addresses, its host name and names its administrator adds | The same |
+| libiio (`iiod`, port 30431) | Open: anyone can retune the AD9361 under the scanner | The same: Q10 is not built |
+| SSH (dropbear, port 22) | Root, by password or key | The same: Andy's to say |
+| The legacy `/api/*` routes for the bench | Open | Behind the guard like the rest |
 
-What G1 and G2 need (the depth is Q7 to Q10):
+What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
 
-- a password set at first load, kept as a slow salted hash; a session cookie for the browser; a
-  token for scripts, the bench, agents and the panel;
-- the same check on every route and at each socket's upgrade, with the page's origin checked at
-  the upgrade and `Host` against the unit's own names;
-- a certificate remade when the unit's addresses change, from the unit's own CA
-  (`S50p25-httpd-certificates` in tezuka_fw), so HTTPS can be the one way in. HTTPS also gives
-  the browser the better audio path (the worklet needs a secure page);
-- the unit's other doors settled with it: `iiod`, SSH, the legacy routes;
-- a way back in when the password is lost that needs the unit in hand (the card or the serial
-  console), and what a factory reset does with the password;
-- the tools that drive the API on tokens: `fbench` and the board agent, `tools/*.py`,
-  `runs/ui_check/*.mjs`.
+- **done (102):** a password kept as a slow salted hash; a session cookie for the browser; a
+  token for scripts, the bench, agents and the panel; the same check on every route and at each
+  socket's upgrade, with the page's origin checked at the upgrade and `Host` against the unit's
+  own names; a way back in when the password is lost that needs the unit in hand (a file on the
+  card); a factory reset leaves the passwords, as it leaves the certificates; the tools that
+  drive the API send a token (`tools/*.py`, the bench's HTTP client, `runs/ui_check/*.mjs`);
+- **to do:** a certificate remade when the unit's addresses change, from the unit's own CA
+  (`S50p25-httpd-certificates` in tezuka_fw), so HTTPS can be the one way in (Q9). HTTPS also
+  gives the browser the better audio path (the worklet needs a secure page);
+- **to do:** `iiod` off unless switched on (Q10); SSH, which is Andy's to say; the bench off the
+  legacy routes so that they can go.
 
 ### Hardware controls
 
@@ -248,7 +249,7 @@ are used, not its code.
 | **Settings** | The radio's own: the clock, the crystal, the configuration as a file | **exists** (100). Storage, the network and access come with steps 5 and 6 |
 | | Each module's, among its tabs: the scanner's gain, window presets, call timings, history, recording and packet data. A card saves its own part and follows a change made elsewhere | **exists** (100). TV has no setting yet; Data's come with Data |
 | **Files** | What is on the card, and taking it away: the recordings as a ZIP archive of a selection or of a day, the history's database, the TV recordings | **exists** (101) |
-| **Access** (new) | The password, tokens, who is signed in, the certificate | Q7 to Q10 |
+| **Access** | The passwords, the tokens for tools, the browsers signed in, the names the unit answers to: a card of the radio's Settings | **exists** (102). The certificate and `iiod`'s switch are to come |
 
 ### The handheld
 
@@ -270,12 +271,13 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
-| 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
+| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token. To do: HTTPS as the one way in and its certificate (Q9), `iiod`'s switch (Q10) | tezuka_fw's certificate script; SSH is Andy's to say; the bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
 
-Until step 6, what step 5 adds is as open as single recordings are now.
+What step 5 added is behind 102's guard like everything else: on a unit with a password an
+archive needs a listener's session or token.
 
 Not tied to a step, waiting on Andy:
 
@@ -341,14 +343,16 @@ Each has a recommendation first. Short answers are enough.
 - **Q7. Who must be kept out?** Recommended: the unit is a LAN appliance (other people and
   devices on the network, and web pages in a browser, are kept out; reaching it from outside is
   through a VPN of yours). The alternative, a unit that can face the Internet, asks much more.
-- **Q8. One password, or two levels?** Recommended: an administrator (everything) and a listener
-  (see and hear, change nothing), plus tokens for tools and the panel.
-- **Q9. Does plain HTTP stay?** Recommended: once a password is set, port 8080 only sends the
-  browser to HTTPS, and the certificate is remade when the unit's address changes. The browser
-  warns once unless the unit's CA is installed on the PC.
-- **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Recommended: off
-  unless a switch in Settings turns it on (SDR++ or SDRTrunk using the board as a tuner need it).
-  SSH: keys only, or as it is?
+- **Q8. One password, or two levels?** Answered 2026-11-11 ("Yes, as recommended"): an
+  administrator (everything) and a listener (see and hear, change nothing), plus tokens for
+  tools and the panel. Built in 102.
+- **Q9. Does plain HTTP stay?** Answered 2026-11-11 ("Yes, as recommended"): once a password is
+  set, port 8080 only sends the browser to HTTPS, and the certificate is remade when the unit's
+  address changes. The browser warns once unless the unit's CA is installed on the PC. Not built
+  yet.
+- **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Answered 2026-11-11
+  ("Yes, as recommended"): off unless a switch in Settings turns it on (SDR++ or SDRTrunk using
+  the board as a tuner need it). Not built yet. **Still open:** SSH, keys only or as it is?
 
 **Modes (steps 7 and 8)**
 
@@ -437,7 +441,8 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
   listing reads the whole list of recordings for each answer; a TV recording's file has no byte
   ranges.
 
-**Step 6, Access:** the origin check covers writes over HTTP and, since 095, HTTPS; not the three
+**Step 6, Access** (102 closed the sockets to pages of another origin and to a name re-pointed
+at the unit; the bounds are left): the origin check covers writes over HTTP and, since 095, HTTPS; not the three
 sockets, and not a name re-pointed at the unit. The missing bounds (a recordings list without a
 limit, a stalled CSV reader, sockets without a send timeout or a cap) go with it.
 

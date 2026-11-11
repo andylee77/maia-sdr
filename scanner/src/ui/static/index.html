@@ -22,6 +22,7 @@
     <h1 class="topbar-title" id="module-title"></h1>
     <nav class="tabs" id="tabs" aria-label="Pages"></nav>
     <div class="topbar-right">
+      <span class="account" id="account" hidden><span class="dim" id="account-level"></span><button class="btn small" id="sign-out" type="button">Sign out</button></span>
       <span class="radio-pill" title="What has the radio"><span class="dot" id="radio-dot"></span><span id="radio-text">Connecting&hellip;</span></span>
       <button class="btn" id="radio-back" type="button" hidden></button>
       <input class="vol" id="vol" type="range" min="0" max="100" step="5" value="100" aria-label="Volume">
@@ -40,6 +41,16 @@
   </header>
   <div class="banner" id="banner" hidden><span id="banner-text"></span><button class="btn primary" id="banner-switch" type="button"></button></div>
   <main id="view" class="view"></main>
+</div>
+<div class="signin" id="signin" hidden>
+  <form class="signin-box" id="signin-form">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <h1>Fishball scanner</h1>
+    <p class="dim">This radio has a password.</p>
+    <input class="input" id="signin-password" type="password" autocomplete="current-password" aria-label="Password" placeholder="Password" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p class="signin-message" id="signin-message" role="alert"></p>
+  </form>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
 <noscript><p class="noscript">This page needs JavaScript.</p></noscript>

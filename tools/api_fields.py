@@ -25,6 +25,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_fields_meanings import NOT_JSON, ROUTES, STRUCTS  # noqa: E402
 
+import scanner_token
+
 ID_KEY = re.compile(r"^-?\d+$")
 
 
@@ -125,6 +127,7 @@ def main() -> int:
     ap.add_argument("--host", required=True)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
+    scanner_token.install(args.host)
     try:
         routes = get(args.host, "/api/v1/routes")
         status = get(args.host, "/api/v1/status")

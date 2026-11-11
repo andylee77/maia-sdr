@@ -5,6 +5,16 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | Method | Path | What |
 |--------|------|------|
 | GET | `/api/v1/routes` | this list |
+| GET | `/api/v1/session` | who the client is: whether a password is set (`protected`), its level (`admin`, `listener`, null: not signed in) and how it is known (`open`: no password is set, `session`, `token`) |
+| POST | `/api/v1/session` | sign in with `password` (the level is whose it is) or trade a `token` for a browser's session; the answer sets the session's cookie |
+| DELETE | `/api/v1/session` | sign out: the session ends |
+| GET | `/api/v1/access` | the administrator's: whether each password is set, the browsers signed in, the tokens, the names the unit answers to |
+| PUT | `/api/v1/access/password` | set, change or remove a level's password (`level`, `new`; `current` to change or remove the administrator's). The first administrator's password closes the radio and signs its setter in; removing it removes every password, session and token |
+| POST | `/api/v1/access/tokens` | make a token for a tool (`label`, `level`): the token is in the answer this once, and is sent as `Authorization: Bearer <token>` |
+| DELETE | `/api/v1/access/tokens/{id}` | revoke a token |
+| DELETE | `/api/v1/access/sessions` | end every session but the asker's |
+| DELETE | `/api/v1/access/sessions/{id}` | end one session |
+| PUT | `/api/v1/access/names` | the host names the unit answers to besides its addresses, `localhost` and its own host name (`names`): a request sent to any other name is refused |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |
 | GET | `/api/v1/talkgroups` | the live site's talkgroups: those heard there in the last week or among the calls listed now (an alias for a talkgroup not heard lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording |

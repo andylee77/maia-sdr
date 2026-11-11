@@ -1,8 +1,18 @@
 // The /api/v1 calls the pages use. Errors carry the server's message and the HTTP `status`.
+// A call the radio refuses because this browser is not signed in (any more) tells the shell
+// (`onSignedOut`), which shows the sign-in page.
 
 // A WebSocket URL on this server.
 export function wsUrl(path) {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path;
+}
+
+const SESSION = '/api/v1/session';
+let signedOut = null;
+
+// `fn()` is called when a call finds this browser signed out.
+export function onSignedOut(fn) {
+  signedOut = fn;
 }
 
 async function request(method, path, body) {
@@ -17,6 +27,7 @@ async function request(method, path, body) {
   try {
     data = JSON.parse(text);
   } catch { /* a refusal in plain text, or no body */ }
+  if (res.status === 401 && path !== SESSION && signedOut) signedOut();
   if (!res.ok) {
     const e = new Error((data && data.error) || text.trim() || `${method} ${path}: HTTP ${res.status}`);
     e.status = res.status;
@@ -28,6 +39,19 @@ async function request(method, path, body) {
 const system = id => `/api/v1/systems/${encodeURIComponent(id)}`;
 
 export const api = {
+  // Who this browser is to the radio: { protected, level, via }.
+  session: () => request('GET', SESSION),
+  signIn: password => request('POST', SESSION, { password }),
+  signOut: () => request('DELETE', SESSION),
+  // The administrator's: the passwords set, the browsers signed in, the tokens, the names.
+  access: () => request('GET', '/api/v1/access'),
+  // `edit`: { level, new, current }; `new` null takes the password away.
+  setPassword: edit => request('PUT', '/api/v1/access/password', edit),
+  createToken: (label, level) => request('POST', '/api/v1/access/tokens', { label, level }),
+  revokeToken: id => request('DELETE', `/api/v1/access/tokens/${encodeURIComponent(id)}`),
+  endSession: id => request('DELETE', `/api/v1/access/sessions/${encodeURIComponent(id)}`),
+  endOtherSessions: () => request('DELETE', '/api/v1/access/sessions'),
+  setNames: names => request('PUT', '/api/v1/access/names', { names }),
   status: () => request('GET', '/api/v1/status'),
   radio: () => request('GET', '/api/v1/radio'),
   setGain: (mode, manual_db) => request('PUT', '/api/v1/radio/gain', { mode, manual_db }),

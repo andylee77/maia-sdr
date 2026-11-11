@@ -240,6 +240,10 @@ class Http:
         return url
 
     def _request(self, req: urllib.request.Request, timeout: float | None) -> Any:
+        # A scanner with a password answers a tool only with its token.
+        token = os.environ.get("SCANNER_TOKEN")
+        if token:
+            req.add_unredirected_header("Authorization", f"Bearer {token}")
         try:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 body = resp.read().decode("utf-8", "replace")

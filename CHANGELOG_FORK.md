@@ -5,6 +5,29 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 102: Access: a password, two levels, tokens, and a guard on every door
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's step 6, its first part. Anyone who reached the unit could listen to it
+  and change it, and a page on any site could open its sockets in a visitor's browser. Asked
+  whether to build Access as the roadmap recommends for Q7 to Q10, Andy answered "Yes, as
+  recommended". Record: `doc/changes/102_access.md`.
+- **A unit is open until its administrator's password is set;** then every route and socket asks
+  who the client is. An administrator does everything; a listener sees and hears and changes
+  nothing. A browser signs in with a password (`/api/v1/session`); a tool carries a token made
+  in Settings.
+- **Passwords are kept as slow salted hashes, sessions and tokens as their SHA-256,** in one
+  file on the flash outside the configuration. A lost password is cleared by a file on the
+  card.
+- **Two doors closed with or without a password:** a socket from another site's page, and a
+  request sent to a name that is not the unit's.
+- **The pages:** a sign-in page, who is signed in in the header, and the Access card in the
+  radio's Settings (passwords, tokens, the browsers signed in, names).
+- **Tools and checks** send `SCANNER_TOKEN` when it is set.
+- **Still to come in step 6:** HTTPS as the one way in and its certificate (Q9), `iiod` (Q10).
+
 ## [2026-11-11] 101: Files: what is on the card, to take away
 
 **Branch:** fishball-p25 (local)

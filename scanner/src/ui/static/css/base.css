@@ -222,6 +222,19 @@ body[data-fill] .view { max-width: none; }
 .toast.error { background: var(--danger); color: #fff; }
 .noscript { padding: 20px; }
 
+/* ── Signing in: the page of a radio with a password, before anything else. ── */
+body[data-signin] .rail, body[data-signin] .page { display: none; }
+.signin { min-height: 100vh; width: 100%; display: grid; place-items: center; padding: 24px; }
+.signin-box {
+  width: min(360px, 100%); display: grid; gap: 12px; justify-items: stretch; text-align: center;
+  padding: 28px 24px; background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.signin-box .brand-mark { justify-self: center; }
+.signin-box h1 { margin: 0; font-size: 20px; }
+.signin-box p { margin: 0; }
+.signin-message { min-height: 1.3em; color: var(--danger); font-size: 0.9em; }
+.account { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+
 /* Phones: the rail becomes a bar along the bottom. */
 @media (max-width: 640px) {
   :root { --gap: 12px; --tabbar-h: 60px; }

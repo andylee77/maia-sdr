@@ -1,10 +1,12 @@
 //! The HTTP API and the web UI.
 //!
 //! One table (`routes!` below) builds the router and the route catalogue, so the catalogue
-//! cannot drift from what is served. Handlers answer with typed JSON or an `ApiError`. A write
-//! from another origin is refused (there is no authentication; the unit sits on a private
-//! network); a write that succeeds is announced on `/ws/live` by the part it changed.
+//! cannot drift from what is served. Handlers answer with typed JSON or an `ApiError`. Every
+//! request passes the guard (`access`): the name it was sent to is the unit's, and its client is
+//! known at the level its route asks for. A write or a socket from a page of another origin is
+//! refused; a write that succeeds is announced on `/ws/live` by the part it changed.
 
+pub mod access;
 pub mod legacy;
 pub mod v1;
 pub mod ws;
@@ -81,6 +83,16 @@ macro_rules! routes {
 
 routes! {
     get "/api/v1/routes" => routes, "this list";
+    get "/api/v1/session" => access::session, "who the client is: whether a password is set (`protected`), its level (`admin`, `listener`, null: not signed in) and how it is known (`open`: no password is set, `session`, `token`)";
+    post "/api/v1/session" => access::sign_in, "sign in with `password` (the level is whose it is) or trade a `token` for a browser's session; the answer sets the session's cookie";
+    delete "/api/v1/session" => access::sign_out, "sign out: the session ends";
+    get "/api/v1/access" => access::get, "the administrator's: whether each password is set, the browsers signed in, the tokens, the names the unit answers to";
+    put "/api/v1/access/password" => access::put_password, "set, change or remove a level's password (`level`, `new`; `current` to change or remove the administrator's). The first administrator's password closes the radio and signs its setter in; removing it removes every password, session and token";
+    post "/api/v1/access/tokens" => access::create_token, "make a token for a tool (`label`, `level`): the token is in the answer this once, and is sent as `Authorization: Bearer <token>`";
+    delete "/api/v1/access/tokens/{id}" => access::revoke_token, "revoke a token";
+    delete "/api/v1/access/sessions" => access::end_other_sessions, "end every session but the asker's";
+    delete "/api/v1/access/sessions/{id}" => access::end_session, "end one session";
+    put "/api/v1/access/names" => access::put_names, "the host names the unit answers to besides its addresses, `localhost` and its own host name (`names`): a request sent to any other name is refused";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
     get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those heard there in the last week or among the calls listed now (an alias for a talkgroup not heard lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
@@ -183,12 +195,16 @@ async fn routes() -> Json<&'static [RouteDoc]> {
     Json(CATALOGUE)
 }
 
-/// Writes only from a page this unit served (or a client that sends no Origin, like curl).
-async fn same_origin_writes(headers: HeaderMap, req: Request, next: Next) -> Response {
-    if req.method() != Method::GET && req.method() != Method::HEAD {
+/// Writes and sockets only from a page this unit served (or a client that sends no Origin, like
+/// curl): a page of another site cannot change the radio, nor open a socket and read it.
+async fn own_pages_only(headers: HeaderMap, req: Request, next: Next) -> Response {
+    let write = req.method() != Method::GET && req.method() != Method::HEAD;
+    let socket = headers.contains_key(header::UPGRADE);
+    if write || socket {
         let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
         if let Some(origin) = origin.filter(|o| !same_origin(o, served_as(&headers, req.uri()))) {
-            return ApiError { status: StatusCode::FORBIDDEN, message: format!("write from {origin} refused") }.into_response();
+            let what = if socket { "socket" } else { "write" };
+            return ApiError { status: StatusCode::FORBIDDEN, message: format!("{what} from {origin} refused") }.into_response();
         }
     }
     next.run(req).await
@@ -212,7 +228,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(ui::router())
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(state.clone(), announce_writes))
-        .layer(middleware::from_fn(same_origin_writes))
+        .layer(middleware::from_fn_with_state(state.clone(), access::guard))
+        .layer(middleware::from_fn(own_pages_only))
         .with_state(state)
 }
 
@@ -236,6 +253,8 @@ fn changed_part(path: &str) -> Option<&'static str> {
         Some("hold")
     } else if path.starts_with("/api/v1/recordings") {
         Some("recordings")
+    } else if path.starts_with("/api/v1/access") {
+        Some("access")
     } else {
         None
     }
@@ -266,13 +285,13 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     use axum_server::accept::NoDelayAcceptor;
     // No Nagle: small live-audio frames must not wait for an ACK.
-    let plain = axum_server::bind(http).acceptor(NoDelayAcceptor::new()).serve(app.clone().into_make_service());
+    let plain = axum_server::bind(http).acceptor(NoDelayAcceptor::new()).serve(app.clone().layer(axum::Extension(access::Secure(false))).into_make_service());
     match (cert, key) {
         (Some(cert), Some(key)) => {
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
             let secure = axum_server::bind_rustls(https, tls)
                 .map(|r| r.acceptor(NoDelayAcceptor::new()))
-                .serve(app.into_make_service());
+                .serve(app.layer(axum::Extension(access::Secure(true))).into_make_service());
             tracing::info!("serving http://{http} and https://{https}");
             tokio::select! {
                 r = plain => r?,

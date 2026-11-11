@@ -29,6 +29,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import scanner_token
+
 REPO = Path(__file__).resolve().parent.parent
 CHUNK = 1 << 20
 
@@ -216,6 +218,7 @@ def main():
     tv = sub.add_parser("tv", help="a TV recording's file")
     tv.add_argument("rf", type=int)
     args = ap.parse_args()
+    scanner_token.install(args.host)
 
     base = args.host if "://" in args.host else f"http://{args.host}"
     if base.count(":") < 2:

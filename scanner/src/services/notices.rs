@@ -16,8 +16,8 @@ pub enum Notice {
     RecordingSaved { call: u64 },
     /// A followed call's alert tones are known (after it closed).
     Alert { call: u64, tg: u32 },
-    /// A part of the configuration changed: `radio`, `systems`, `hold` or
-    /// `recordings`.
+    /// A part of the configuration changed: `radio`, `systems`, `hold`, `recordings` or
+    /// `access`.
     Changed { what: &'static str },
 }
 

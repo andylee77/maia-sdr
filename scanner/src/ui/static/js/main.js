@@ -1,11 +1,13 @@
 // Page shell: the module rail, the viewed module's tabs, the header (which module has the radio,
-// this browser's volume, live audio and its listening settings), the page router and the store
-// the radio pushes. The modules and their pages come from modules.js.
+// this browser's volume, live audio and its listening settings, who is signed in), the page
+// router and the store the radio pushes. The modules and their pages come from modules.js. A
+// radio with a password shows its sign-in page first, and nothing else until that is done.
 //
 // Viewing a module does not move the radio: its pages stay readable while another module has it,
 // under a notice that offers the switch.
 
 import { store, subscribe, start } from './store.js';
+import { api, onSignedOut } from './api.js';
 import { h, icon, setText, setClass } from './dom.js';
 import { MODULES } from './modules.js';
 import { mode, giveRadio, changingMode, onModeChanging } from './mode.js';
@@ -186,7 +188,68 @@ subscribe(s => {
 });
 window.addEventListener('hashchange', () => {
   landing = false;
-  route();
+  if (current) route();
 });
-route();
-start();
+
+// A radio with a password, and this browser not signed in: its sign-in page, and nothing else.
+function signIn() {
+  document.body.dataset.signin = '';
+  $('signin').hidden = false;
+  const password = $('signin-password');
+  password.focus();
+  $('signin-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      await api.signIn(password.value);
+      location.reload();
+    } catch (err) {
+      setText($('signin-message'), err.message);
+      password.select();
+    }
+  });
+}
+
+// Who is signed in here, with the way out. A radio with no password shows neither.
+function account(me) {
+  if (!me || me.via !== 'session') return;
+  $('account').hidden = false;
+  setText($('account-level'), me.level === 'admin' ? 'Administrator' : 'Listener');
+  document.body.dataset.level = me.level;
+  $('sign-out').addEventListener('click', async () => {
+    try {
+      await api.signOut();
+    } finally {
+      location.reload();
+    }
+  });
+}
+
+// The page starts once the radio said who this browser is to it. A radio that does not answer
+// starts the page too: its header says "Not connected".
+async function begin() {
+  let me = null;
+  try {
+    me = await api.session();
+  } catch { /* not reached: the store goes on trying */ }
+  store.session = me;
+  if (me && me.protected && !me.level) {
+    signIn();
+    return;
+  }
+  // Signed out elsewhere, or by a changed password: back to the sign-in page.
+  onSignedOut(() => location.reload());
+  let asked = false;
+  subscribe(async s => {
+    if (s.connected || asked || !me || !me.protected) return;
+    asked = true;
+    try {
+      const now = await api.session();
+      if (now.protected && !now.level) location.reload();
+    } catch { /* the radio is away: the socket goes on trying */ }
+    asked = false;
+  });
+  account(me);
+  route();
+  start();
+}
+begin();

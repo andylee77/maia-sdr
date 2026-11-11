@@ -10,6 +10,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0"
+aws-lc-rs = "1"
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
 clap = { version = "4.0", features = ["derive"] }

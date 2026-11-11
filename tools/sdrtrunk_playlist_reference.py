@@ -23,6 +23,8 @@ from pathlib import Path
 
 from sdrtrunk_dmr_reference import classpath
 
+import scanner_token
+
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "sdrtrunk_playlist_harness" / "PlaylistDump.java"
 SCANNER = HERE.parent / "scanner"
@@ -52,6 +54,7 @@ def main():
     ap.add_argument("--sdrtrunk", default="C:/Users/Andy/Projects/SDRTrunk/sdrtrunk", type=Path)
     ap.add_argument("--refresh-classpath", action="store_true")
     args = ap.parse_args()
+    scanner_token.install(*args.unit)
 
     work = Path(tempfile.gettempdir()) / "sdrtrunk_playlist_harness"
     work.mkdir(exist_ok=True)

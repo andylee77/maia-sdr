@@ -32,6 +32,10 @@ export const store = {
   // Counts the changes to the radio's settings the radio announced (made here or elsewhere): a
   // page showing them reads them again when it moves.
   radioRev: 0,
+  // The same for who may reach the radio (passwords, sessions, tokens).
+  accessRev: 0,
+  // Who this browser is to the radio: { protected, level, via } (set by the shell at its start).
+  session: null,
   connected: false,
 };
 
@@ -230,6 +234,9 @@ function receive(m) {
         readRecordings();
       } else if (m.what === 'radio') {
         store.radioRev += 1;
+        break;
+      } else if (m.what === 'access') {
+        store.accessRev += 1;
         break;
       }
       return;

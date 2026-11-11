@@ -123,7 +123,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let system = Arc::new(crate::services::system::SystemHealth::default());
     system.start();
     let discovery = Arc::default();
+    let (access, note) = crate::services::access::Access::load(&paths.root, &paths.sd);
+    if let Some(note) = note {
+        tracing::warn!("access: {note}");
+        log.radio("access", note);
+    }
     let state = Arc::new(AppState {
+        access,
         paths,
         config,
         tuner,

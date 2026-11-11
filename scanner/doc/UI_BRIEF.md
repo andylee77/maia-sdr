@@ -196,6 +196,12 @@ Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the ra
   - **the radio's own,** in the rail: the clock, the crystal, and the configuration as a file
     (export, import, factory reset).
 
+- **Signing in** (change 102): a radio with a password shows its sign-in page first and nothing
+  else; the header then says who is signed in (Administrator or Listener), with Sign out. The
+  radio's Settings begins with **Access**: on an open radio the first password; to the
+  administrator the passwords, the tokens for tools, the browsers signed in, the names the radio
+  answers to, and opening it again. A listener sees the pages and changes nothing: the radio
+  refuses and the page says whose it is.
 - **Files** (change 101, the radio's own, in the rail): what is on the card, to take away. The
   recordings as one ZIP archive of a selection (dates, a site, a talkgroup, a radio, only the
   locked ones), shown with what it takes before its download, or of one day from the table; the

@@ -25,6 +25,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import scanner_token
+
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
        "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10"]
 
@@ -115,6 +117,7 @@ def main() -> int:
     ap.add_argument("--ssh", action="store_true", help="also read memory, CPU and the log over SSH")
     ap.add_argument("--out", default="runs/076/live")
     args = ap.parse_args()
+    scanner_token.install(args.host)
 
     if args.site:
         post(args.host, f"/api/v1/sites/{args.site}/activate")

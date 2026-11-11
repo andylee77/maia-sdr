@@ -1,6 +1,7 @@
-// The radio's own settings (the rail's Settings): where its clock comes from, the crystal's
-// correction, and the configuration as a whole (export, import, factory reset). What belongs to
-// one module is among that module's tabs: the Scanner's settings are scanner_settings.js.
+// The radio's own settings (the rail's Settings): who may reach it (access.js), where its clock
+// comes from, the crystal's correction, and the configuration as a whole (export, import,
+// factory reset). What belongs to one module is among that module's tabs: the Scanner's settings
+// are scanner_settings.js.
 
 import { h, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
@@ -8,6 +9,7 @@ import { store, subscribe, want, boardNow } from '../store.js';
 import { ago, num } from '../format.js';
 import { crystalSource } from '../protocols.js';
 import { row, unit, count, typed, foot, section, settingsPage } from './settings_parts.js';
+import { accessCard } from './access.js';
 
 function clockCard() {
   const sec = section('Clock');
@@ -181,10 +183,13 @@ function configCard() {
 export function mount(el) {
   return settingsPage(el, {
     read: async () => {
-      const [radio, crystal] = await Promise.all([api.radio(), api.crystal()]);
-      return { radio, crystal };
+      const [radio, crystal, me] = await Promise.all([api.radio(), api.crystal(), api.session()]);
+      // The passwords, sessions and tokens are the administrator's to see.
+      const access = me.protected && me.level === 'admin' ? await api.access() : null;
+      return { radio, crystal, me, access };
     },
-    build: () => [[clockCard(), configCard()], [crystalCard()]],
-    link: ['These are the radio\'s own. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
+    build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), configCard()]],
+    rev: s => `${s.radioRev}.${s.accessRev}`,
+    link: ['These are the radio\'s own: who may reach it, its clock, its crystal, its configuration. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
   });
 }

@@ -25,6 +25,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import scanner_token
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -75,6 +77,7 @@ def main() -> int:
     ap.add_argument("--threshold", type=float, default=15.0, help="dB over the floor")
     ap.add_argument("--no-find", action="store_true", help="the lane stays on --freq (no first press)")
     args = ap.parse_args()
+    scanner_token.install(args.host)
 
     req = {"freq_hz": round(args.freq * 1e6), "offset_hz": round(args.offset * 1e3),
            "span_hz": round(args.span * 1e3), "wait_s": args.wait, "threshold_db": args.threshold,

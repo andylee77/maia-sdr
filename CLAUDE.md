@@ -17,8 +17,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (tabs of it), with the event log kept by part (100,
   `doc/changes/100_settings_diagnostics_split.md`). Step 5 is built: Files, the recordings as a
   ZIP archive, the history's database and the TV recordings to take away (101,
-  `doc/changes/101_files.md`; `tools/scanner_files.py` from the command line). Step 6 is Access
-  (Q7 to Q10). 095's review of the UI and its API:
+  `doc/changes/101_files.md`; `tools/scanner_files.py` from the command line). Step 6, Access,
+  is begun: a password, an administrator and a listener, tokens, and a guard on every route and
+  socket (102, `doc/changes/102_access.md`). A unit is open until its administrator's password
+  is set; unit A's is Andy's to set. Left of step 6: HTTPS as the one way in and its certificate
+  (Q9), `iiod`'s switch (Q10). 095's review of the UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
@@ -47,7 +50,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `aliases_page.mjs`, `playlist_page.mjs`, `files_page.mjs`, `tool_pages.mjs` (the modules' and the
   radio's Diagnostics and Settings, 100) and `tv_watch.mjs`; on a unit, `tv_diag_live.mjs` (it takes the
   radio for live TV, then gives it back). `now_rail.mjs`'s writes need a talkgroup the daemon
-  has heard: run `python runs/ui_check/seed_heard.py` before the PC daemon starts.
+  has heard: run `python runs/ui_check/seed_heard.py` before the PC daemon starts. Access (102):
+  `access_api.py` and `access_page.mjs` set passwords, so they run against the PC daemon only
+  and leave it open; never set a password on a unit. A tool or check reaches a unit that has a
+  password with a token in `SCANNER_TOKEN` (`tools/scanner_token.py`, `runs/ui_check/unit.mjs`).
 
 ## Layout
 

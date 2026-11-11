@@ -401,6 +401,30 @@ ROUTES: dict[str, list] = {
         ("[].path", "string", "The path; `{name}` is a parameter."),
         ("[].summary", "string", "What it does."),
     ],
+    "/api/v1/session": [
+        ("protected", "bool", "An administrator's password is set: clients sign in. False: the radio is open, and every client is the administrator."),
+        ("level", "string or null", "The client's level: `admin` or `listener`; null: not signed in."),
+        ("via", "string or null", "How it is known: `open` (no password is set), `session` (a browser's cookie) or `token`."),
+    ],
+    "/api/v1/access": [
+        ("protected", "bool", "An administrator's password is set."),
+        ("listener", "bool", "A listener's password is set."),
+        ("sessions", "array", "The browsers signed in, the oldest first."),
+        ("sessions[]", "object", "One session."),
+        ("sessions[].id", "string", "Its id, for `DELETE /api/v1/access/sessions/{id}`."),
+        ("sessions[].level", "string", "`admin` or `listener`."),
+        ("sessions[].created_unix_ms", "number", "When it signed in, by the board's clock then."),
+        ("sessions[].agent", "string", "The browser, as it names itself."),
+        ("sessions[].current", "bool", "The asker's own."),
+        ("tokens", "array", "The tokens made for tools. A token itself is in the answer that made it and nowhere else."),
+        ("tokens[]", "object", "One token."),
+        ("tokens[].id", "string", "Its id, for `DELETE /api/v1/access/tokens/{id}`."),
+        ("tokens[].label", "string", "What uses it."),
+        ("tokens[].level", "string", "`admin` or `listener`."),
+        ("tokens[].created_unix_ms", "number", "When it was made."),
+        ("names", "array of strings", "The host names the unit answers to besides its addresses, `localhost` and its own host name."),
+        ("host_name", "string or null", "The unit's own host name: it answers to it and to it under `.local`."),
+    ],
     "/api/v1/status": [
         ("build", "string", "The scanner's build tag."),
         ("uptime_s", "number", "Since the scanner started, s."),
@@ -1285,7 +1309,7 @@ NOT_JSON: dict[str, str] = {
         "| `alert` | `call`, `alerts` (each as an item of `GET /api/v1/activity/alerts`, `dispatch` null) | When a closed call's alert tones are known, after its recording. |\n"
         "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"
         "| `atsc` | `atsc` (as `GET /api/v1/atsc/scan`) | While a TV scan runs, as its progress or the channels read change. |\n"
-        "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
+        "| `changed` | `what`: `radio`, `systems`, `hold`, `recordings` or `access` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "
         "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool}` "
