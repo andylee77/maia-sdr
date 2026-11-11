@@ -16,7 +16,8 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **The roadmap** (`doc/ROADMAP.md`) is reworked: three goals (a trunked monitoring station now,
   a stand-alone handheld later, more modes), what each needs from the gateware, the daemon and
   its API, the UI, storage, security and hardware controls, the features by module, the order
-  of work, and fourteen questions for Andy.
+  of work, and fifteen questions for Andy. The upstream review's findings
+  (`doc/UPSTREAM_REVIEW.md`) are placed in it.
 - **The review** read every UI and API file. Fixed in the daemon:
   - a write from any site's page passed the origin check over HTTPS (HTTP/2 has no `Host`
     header);

@@ -53,7 +53,9 @@ What each goal needs from each layer, and where that layer stands.
 | Bake A's burst-timing gate (`tools/burst_timing.py`) | waits for Andy's key fob or the ESP32-DIV | every later bake |
 | Wide lanes, 250 kSPS and 1 MSPS: new filter sets and a bench check, no bake (`DATA_MODE.md` §3) | **decided** | G3, Data |
 | A continuous stream of the window at 2 to 4 MSPS to the PS (the capture ring read without gaps, or a lane with only its first stage) | **open** (Q11): measured first | G3, ADS-B |
-| More than three lanes (bake B) | waits for a mode that needs them | G1 on busier systems, Data |
+| More than three lanes (bake B) | waits for a mode that needs them; two built designs to read first (`UPSTREAM_REVIEW.md` R5) | G1 on busier systems, Data |
+| The lanes' mixer holding a full-scale input: Maia's DDC wraps on one, and one more bit stops it (`UPSTREAM_REVIEW.md` R4) | with the next bake | G1 |
+| The two Vivado projects standing on their own, without upstream's `projects/pluto` design (`UPSTREAM_REVIEW.md` R3) | with the next bake | every bake |
 | A burst detector in the PL (bake C) | after data mode's scan and captures | G3, Data |
 | I²S audio out to the panel's amplifier (`PANEL_ADDON_BOARD.md` §9.4): a small block and pins on JP5, with 079's gates | **decided** in the panel's design, not built | G2 |
 
@@ -274,9 +276,23 @@ Not tied to a step, waiting on Andy:
 - **Bake A's burst-timing gate:** one key-fob or ESP32-DIV burst (`tools/burst_timing.py`).
 - **The P25 replay corpus on the radio core:** needs the bench link wired (B into A).
 - **Unit B** needs the current image before anything runs on it.
-- **Upstream.** Another session is reviewing Maia SDR, Tezuka and the other Zynq P25 and DMR
-  work; its findings (`doc/UPSTREAM_REVIEW.md`, not written yet) join these steps when it
-  reports.
+
+From the upstream review (`doc/UPSTREAM_REVIEW.md`, 2026-11-11: Maia SDR, Tezuka, their forks and
+the other P25 and DMR work on FPGAs), which has six questions of its own for Andy (Q15):
+
+- **Now:** a read-only check of unit A's running kernel against the image it was built from
+  (R1). Tezuka found a self-extracting `zImage` corrupting the kernel's read-only data once it
+  unpacks past about 14.5 MB, and this fork's unpacks larger. Upstream saw it on a boot path
+  this fork does not use, so it is not proven either way.
+- **With the next image:** the three `maia-kmod` patches that close races in the driver the
+  rings go through (R2).
+- **With the next bake,** whichever step brings it (bake B, or step 9's I²S block): the lanes'
+  mixer given its extra bit (R4), and the Vivado projects made to stand on their own (R3).
+  Upstream's working branch deletes the design they are built on.
+- **Before bake B is designed:** two built designs read (R5): time-multiplexed DDC lanes, and a
+  512-bin filter bank, both on a Zynq-7010. No open P25 receiver for an FPGA was found.
+- **Watched, not scheduled:** Tezuka's kernel 6.12 and Buildroot 2026.05 (a change of its own),
+  the bitstream loaded from the card by U-Boot, chrony and PPS for the unit's clock.
 
 ## Decisions for Andy
 
@@ -342,6 +358,12 @@ Each has a recommendation first. Short answers are enough.
 
 - **Q14. Push now?** `fishball-p25` and tezuka_fw's `fishball-dev`, so 083 to 095 have a second
   copy.
+- **Q15. The upstream review's six questions** (`doc/UPSTREAM_REVIEW.md`, "Open questions for
+  Andy"): whether `main` goes on mirroring F5OEO's frozen `main`; where the ADI HDL pick lives so
+  that a fresh clone builds; the speed grade printed on the units' Zynqs; whether either unit is
+  the Fishball with the slow DRAM; whether to report findings upstream; and whether a GPS or PPS
+  input is planned, which bears on Q13. And its first recommendation: may unit A's kernel be
+  checked now (read only)?
 
 ## From the code review (095)
 

@@ -21,7 +21,10 @@ capability, features."
 
 `doc/ROADMAP.md` is reworked into the product's goals, the capabilities each needs (gateware,
 the daemon and its API, the UI, storage, security, hardware controls), the features by module,
-the order of work with what each step needs first, and fourteen questions for Andy. What exists,
+the order of work with what each step needs first, and fifteen questions for Andy. The
+findings of the upstream review (`doc/UPSTREAM_REVIEW.md`, written the same day by another
+session) are placed in it: a kernel check on unit A now, three driver patches with the next
+image, two gateware items with the next bake. What exists,
 what is decided and what is open are marked. The ideas the old roadmap held are kept at its end.
 
 ### The review
