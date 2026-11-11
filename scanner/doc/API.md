@@ -36,6 +36,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
 | PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
 | PUT | `/api/v1/radio/clock` | where the board clock comes from: site, ntp or manual |
+| PUT | `/api/v1/radio/packet_data` | packet data followed or not (`follow`): followed, the last traffic lane of a site with a data channel waits there between calls; the live site follows the change at once |
 | GET | `/api/v1/radio/crystal` | the crystal correction: applied, calibrated and tracked |
 | PUT | `/api/v1/radio/crystal` | crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit) |
 | POST | `/api/v1/radio/crystal/calibrate` | measure the crystal correction on the live control channel now (about 7 s) |

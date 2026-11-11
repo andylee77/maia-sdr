@@ -144,6 +144,8 @@ pub enum TrunkInput {
     Hold(Option<u32>),
     /// This lane follows only this talkgroup (None: what the aliases say).
     LaneHold { lane: Lane, tg: Option<u32> },
+    /// The last lane waits on the site's data channel between calls, or no lane does.
+    FollowData(bool),
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -398,6 +400,8 @@ struct Task<H> {
     next_call: Arc<AtomicU64>,
     site: String,
     packet_data: Option<Arc<PacketData>>,
+    /// The last lane waits on the data channel between calls (the setting).
+    follow_data: bool,
     /// The last time the last lane tried for the data channel.
     data_park_tried: Option<Instant>,
     lanes_view: Arc<Mutex<Vec<LaneStatus>>>,
@@ -441,6 +445,8 @@ pub struct Trunking {
     next_call: Arc<AtomicU64>,
     /// Takes the PDUs a lane reads.
     packet_data: std::sync::Mutex<Option<Arc<PacketData>>>,
+    /// The setting: the last lane of a site waits on its data channel between calls.
+    follow_data: AtomicBool,
     /// Where a site's newest calls come from when it goes live.
     store: std::sync::Mutex<Option<Arc<Store>>>,
     /// (site, talkgroup): the hold outlives a restart of its site, not a switch to another.
@@ -472,6 +478,7 @@ impl Trunking {
             frames: Arc::default(),
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             packet_data: std::sync::Mutex::new(None),
+            follow_data: AtomicBool::new(true),
             store: std::sync::Mutex::new(None),
             hold: std::sync::Mutex::new(None),
             lane_holds: std::sync::Mutex::new(None),
@@ -500,6 +507,15 @@ impl Trunking {
     pub fn set_packet_data(&self, data: Arc<PacketData>) {
         if let Ok(mut d) = self.packet_data.lock() {
             *d = Some(data);
+        }
+    }
+
+    /// Follow packet data or not: the live site at once, and every site that goes live after.
+    pub async fn set_follow_data(&self, on: bool) {
+        self.follow_data.store(on, Ordering::Relaxed);
+        let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(TrunkInput::FollowData(on)).await;
         }
     }
 
@@ -660,6 +676,7 @@ impl Trunking {
             next_call: self.next_call.clone(),
             site: setup.site.clone(),
             packet_data: self.packet_data.lock().ok().and_then(|d| d.clone()),
+            follow_data: self.follow_data.load(Ordering::Relaxed),
             data_park_tried: None,
             lcn: {
                 let mut l = LcnLearner::new(setup.lcn_hz.clone(), control_hz, setup.channels_hz.clone());
@@ -821,6 +838,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     Some(TrunkInput::WindowMoved) => self.window_moved(),
                     Some(TrunkInput::Hold(tg)) => self.hold(tg).await,
+                    Some(TrunkInput::FollowData(on)) => self.set_follow_data(on, Stamp::now()).await,
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -1344,10 +1362,36 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
+    /// Packet data is followed or not from now on. Turned off, a lane waiting on the data channel
+    /// leaves it; turned on, the last lane goes there at the next tick.
+    async fn set_follow_data(&mut self, on: bool, at: Stamp) {
+        if self.follow_data == on {
+            return;
+        }
+        self.follow_data = on;
+        self.data_park_tried = None;
+        self.log.system("lane", format!("packet data is {}", if on { "followed" } else { "not followed: no lane waits on the data channel" }));
+        if on {
+            return;
+        }
+        let Some(data_hz) = self.learned.as_ref().and_then(|l| l.data_channel_hz()) else { return };
+        let waiting: Vec<Lane> = self
+            .lanes
+            .iter()
+            .filter(|s| s.tuned_hz == Some(data_hz) && self.book.on_lane(s.lane).is_none() && self.follower.idle(s.lane))
+            .map(|s| s.lane)
+            .collect();
+        for lane in waiting {
+            self.command(Command::Pause { lane }, at).await;
+        }
+        self.publish_lanes(at.mono);
+    }
+
     /// At a P25 site with two lanes, the last one waits for its next call on the data channel the
-    /// site announces, where packet data flows. A voice grant still takes it.
+    /// site announces, where packet data flows (while packet data is followed). A voice grant
+    /// still takes it.
     async fn park_on_data(&mut self, at: Stamp) {
-        if self.lanes.len() < 2 || self.data_park_tried.is_some_and(|t| at.mono.saturating_duration_since(t) < DATA_PARK_RETRY) {
+        if !self.follow_data || self.lanes.len() < 2 || self.data_park_tried.is_some_and(|t| at.mono.saturating_duration_since(t) < DATA_PARK_RETRY) {
             return;
         }
         let Some(data_hz) = self.learned.as_ref().and_then(|l| l.data_channel_hz()) else { return };
@@ -1694,8 +1738,9 @@ mod tests {
         fn control_streams(&self, _: std::sync::mpsc::SyncSender<Block>, _: Arc<AtomicBool>, _: Arc<crate::radio::streams::StreamCounters>) {}
     }
 
-    /// Clay with the data channel learned, its trunking started on `lanes`: where the lanes sit.
-    async fn lanes_after_start(lanes: &[Lane]) -> [Option<u64>; 2] {
+    /// Clay with the data channel learned, its trunking started on `lanes` with packet data
+    /// followed or not. The temporary directory holds the site's learned state while it runs.
+    async fn clay_started(lanes: &[Lane], follow_data: bool) -> (Trunking, Arc<Tuner<Quiet>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
         let learned = Arc::new(Learned::new("clay", Config::site_state(&paths, "clay").unwrap()));
@@ -1703,6 +1748,7 @@ mod tests {
         let tuner = Arc::new(Tuner::new(Quiet, 0.0));
         tuner.apply(TuningPlan { preset: find_preset("12M").unwrap(), lo_hz: 855_996_875, control_hz: 860_962_500 }).await.unwrap();
         let trunking = Trunking::new(Audio::start(lanes), Default::default(), Default::default(), Default::default(), 1);
+        trunking.set_follow_data(follow_data).await;
         let setup = Setup {
             site: "clay".into(),
             protocol: Protocol::P25,
@@ -1717,6 +1763,12 @@ mod tests {
             learned: Some(learned),
         };
         trunking.start(setup, tuner.clone(), Arc::new(EventLog::default())).await;
+        (trunking, tuner, dir)
+    }
+
+    /// Where the lanes sit a moment after Clay's trunking started.
+    async fn lanes_after_start(lanes: &[Lane], follow_data: bool) -> [Option<u64>; 2] {
+        let (trunking, tuner, _dir) = clay_started(lanes, follow_data).await;
         tokio::time::sleep(Duration::from_millis(400)).await;
         trunking.stop().await;
         tuner.tuning().lanes
@@ -1754,9 +1806,27 @@ mod tests {
 
     #[tokio::test]
     async fn the_last_lane_waits_on_the_data_channel() {
-        assert_eq!(lanes_after_start(&[Lane::One, Lane::Two]).await, [None, Some(859_212_500)]);
+        assert_eq!(lanes_after_start(&[Lane::One, Lane::Two], true).await, [None, Some(859_212_500)]);
         // With one lane it stays free for voice.
-        assert_eq!(lanes_after_start(&[Lane::One]).await, [None, None]);
+        assert_eq!(lanes_after_start(&[Lane::One], true).await, [None, None]);
+        // Packet data not followed: no lane goes there.
+        assert_eq!(lanes_after_start(&[Lane::One, Lane::Two], false).await, [None, None]);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_lane_follows_the_packet_data_setting_at_once() {
+        let (trunking, _tuner, _dir) = clay_started(&[Lane::One, Lane::Two], true).await;
+        let waiting = |t: &Trunking| t.lanes().iter().map(|l| (l.on_data_channel, l.tuned_hz)).collect::<Vec<_>>();
+        // The lanes are published each second.
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        assert_eq!(waiting(&trunking), [(false, None), (true, Some(859_212_500))]);
+        trunking.set_follow_data(false).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(waiting(&trunking), [(false, None), (false, None)], "the lane left the data channel");
+        trunking.set_follow_data(true).await;
+        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        assert_eq!(waiting(&trunking), [(false, None), (true, Some(859_212_500))], "and went back");
+        trunking.stop().await;
     }
 
     // A parked lane resumed with its PLL at the clamp after the carrier had been gone for seconds

@@ -18,6 +18,8 @@ and the decisions taken with him. The current pages stay only until the new ones
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
 | Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Channels, Viewer; changes 080 and 081), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
+| Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header. A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
+| Hold | Not on every row (Andy, 2026-11-10): Hold is on the card of the call on the air, Release there and in the site strip. |
 
 ## Backend work before the UI
 
@@ -86,14 +88,19 @@ Then three ways in: scan for systems, add one by hand, or import an SDRTrunk pla
 ### Now (home)
 
 p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`, in git history since p25-httpd left the repo).
-Done: the locked top, the system card with its two lists (picking a site makes it live), the
-traffic channels as "Left · Traffic 1" and "Right · Traffic 2", each with a talkgroup picker
-that holds that channel alone (the clear talkgroups of the last week; a lane the site does not
-run says so) and this browser's volume and mute for it, and the call history with playback:
-every call of the site (older ones read as the list scrolls), each with its details, its alert
-tones as bookmarks and an alerts filter. The header keeps Listen across reloads, the volume, the
-leveller and "Alerts only" (play only the talkgroups an alert tone opened, for a chosen time).
-Still to come: the talkgroup controls (monitor, record, priority, speaker).
+Done (change 090 laid it out anew, filling the screen): the talkgroup bank on the left (every
+talkgroup with an alias of its own or heard in the last week: followed or not, its speaker, its
+priority and its name, each set in place), the site strip with its two lists (picking a site
+makes it live), the traffic channels as "Traffic 1 · Left" and "Traffic 2 · Right", each with a
+talkgroup list that keeps that channel on one talkgroup (the clear talkgroups of the last week;
+a lane the site does not run says so) and this browser's volume and mute for it, the calls
+(every call of the site, older ones read as the list scrolls, with filters for the followed
+ones and the ones with alert tones), and the picked call on the right: its recording's player
+with its alert tones as bookmarks, and its details. The header keeps Listen across reloads, the
+volume, the leveller and "Alerts only" (play only the talkgroups an alert tone opened, for a
+chosen time). The control channel's counters moved to Diagnostics.
+Still to come: recording per talkgroup (the radio records every followed call, and nothing sets
+that apart yet), an alias's colour and group, and range aliases as rows of their own.
 
 - **Locked top:** the header, the system card and the active channels stay on screen. Only the
   call history scrolls, in its own pane.

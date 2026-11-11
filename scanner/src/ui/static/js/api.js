@@ -37,6 +37,9 @@ export const api = {
   factoryReset: () => request('POST', '/api/v1/config/factory-reset'),
   saveRadioSettings: settings => request('PUT', '/api/v1/radio/settings', settings),
   setClockSource: source => request('PUT', '/api/v1/radio/clock', { source }),
+  setPacketData: follow => request('PUT', '/api/v1/radio/packet_data', { follow }),
+  // One talkgroup's controls (`edit`: any of name, priority, do_not_monitor, record, speaker).
+  setTalkgroup: (system, tg, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/talkgroups/${tg}`, edit),
   setTime: unix_ms => request('POST', '/api/v1/clock', { unix_ms }),
   crystal: () => request('GET', '/api/v1/radio/crystal'),
   setCrystal: tracking => request('PUT', '/api/v1/radio/crystal', tracking),

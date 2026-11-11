@@ -22,7 +22,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   are in `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
-- **The UI replacement:** `scanner/doc/UI_BRIEF.md`.
+- **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
+  (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`);
+  the other pages keep their old layouts inside it. Checks: `runs/ui_check/modules_check.mjs`
+  and `now_rail.mjs`.
 
 ## Layout
 

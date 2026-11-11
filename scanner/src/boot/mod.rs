@@ -45,6 +45,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let crystal_ppm = config.state.value.crystal.as_ref().map(|c| c.ppm).or(args.lo_ppm).unwrap_or(0.0);
     let live_site = config.state.value.live_site.clone();
     let mode = config.state.value.mode;
+    let follow_data = config.radio.value.packet_data.follow;
     let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;
 
     let config = Arc::new(Mutex::new(config));
@@ -64,6 +65,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let first_call = recordings.next_call().max(history.store().max_call_id().unwrap_or(0) + 1);
     let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), history.sender(), notices.clone(), first_call));
     trunking.set_packet_data(packet_data.clone());
+    trunking.set_follow_data(follow_data).await;
     trunking.set_history_store(history.store().clone());
     let live = Arc::new(LiveSite::new(
         paths.clone(),

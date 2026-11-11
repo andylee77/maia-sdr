@@ -5,6 +5,30 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-10] 090: The module rail, the new Now page, and a switch for P25 data traffic
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the web UI to be redone for the trunking scanner, ATSC TV and the
+  modules to come. The mode was a list in the header that hid the other mode's pages, pages were
+  capped at 1280 px, Now carried the control channel's counters, and nothing on the live screen
+  named or switched a talkgroup. Of three shells drawn he chose the module rail, with the
+  console's talkgroup bank on Now, Hold off the rows, and a switch for P25 data traffic.
+  Record: `doc/changes/090_module_rail_now.md`.
+- **The shell:** a rail of modules (Scanner, TV; Diagnostics and Settings at the bottom) built
+  from one table, `js/modules.js`; the viewed module's pages as tabs in the header. A module's
+  pages stay readable while another has the radio, under a notice that offers the switch. The
+  header says which module has the radio.
+- **Now** fills the screen: the talkgroup bank (each talkgroup followed or not, its speaker,
+  priority and name, set in place), the site strip, the traffic channels (Hold only on the call
+  on the air), the calls, and the picked call's player and details beside them. The control
+  channel's counters moved to Diagnostics.
+- **P25 data traffic:** `packet_data.follow` in `radio.json` (default on, as before),
+  `PUT /api/v1/radio/packet_data`, and a switch in Settings. Turned off, the lane waiting on the
+  data channel leaves it at once.
+- **For a later API review:** `scanner/doc/API_INVENTORY.md`, "What a code review may change".
+
 ## [2026-11-09] 089: Activity: dates, more rows, and a playing recording left alone
 
 **Branch:** fishball-p25 (local)

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0e1116">
+<meta name="theme-color" content="#0b0e13">
 <title>Fishball scanner</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314a3a3'/%3E%3Cpath d='M9 22V10h7a4 4 0 010 8H9' stroke='%23fff' stroke-width='3' fill='none'/%3E%3Ccircle cx='23' cy='22' r='3' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="ui/{{BUILD}}/css/base.css">
@@ -12,38 +12,34 @@
 <script type="module" src="ui/{{BUILD}}/js/main.js"></script>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Fishball scanner</div>
-  <select class="input mode-select" id="mode" aria-label="Mode" title="What the unit does; each mode has the radio to itself">
-    <option value="scanner">Scanner</option><option value="atsc">ATSC TV</option>
-  </select>
-  <div class="topbar-site" id="top-site"><span class="dot" id="top-site-dot"></span><span id="top-site-text">connecting&hellip;</span></div>
-  <div class="topbar-right">
-    <span class="dim listen-state" id="listen-state"></span>
-    <span class="listen-ctl">
-      <input class="vol" id="vol" type="range" min="0" max="100" step="5" value="100" aria-label="Volume">
-      <button class="chip" id="norm" type="button" aria-pressed="true" title="Volume normalization: evens out loud and quiet talkers">Level</button>
-      <button class="chip" id="alerts-only" type="button" aria-pressed="false" title="Play only the talkgroups an alert tone (a console's warble or beep, a two-tone page) opened, for the time chosen">Alerts only</button>
-      <select class="input alert-window" id="alert-window" aria-label="How long an alert tone opens its talkgroup" title="How long an alert tone opens its talkgroup">
-        <option value="0.5">30 s</option><option value="1">1 min</option><option value="2">2 min</option><option value="5">5 min</option>
-        <option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option>
-      </select>
-    </span>
-    <button class="btn btn-listen" id="listen" type="button" aria-pressed="false" title="Live audio of the followed calls">Listen</button>
-    <span class="conn" id="conn" title="Connection to the radio"></span>
-  </div>
-</header>
-<nav class="tabs" id="tabs" aria-label="Pages">
-  <a href="#now" data-view="now" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9679;</span>Now</a>
-  <a href="#activity" data-view="activity" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9636;</span>Activity</a>
-  <a href="#systems" data-view="systems" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9906;</span>Systems</a>
-  <a href="#channels" data-view="channels" data-mode="atsc" hidden><span class="tab-ico" aria-hidden="true">&#9707;</span>Channels</a>
-  <a href="#viewer" data-view="viewer" data-mode="atsc" hidden><span class="tab-ico" aria-hidden="true">&#9654;</span>Viewer</a>
-  <a href="#diag" data-view="diag"><span class="tab-ico" aria-hidden="true">&#9636;</span>Diagnostics</a>
-  <a href="#settings" data-view="settings"><span class="tab-ico" aria-hidden="true">&#9881;</span>Settings</a>
+<nav class="rail" aria-label="Modules">
+  <a class="rail-brand" href="#now" aria-label="Fishball scanner"><span class="brand-mark" aria-hidden="true"></span></a>
+  <div class="rail-group" id="rail-modules"></div>
+  <div class="rail-group rail-tools" id="rail-tools"></div>
 </nav>
-<div class="banner" id="banner" hidden></div>
-<main id="view" class="view" aria-live="polite"></main>
+<div class="page">
+  <header class="topbar">
+    <h1 class="topbar-title" id="module-title"></h1>
+    <nav class="tabs" id="tabs" aria-label="Pages"></nav>
+    <div class="topbar-right">
+      <span class="radio-pill" title="What has the radio"><span class="dot" id="radio-dot"></span><span id="radio-text">Connecting&hellip;</span></span>
+      <button class="btn" id="radio-back" type="button" hidden></button>
+      <span class="listen" id="listen-box">
+        <span class="dim listen-state" id="listen-state"></span>
+        <input class="vol" id="vol" type="range" min="0" max="100" step="5" value="100" aria-label="Volume">
+        <button class="chip" id="norm" type="button" aria-pressed="true" title="Volume normalization: evens out loud and quiet talkers">Level</button>
+        <button class="chip" id="alerts-only" type="button" aria-pressed="false" title="Play only the talkgroups an alert tone (a console's warble or beep, a two-tone page) opened, for the time chosen">Alerts only</button>
+        <select class="input alert-window" id="alert-window" aria-label="How long an alert tone opens its talkgroup" title="How long an alert tone opens its talkgroup">
+          <option value="0.5">30 s</option><option value="1">1 min</option><option value="2">2 min</option><option value="5">5 min</option>
+          <option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option>
+        </select>
+        <button class="btn btn-listen" id="listen" type="button" aria-pressed="false" title="Live audio of the followed calls">Listen</button>
+      </span>
+    </div>
+  </header>
+  <div class="banner" id="banner" hidden><span id="banner-text"></span><button class="btn primary" id="banner-switch" type="button"></button></div>
+  <main id="view" class="view" aria-live="polite"></main>
+</div>
 <div class="toast" id="toast" role="status" hidden></div>
 <noscript><p class="noscript">This page needs JavaScript.</p></noscript>
 </body>

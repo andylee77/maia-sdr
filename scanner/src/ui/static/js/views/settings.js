@@ -1,11 +1,11 @@
-// Settings: the receiver gain, the radio's other settings, the crystal, recording, and the
-// configuration as a whole (export, import, factory reset).
+// Settings: the receiver gain, the radio's other settings, packet data, the crystal, recording,
+// and the configuration as a whole (export, import, factory reset).
 
 import { h, card, clear, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
 import { store, subscribe, want } from '../store.js';
 import { ago, bytes, num } from '../format.js';
-import { crystalSource } from '../protocols.js';
+import { crystalSource, packetDataSetting } from '../protocols.js';
 
 const MODES = [['slow_attack', 'AGC, slow'], ['fast_attack', 'AGC, fast'], ['hybrid', 'AGC, hybrid'], ['manual', 'Manual']];
 
@@ -142,6 +142,22 @@ function radioCard(radio) {
   return c.el;
 }
 
+// Packet data followed or not; the radio takes a change at once.
+function packetDataCard(radio) {
+  const c = card('Packet data');
+  const follow = switchInput(packetDataSetting.label, radio.config.packet_data.follow, async on => {
+    try {
+      const kept = await api.setPacketData(on);
+      toast(kept.follow ? 'Data traffic is followed' : 'Data traffic is not followed');
+    } catch (e) {
+      follow.input.checked = !on;
+      toast(e.message, true);
+    }
+  });
+  c.body.append(h('div', { class: 'row' }, follow.el), h('p', { class: 'card-note', text: packetDataSetting.note }));
+  return c.el;
+}
+
 const ppm = v => `${v >= 0 ? '+' : ''}${v.toFixed(4)} ppm`;
 const signedHz = v => `${v >= 0 ? '+' : ''}${Math.round(v)} Hz`;
 
@@ -260,7 +276,7 @@ export function mount(el) {
   Promise.all([api.radio(), api.crystal(), api.recordings(0)])
     .then(([radio, crystalStatus, recs]) => {
       crystal = crystalCard(crystalStatus);
-      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), configCard());
+      host.append(gainCard(radio), radioCard(radio), packetDataCard(radio), crystal.el, recordingCard(radio, recs), configCard());
     })
     .catch(e => toast(e.message, true));
   return { update() {}, unmount() { if (crystal) crystal.stop(); } };

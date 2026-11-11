@@ -112,6 +112,7 @@ routes! {
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
     put "/api/v1/radio/clock" => v1::radio::put_clock, "where the board clock comes from: site, ntp or manual";
+    put "/api/v1/radio/packet_data" => v1::radio::put_packet_data, "packet data followed or not (`follow`): followed, the last traffic lane of a site with a data channel waits there between calls; the live site follows the change at once";
     get "/api/v1/radio/crystal" => v1::radio::crystal, "the crystal correction: applied, calibrated and tracked";
     put "/api/v1/radio/crystal" => v1::radio::put_crystal, "crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit)";
     post "/api/v1/radio/crystal/calibrate" => v1::radio::calibrate_crystal, "measure the crystal correction on the live control channel now (about 7 s)";

@@ -13,7 +13,7 @@ use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
 use crate::services::config::radio::{
-    Calls, Clock, CrystalTracking, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+    Calls, Clock, CrystalTracking, Gain, GainMode, History, PacketDataFollow, RadioConfig, Recording, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
 };
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
@@ -125,6 +125,25 @@ pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settin
     config::save(&s.paths.radio(), &c.radio)?;
     s.history.set_limits(&req.history);
     Ok(Json(c.radio.value.clone()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketDataRequest {
+    pub follow: bool,
+}
+
+/// Follow packet data or not. Kept, and the live site follows the change at once: a lane waiting
+/// on the data channel leaves it, or the last lane goes there.
+pub async fn put_packet_data(State(s): State<Arc<AppState>>, Json(req): Json<PacketDataRequest>) -> ApiResult<PacketDataFollow> {
+    let kept = PacketDataFollow { follow: req.follow };
+    {
+        let mut c = s.config.lock().await;
+        c.radio.value.packet_data = kept;
+        config::save(&s.paths.radio(), &c.radio)?;
+    }
+    s.trunking.set_follow_data(kept.follow).await;
+    Ok(Json(kept))
 }
 
 /// Where the board clock comes from: the control channel, the internet, or by hand.

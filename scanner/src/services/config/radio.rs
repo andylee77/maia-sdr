@@ -20,6 +20,7 @@ pub struct RadioConfig {
     pub history: History,
     pub clock: Clock,
     pub crystal: CrystalTracking,
+    pub packet_data: PacketDataFollow,
 }
 
 /// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
@@ -64,6 +65,7 @@ impl Default for RadioConfig {
             history: History::default(),
             clock: Clock::default(),
             crystal: CrystalTracking::default(),
+            packet_data: PacketDataFollow::default(),
         }
     }
 }
@@ -210,5 +212,20 @@ pub struct CrystalTracking {
 impl Default for CrystalTracking {
     fn default() -> Self {
         CrystalTracking { tracking: true, anchor_hz: 50 }
+    }
+}
+
+/// P25 packet data (`services::packet_data`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PacketDataFollow {
+    /// At a site with two traffic lanes the last one waits on the site's data channel between
+    /// calls, where packet data flows. Off: no lane waits there.
+    pub follow: bool,
+}
+
+impl Default for PacketDataFollow {
+    fn default() -> Self {
+        PacketDataFollow { follow: true }
     }
 }

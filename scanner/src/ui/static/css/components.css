@@ -21,7 +21,8 @@
   min-height: 32px; padding: 5px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong);
-  background: var(--bg-raised);
+  background: var(--bg-control);
+  text-decoration: none;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -33,7 +34,8 @@
 .btn.icon { width: 34px; padding: 0; }
 .btn.small.icon { width: 28px; height: 28px; min-height: 28px; }
 .btn.icon svg { display: block; }
-.btn-listen[aria-pressed="true"] { background: var(--voice); border-color: var(--voice); color: #04150a; font-weight: 600; }
+.btn-listen { min-width: 5.4em; font-weight: 600; }
+.btn-listen[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .input, select.input {
   min-height: 32px; padding: 5px 9px;
@@ -197,32 +199,77 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .kv dd.good { color: var(--ok); }
 .kv .sep { grid-column: 1 / -1; margin-top: 6px; font-size: 0.78em; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
 
-/* ── System card (Now) ────────────────────────────────────── */
-.now-site .card-head { flex-wrap: wrap; }
-.now-site select.pick { font-weight: 600; max-width: 24em; }
-.now-facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; color: var(--text-dim); }
-.now-facts .k { color: var(--text-faint); font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
-.site-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-top: 12px; align-items: end; }
+/* ── Metrics: a label over its value ──────────────────────── */
 .metric { display: grid; gap: 1px; }
 .metric .m-label { font-size: 0.74em; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
 .metric .m-value { font-variant-numeric: tabular-nums; font-weight: 550; }
 
-/* ── Current call ─────────────────────────────────────────── */
-.call-card { position: relative; overflow: hidden; }
-.call-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--idle); }
-.call-card.voice::before { background: var(--voice); }
-.call-card.hang::before { background: var(--hang); }
-.call-card.acquiring::before { background: var(--acquire); }
-.call-tg { font-size: 2.1em; font-weight: 700; line-height: 1.1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
-.call-alias { font-size: 1.05em; color: var(--text-dim); margin-top: 2px; min-height: 1.4em; }
-.call-src { margin-top: 10px; font-size: 1.05em; }
-.call-src .dim { font-size: 0.9em; }
-.call-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 10px; margin-top: 14px; align-items: end; }
-.call-idle { color: var(--text-dim); padding: 6px 0 2px; }
-.call-idle .big { font-size: 1.35em; color: var(--text); font-weight: 600; margin-bottom: 4px; }
-/* Idle or on a call, a traffic card keeps its height. */
-.now-traffic .call-card .card-body { min-height: 9.6em; }
-.lane-hold { max-width: 15em; min-height: 26px; padding: 2px 8px; font-size: 0.86em; }
+/* ── Now: the talkgroup bank, the site strip, the traffic channels, the calls and the picked
+   call. One column on a narrow or short screen, where the page scrolls: the picked call shows
+   above the bank and the calls once there is one. On a wider screen the page fills the screen
+   and each pane scrolls on its own: the bank has a column beside the calls, and the picked call
+   covers it until it is closed. From 1360 px the bank is on the left and the picked call keeps
+   the right. ── */
+.now { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.now-site { order: 1; }
+.now-traffic { order: 2; display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.now-detail { order: 3; }
+.now-bank { order: 4; }
+.now-calls { order: 5; }
+.now-bank .card-body { max-height: 34vh; overflow-y: auto; }
+.now-detail.empty { display: none; }
+@media (max-width: 860px) {
+  .now-traffic { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 1000px) and (min-height: 600px) {
+  .now {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "site side" "traffic side" "calls side";
+  }
+  .now-site { grid-area: site; }
+  .now-traffic { grid-area: traffic; }
+  .now-calls { grid-area: calls; }
+  .now-bank, .now-detail { grid-area: side; }
+  .now-detail { z-index: 1; }
+  .now-bank, .now-calls { min-height: 0; display: flex; flex-direction: column; }
+  .now-bank .card-body, .now-calls .card-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+  .now-detail { min-height: 0; overflow-y: auto; }
+}
+@media (min-width: 1360px) and (min-height: 600px) {
+  .now {
+    grid-template-columns: 320px minmax(0, 1fr) 340px;
+    grid-template-areas: "bank site detail" "bank traffic detail" "bank calls detail";
+  }
+  .now-bank { grid-area: bank; }
+  .now-detail { grid-area: detail; }
+  .now-detail.empty { display: block; }
+}
+
+/* The site strip. */
+.now-site { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; }
+.now-site select.pick { font-weight: 600; max-width: 22em; }
+.site-state { font-weight: 600; }
+.site-facts { margin-left: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; color: var(--text-faint); font-size: 0.92em; }
+.site-facts .k { margin-right: 5px; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* A traffic channel: its call, or what it waits for. Its border takes the call's phase. */
+.call-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; }
+.call-card .card-head { margin-bottom: 0; }
+.call-card.voice { border-color: color-mix(in srgb, var(--voice) 55%, var(--line)); }
+.call-card.hang { border-color: color-mix(in srgb, var(--hang) 55%, var(--line)); }
+.call-card.acquiring { border-color: color-mix(in srgb, var(--acquire) 55%, var(--line)); }
+.call-main { min-height: 4.3em; }
+.call-tg { font-size: 1.9em; font-weight: 650; line-height: 1.15; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-card.idle .call-tg { color: var(--text-faint); }
+.call-sub { margin-top: 3px; color: var(--text-dim); }
+.call-foot { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; min-height: 38px; }
+.call-facts { display: flex; flex-wrap: wrap; gap: 4px 22px; }
+.fact { display: grid; gap: 1px; }
+.fact-k { font-size: 0.8em; color: var(--text-faint); }
+.fact-v { font-family: var(--mono); font-size: 0.95em; font-variant-numeric: tabular-nums; }
+.lane-hold { max-width: 13em; min-height: 28px; padding: 2px 8px; font-size: 0.86em; }
 .lane-hold.held { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 /* A lane's volume and mute in this browser. */
 .lane-audio { display: inline-flex; align-items: center; gap: 4px; }
@@ -231,57 +278,103 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .btn.muted { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 /* A recording's player (audio/recording.js): play and pause, its position and its time. */
 .rec-player { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.rec-player .seek { flex: 1 1 auto; width: 110px; min-width: 60px; accent-color: var(--voice); cursor: pointer; }
+.rec-player .seek { flex: 1 1 auto; width: 110px; min-width: 60px; accent-color: var(--accent); cursor: pointer; }
 .rec-player .rec-time { font-size: 0.84em; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* ── Calls ────────────────────────────────────────────────── */
-.calls { display: grid; }
-.now-calls .card-body { border-top: 1px solid var(--line); }
-.now-calls .card-head .input { width: 14em; min-height: 28px; padding: 3px 9px; }
-.call-row {
-  display: grid;
-  grid-template-columns: 5.6em minmax(0, 1.3fr) minmax(0, 1.2fr) 10em 6.4em minmax(150px, 1fr) 6.6em;
-  gap: 10px; align-items: center;
-  padding: 9px 16px;
+/* The talkgroup bank: a talkgroup a row, with its priority, its speaker and whether it is
+   followed. */
+.now-bank .card-head .input { width: 7.5em; min-height: 28px; padding: 3px 9px; }
+.now-bank .card-body { border-top: 1px solid var(--line); }
+.tg-row {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) 3em 3em 38px;
+  align-items: center; gap: 8px;
+  min-height: 46px; padding: 4px 14px;
   border-top: 1px solid var(--line);
 }
+.tg-list .tg-row:first-child { border-top: 0; }
+.tg-head {
+  position: sticky; top: 0; z-index: 1;
+  min-height: 26px; border-top: 0; border-bottom: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-faint); font-size: 0.78em; text-align: center;
+}
+.tg-row.on-air { background: color-mix(in srgb, var(--voice) 8%, transparent); }
+.tg-row.off .tg-name, .tg-row.off .tg-name::placeholder { color: var(--text-faint); }
+.tg-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.tg-text { min-width: 0; }
+.inline.tg-name { width: calc(100% + 5px); margin-left: -5px; font-weight: 600; text-overflow: ellipsis; }
+.inline.tg-name::placeholder { color: var(--text); font-style: normal; }
+.tg-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inline.tg-pri { width: 100%; text-align: center; font-family: var(--mono); appearance: textfield; -moz-appearance: textfield; }
+.inline.tg-pri::-webkit-inner-spin-button, .inline.tg-pri::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.inline.tg-pri::placeholder { font-style: normal; }
+.btn.small.tg-spk { width: 100%; padding: 2px 0; }
+.tg-row .switch { justify-self: end; }
+.tg-enc { grid-column: 3 / -1; justify-self: end; display: inline-flex; color: var(--text-faint); }
+
+/* The calls. A row is picked for the panel beside the list. */
+.calls { display: grid; }
+.now-calls .card-head { flex-wrap: wrap; }
+.now-calls .card-body { border-top: 1px solid var(--line); }
+.now-calls .card-head .input { width: 13em; min-height: 28px; padding: 3px 9px; }
+.call-row {
+  display: grid;
+  grid-template-columns: 5.4em minmax(0, 1.5fr) minmax(0, 1fr) 9.5em 8.5em;
+  gap: 12px; align-items: center;
+  min-height: 48px; padding: 5px 16px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
 .call-row:first-child { border-top: 0; }
-.call-row.nf { opacity: 0.62; }
-.call-row.open { background: color-mix(in srgb, var(--voice) 6%, transparent); }
-.call-row .c-hold { display: flex; justify-content: flex-end; gap: 6px; }
-.call-row.alert { box-shadow: inset 3px 0 0 var(--warn); }
-.call-row .tg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.call-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.call-row.open { background: color-mix(in srgb, var(--voice) 7%, transparent); }
+.call-row.sel { background: var(--bg-control); }
+.call-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.call-row.nf .tg, .call-row.nf .c-src { color: var(--text-dim); font-weight: 500; }
+.call-row .tg-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.call-row .tg { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .call-row .c-flag:empty { display: none; }
-.call-row .btn.mark { padding: 2px 7px; color: var(--warn); }
-.call-row .btn.locked { color: var(--accent); }
-.call-row .call-details { grid-column: 1 / -1; margin: 4px 0 2px; padding: 8px 12px; background: var(--bg-sunken); border-radius: var(--radius-sm); }
-.call-row .when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 0.9em; }
-.call-row .tg { font-weight: 650; }
+.call-row .when { font-family: var(--mono); font-size: 0.9em; color: var(--text-dim); }
+.call-row .when .badge { font-family: var(--font); }
 .call-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.call-row .dur { font-variant-numeric: tabular-nums; text-align: right; }
-.call-row .play { display: flex; align-items: center; gap: 8px; justify-content: flex-end; min-width: 0; }
-.call-row .rec-player { flex: 1 1 auto; max-width: 260px; }
-.call-row .why { font-size: 0.82em; color: var(--text-faint); font-style: italic; }
+.call-row .c-tg, .call-row .c-src { min-width: 0; }
+.call-row .c-tg .sub { padding-left: 18px; }
+.call-row .c-freq { font-family: var(--mono); font-size: 0.92em; color: var(--text-dim); }
+.call-row .c-end { display: flex; justify-content: flex-end; }
+.btn.small.c-play { min-width: 5.8em; font-family: var(--mono); }
+.c-note { display: inline-flex; align-items: center; gap: 6px; color: var(--text-faint); font-size: 0.9em; text-align: right; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .calls-empty { padding: 18px 16px; color: var(--text-dim); }
-.calls-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 16px 10px; }
 .calls-more { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 12px 16px; color: var(--text-dim); font-size: 0.86em; border-top: 1px solid var(--line); }
 .calls-more span:empty { display: none; }
-
 @media (max-width: 860px) {
-  .call-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "tg when" "src dur" "freq freq" "play hold";
-    row-gap: 3px;
-  }
-  .call-row .c-hold { grid-area: hold; }
-  .call-row .c-tg { grid-area: tg; }
-  .call-row .c-when { grid-area: when; text-align: right; }
-  .call-row .c-src { grid-area: src; }
-  .call-row .c-dur { grid-area: dur; }
-  .call-row .c-freq { grid-area: freq; }
-  .call-row .c-play { grid-area: play; justify-content: flex-start; margin-top: 4px; }
-  .call-row .rec-player { max-width: none; }
+  .call-row { grid-template-columns: 5.4em minmax(0, 1fr) auto; }
+  .call-row .c-src, .call-row .c-freq { display: none; }
 }
+
+/* The picked call. */
+.now-detail { padding: 16px 18px; }
+.detail-empty { color: var(--text-dim); }
+.detail-body { display: grid; gap: 14px; }
+.detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.kicker { font-size: 0.8em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
+.detail-title { margin-top: 4px; font-size: 1.4em; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+.detail-player .rec-player { display: flex; width: 100%; gap: 10px; }
+.detail-player .rec-player .btn.small.icon {
+  width: 40px; height: 40px; min-height: 40px; flex: none; border-radius: 50%;
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+}
+.now-detail .row:empty, .detail-alerts:empty { display: none; }
+.detail-alerts { display: grid; gap: 6px; }
+.detail-alert {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 15%, var(--bg-raised)); color: var(--warn);
+  font-size: 0.92em;
+}
+.now-detail .btn.mark { color: var(--warn); }
+.now-detail .btn.locked { color: var(--accent); }
+.now-detail .kv { font-size: 0.9em; }
 
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }

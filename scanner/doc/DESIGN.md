@@ -876,9 +876,15 @@ generated, so it cannot drift. (p25-httpd's hand-written `/api/endpoints` catalo
 
 Same stack: plain ES modules embedded by `ui_assets.rs`, no build step, no CDN.
 
+The shell (change 090) is a module rail: a module per unit mode (Scanner, TV) with its pages as
+tabs in the header, and the tools every mode shares (Diagnostics, Settings). `js/modules.js` is
+the one table the rail, the tabs and the router are built from. Viewing a module does not move
+the radio: its pages stay readable while another module has it, under a notice that offers the
+switch.
+
 | Page | Contents |
 |------|----------|
-| **Now** | The at-a-glance summary: the live site card, a call card per lane, recent calls (site picker as today), the hold |
+| **Now** | The at-a-glance summary, filling the screen (change 090): the talkgroup bank (followed or not, speaker, priority, name), the site strip (system and site lists, whether the control channel decodes), a card per traffic lane with the hold on the call it carries, the site's calls, and the picked call's player and details |
 | **Systems** | The scan (bands and settings, progress, a card per found system to fill in and add), then the configured systems in the same card: name, details and identity, sites with their identity, control channel, alternates and traffic channels (the configured ones and those heard on the air), all edited in place with Save; the site's receiver settings behind a button. First run opens here. |
 | **Activity** | As today, with a system/site picker that includes DMR; packet data is a P25 component |
 | **Settings** | Radio (gain, crystal, presets, clock, storage and recording), the configuration (export, import, factory reset), browser, about |

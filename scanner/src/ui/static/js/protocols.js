@@ -108,6 +108,12 @@ export function protocolNames() {
   return labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}` : labels.join('');
 }
 
+// The packet data setting (Settings): the protocol whose sites announce a data channel.
+export const packetDataSetting = {
+  label: 'Follow P25 data traffic',
+  note: 'At a P25 site with two traffic channels, the second waits on the site\'s data channel between calls, and the packet data it reads there is listed in Activity. Off: it waits for voice only, and no lane goes to the data channel. A change applies at once.',
+};
+
 // What the crystal correction is measured from at the live site.
 const CRYSTAL_SOURCE = {
   p25_loop: 'the P25 carrier loop',

@@ -47,7 +47,7 @@ export function dur(ms) {
   return hh + 'h ' + String(m % 60).padStart(2, '0') + 'm';
 }
 
-// "just now", "12 s ago", "4 min ago", "2 h ago"
+// "just now", "12 s ago", "4 min ago", "2 h ago", "3 d ago"
 export function ago(ms) {
   if (ms === null || ms === undefined || ms < 0) return DASH;
   if (ms < 2000) return 'just now';
@@ -55,7 +55,9 @@ export function ago(ms) {
   if (s < 90) return s + ' s ago';
   const m = Math.round(s / 60);
   if (m < 90) return m + ' min ago';
-  return Math.round(m / 60) + ' h ago';
+  const hrs = Math.round(m / 60);
+  if (hrs < 48) return hrs + ' h ago';
+  return Math.round(hrs / 24) + ' d ago';
 }
 
 export function uptime(s) {

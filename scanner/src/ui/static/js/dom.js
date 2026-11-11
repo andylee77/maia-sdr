@@ -36,16 +36,21 @@ const ICONS = {
   info: [['circle', { cx: '12', cy: '12', r: '9' }], ['path', { d: 'M12 11v6M12 7.5v.5' }]],
   lock: [['rect', { x: '5', y: '11', width: '14', height: '9.5', rx: '1.5' }], ['path', { d: 'M8 11V8a4 4 0 018 0v3' }]],
   unlock: [['rect', { x: '5', y: '11', width: '14', height: '9.5', rx: '1.5' }], ['path', { d: 'M8 11V8a4 4 0 017.7-1.5' }]],
+  close: [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
+  tower: [['path', { d: 'M12 13v8M7.5 5.5a6.4 6.4 0 000 9M16.5 5.5a6.4 6.4 0 010 9M4.6 3a10.2 10.2 0 000 14M19.4 3a10.2 10.2 0 010 14' }], ['circle', { cx: '12', cy: '10', r: '2' }]],
+  tv: [['rect', { x: '3', y: '6', width: '18', height: '12', rx: '2' }], ['path', { d: 'M8 21h8M9 3l3 3 3-3' }]],
+  scope: [['path', { d: 'M4 19V5M4 19h16M8 15l3-4 3 2 4-6' }]],
 };
 
-export function icon(name) {
+// `size` in px (16 in a line of text).
+export function icon(name, size = 16) {
   const make = (tag, attrs) => {
     const el = document.createElementNS(SVG, tag);
     for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
     return el;
   };
   const svg = make('svg', {
-    viewBox: '0 0 24 24', width: '16', height: '16', fill: 'none', stroke: 'currentColor',
+    viewBox: '0 0 24 24', width: String(size), height: String(size), fill: 'none', stroke: 'currentColor',
     'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
   });
   for (const [tag, attrs] of ICONS[name]) svg.appendChild(make(tag, attrs));

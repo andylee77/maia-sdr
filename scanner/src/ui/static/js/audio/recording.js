@@ -23,7 +23,8 @@ function clockText(s) {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 }
 
-// The recording at `url`: `el` to show, and `play(at)` to play it, from `at` seconds when given.
+// The recording at `url`: `el` to show, `play(at)` to play it (from `at` seconds when given) and
+// `pause()` (an element taken out of the page plays on otherwise).
 export function recordingPlayer(url) {
   const audio = h('audio', { preload: 'auto', src: url });
   audio.volume = volume;
@@ -74,5 +75,5 @@ export function recordingPlayer(url) {
   };
   toggle.addEventListener('click', () => (audio.paused ? play(null) : audio.pause()));
   showState();
-  return { el: h('span', { class: 'rec-player' }, toggle, seek, time, audio), play };
+  return { el: h('span', { class: 'rec-player' }, toggle, seek, time, audio), play, pause: () => audio.pause() };
 }

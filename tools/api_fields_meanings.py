@@ -124,6 +124,8 @@ STRUCTS["radio_config"] = [
     ("crystal", "object", "Crystal tracking."),
     ("crystal.tracking", "bool", "The correction follows the live site's carrier."),
     ("crystal.anchor_hz", "number", "How far tracking may move from this run's calibration, Hz at the LO (0: no limit)."),
+    ("packet_data", "object", "P25 packet data."),
+    ("packet_data.follow", "bool", "The last traffic lane waits on the site's data channel between calls; false: no lane waits there."),
 ]
 
 STRUCTS["window_plan"] = [
