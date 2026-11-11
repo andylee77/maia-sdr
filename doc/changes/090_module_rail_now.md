@@ -2,7 +2,8 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** see the status log.
+**Status:** unit A runs the test build `2026-11-10-rail1` in RAM. A reboot returns it to the SD
+image `2026-10-06-rec1`.
 
 ## Why
 
@@ -140,3 +141,17 @@ that a review of the API is likely to move, each with what follows in the UI. In
 
 ## Status log
 
+- 2026-11-10: committed (8d2cc33). Host tests 516 pass; the DMR reference keeps 24,984 of 24,996
+  lines; the ARM release build is clean.
+- 2026-11-10: `2026-11-10-rail1` went onto unit A (binary only):
+  - live on Clay within 35 s, control decode 100 % at 40 messages a second, 101,576 recordings
+    indexed;
+  - `now_rail.mjs` with A serving the page and its data: the 10 read steps pass (41 talkgroups
+    in the bank, 20 of them encrypted; a call picked by its play button plays in the panel);
+  - the packet data setting through the API on A: turned off, lane 2 left the data channel
+    (857.9875 MHz then) within 2 s and stayed off it for the 26 s watched; turned on, it was
+    back within 5 s; a body without `follow` is refused. It is on again, as before.
+  - The write steps (the bank's controls, giving TV the radio and back) ran on the PC daemon
+    only: on A they would leave an alias behind and stop the scanner twice.
+- `scanner/doc/API_FIELDS.md` is regenerated from unit A (`tools/api_fields.py`), with
+  `packet_data.follow`.
