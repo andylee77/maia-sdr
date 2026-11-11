@@ -44,7 +44,14 @@ class TvPlayer {
     this.frames = 0; this.info = null; this.stats = null;
     this.screen = null; this.screenError = ''; this.pictures = []; this.raf = 0;
     this.clock = null; this.drawn = 0; this.dropped = 0; this.shown = false;
+    this.volume = 1; this.gain = null;
     this.listeners = new Set();
+  }
+
+  // The sound's volume, 0 to 1: the header's, as live audio's and a recording's.
+  setVolume(v) {
+    this.volume = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this.gain) this.gain.gain.value = this.volume;
   }
 
   // fn(status) now and at each change; returns its removal.
@@ -148,7 +155,10 @@ class TvPlayer {
         };
         worker.postMessage(init);
       }
-      this.node.connect(ctx.destination);
+      this.gain = ctx.createGain();
+      this.gain.gain.value = this.volume;
+      this.node.connect(this.gain);
+      this.gain.connect(ctx.destination);
       // The worklet's time often, for the pictures; the page's status twice a second.
       let tick = 0;
       this.timer = setInterval(() => {
@@ -228,7 +238,7 @@ class TvPlayer {
       if ('onaudioprocess' in this.node) this.node.onaudioprocess = null;
     }
     if (this.ctx) { try { this.ctx.close(); } catch { /* gone */ } }
-    this.ctx = null; this.node = null; this.worker = null; this.ring = null; this.timer = null; this.mode = null; this.raf = 0;
+    this.ctx = null; this.node = null; this.gain = null; this.worker = null; this.ring = null; this.timer = null; this.mode = null; this.raf = 0;
     this.playing = null; this.error = ''; this.open = false; this.stats = null; this.pictures = []; this.clock = null; this.shown = false;
     this.emit();
   }

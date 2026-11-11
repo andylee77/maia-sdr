@@ -96,9 +96,14 @@ fn ts_response(rx: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Response {
 
 /// Live TV's state.
 pub async fn live(State(s): State<Arc<AppState>>) -> Json<LiveStats> {
+    Json(live_stats(&s).await)
+}
+
+/// Live TV's state as `GET /api/v1/atsc/live` and `/ws/live` give it.
+pub async fn live_stats(s: &AppState) -> LiveStats {
     let mut stats = s.atsc.live.stats();
     stats.available = s.tuner.hw().vsb_present().await;
-    Json(stats)
+    stats
 }
 
 #[derive(Debug, Deserialize)]

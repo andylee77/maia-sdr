@@ -5,6 +5,25 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-10] 091: TV: the Watch page with three views, and Channels in the rail
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the TV pages next, as drawn (a channel list, the picture, the signal),
+  then to cycle between that small view, a large one (the picture across the page, the channels
+  below) and a full-screen player with nothing over the picture. The old Viewer was a drop-down
+  over a text block, polled the radio each second, had no volume, and could not play while the
+  scanner had the radio. Record: `doc/changes/091_tv_watch.md`.
+- **Watch** replaces the Viewer as TV's first page: the scan's channels by number, the picture
+  with Play or Stop and channel up and down, the programme's streams, the signal (the live
+  receiver's MER and counts, or what the scan read), "Open in VLC", and the three views on one
+  button or a double click.
+- **Play and Scan take the radio** for TV themselves, after asking, when the scanner has it.
+- **Live TV's state is pushed** on `/ws/live` (`atsc_live`), and the header's one volume sets
+  the TV's sound.
+- **Channels:** a named station's channels each open Watch.
+
 ## [2026-11-10] 090: The module rail, the new Now page, and a switch for P25 data traffic
 
 **Branch:** fishball-p25 (local)

@@ -1,5 +1,5 @@
 //! The TV stream: an RF channel's transport stream served to players as it plays (VLC and other
-//! players over HTTP, and the Viewer's). Its source is live TV (`live`, the radio core's 8-VSB
+//! players over HTTP, and the Watch page's). Its source is live TV (`live`, the radio core's 8-VSB
 //! block) on the channel it plays, or the channel's recording on the SD card (`tv/rf<N>.ts`),
 //! played at the pace its programme clock references set and from the start again at its end;
 //! each player gets its own reading.

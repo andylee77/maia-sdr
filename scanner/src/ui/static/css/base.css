@@ -187,18 +187,19 @@ h2 { font-size: 0.98rem; font-weight: 650; }
 }
 .banner .btn { margin-left: auto; }
 
-/* A page keeps a readable width; Now takes the whole screen (components.css lays it out). */
+/* A page keeps a readable width; one that fills the screen (Now, Watch: `fill` in
+   js/modules.js) takes all of it, and components.css lays out its panes. */
 .view {
   flex: 1; width: 100%; max-width: 1280px;
   margin: 0 auto;
   padding: var(--gap) 24px calc(var(--gap) * 2 + var(--tabbar-h));
   display: grid; gap: var(--gap); align-content: start;
 }
-body[data-view="now"] .view { max-width: none; }
+body[data-fill] .view { max-width: none; }
 @media (min-width: 1000px) and (min-height: 600px) {
-  body[data-view="now"] { height: 100vh; height: 100dvh; }
-  body[data-view="now"] .page { min-height: 0; }
-  body[data-view="now"] .view { min-height: 0; grid-template-rows: minmax(0, 1fr); padding-bottom: var(--gap); }
+  body[data-fill] { height: 100vh; height: 100dvh; }
+  body[data-fill] .page { min-height: 0; }
+  body[data-fill] .view { min-height: 0; grid-template-rows: minmax(0, 1fr); padding-bottom: var(--gap); }
 }
 .grid-2 { display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { display: grid; gap: var(--gap); grid-template-columns: repeat(3, minmax(0, 1fr)); }

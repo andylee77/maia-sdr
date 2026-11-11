@@ -1,16 +1,17 @@
 // Page shell: the module rail, the viewed module's tabs, the header (which module has the radio,
-// live audio and this browser's listening settings), the page router and the store the radio
-// pushes. The modules and their pages come from modules.js.
+// this browser's volume, live audio and its listening settings), the page router and the store
+// the radio pushes. The modules and their pages come from modules.js.
 //
 // Viewing a module does not move the radio: its pages stay readable while another module has it,
 // under a notice that offers the switch.
 
-import { store, subscribe, start, refresh } from './store.js';
-import { h, icon, setText, setClass, toast } from './dom.js';
-import { api } from './api.js';
+import { store, subscribe, start } from './store.js';
+import { h, icon, setText, setClass } from './dom.js';
 import { MODULES } from './modules.js';
+import { mode, giveRadio, changingMode, onModeChanging } from './mode.js';
 import { player } from './audio/player.js';
 import { setRecordingVolume } from './audio/recording.js';
+import { tv } from './tv/player.js';
 import { getPrefs, setPrefs, onPrefs } from './prefs.js';
 
 const $ = id => document.getElementById(id);
@@ -18,7 +19,6 @@ const $ = id => document.getElementById(id);
 const PAGES = new Map(MODULES.flatMap(m => m.pages.map(p => [p.key, { module: m, page: p }])));
 const SCANNER = MODULES.find(m => m.mode === 'scanner');
 
-const mode = () => (store.status && store.status.mode) || 'scanner';
 // The module that has the radio.
 const owner = () => MODULES.find(m => m.mode === mode()) || SCANNER;
 
@@ -26,8 +26,6 @@ const owner = () => MODULES.find(m => m.mode === mode()) || SCANNER;
 let current = null;
 // Opened with no address: the page moves to the radio's module once the radio says which.
 let landing = !location.hash;
-// A change of the radio's module is under way.
-let switching = false;
 
 // The rail: the modes' modules at the top, the shared tools at the bottom. Module id -> its
 // link and its "has the radio" dot.
@@ -49,8 +47,9 @@ function route() {
   if (current && current.view.unmount) current.view.unmount();
   const host = $('view');
   host.replaceChildren();
-  // The page's own layout (Now fills the screen and scrolls its panes).
+  // The page's own layout: one that fills the screen scrolls its panes, not the page.
   document.body.dataset.view = hit.page.key;
+  document.body.toggleAttribute('data-fill', !!hit.page.fill);
   current = { key: hit.page.key, module: hit.module, view: hit.page.view.mount(host) };
   nav();
   shell(store);
@@ -88,35 +87,19 @@ function shell(s) {
   if (away) {
     setText($('banner-text'), `The radio is on ${own.label}. ${viewed.away}`);
     setText($('banner-switch'), `Switch the radio to ${viewed.label}`);
-    $('banner-switch').disabled = switching;
+    $('banner-switch').disabled = changingMode();
   }
   // On the radio's own module and on the tools: the way back to the scanner.
   const back = $('radio-back');
   back.hidden = !s.status || own === SCANNER || away;
   setText(back, `Return to ${SCANNER.label}`);
-  back.disabled = switching;
+  back.disabled = changingMode();
 }
 
-// Give the radio to module `m`. A module has the radio to itself, so leaving the scanner stops
-// its calls until it is back. The change returns once the radio is the new module's.
-async function giveRadio(m) {
-  if (switching || m === owner()) return;
-  if (owner() === SCANNER && !confirm(`Switch the radio to ${m.label}? The scanner stops following calls until it is switched back.`)) return;
-  switching = true;
-  shell(store);
-  try {
-    await api.setMode(m.mode);
-    await refresh();
-    toast(`The radio is on ${m.label}`);
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    switching = false;
-    shell(store);
-  }
-}
-$('banner-switch').addEventListener('click', () => giveRadio(current.module));
-$('radio-back').addEventListener('click', () => giveRadio(SCANNER));
+// The radio to the viewed module, or back to the scanner (mode.js asks first and reports).
+$('banner-switch').addEventListener('click', () => giveRadio(current.module.mode, current.module.label));
+$('radio-back').addEventListener('click', () => giveRadio(SCANNER.mode, SCANNER.label));
+onModeChanging(() => shell(store));
 
 // The talkgroup's name from the calls the store holds.
 function tgName(tg) {
@@ -133,8 +116,9 @@ function openedText(open) {
 }
 
 // Live audio: the button starts and stops it, and a page load starts it again when it was on.
-// The volume (live audio and recordings, up to full scale), the leveller and alerts-only listening
-// are this browser's (prefs.js); the server says which speaker each call is on.
+// The volume (live audio, recordings and the TV's sound, up to full scale), the leveller and
+// alerts-only listening are this browser's (prefs.js); the server says which speaker each call
+// is on.
 $('listen').addEventListener('click', () => {
   const on = !player.playing;
   setPrefs({ listening: on });
@@ -144,6 +128,7 @@ $('listen').addEventListener('click', () => {
 $('vol').addEventListener('input', e => {
   player.setVolume(e.target.value / 100);
   setRecordingVolume(e.target.value / 100);
+  tv.setVolume(e.target.value / 100);
 });
 $('vol').addEventListener('change', e => setPrefs({ volume: e.target.value / 100 }));
 $('norm').addEventListener('click', () => setPrefs({ normalize: !getPrefs().normalize }));
@@ -152,6 +137,7 @@ $('alert-window').addEventListener('change', e => setPrefs({ alertMinutes: Numbe
 onPrefs(p => {
   player.setVolume(p.volume);
   setRecordingVolume(p.volume);
+  tv.setVolume(p.volume);
   player.setNormalize(p.normalize);
   p.lanes.forEach((l, i) => player.setLaneVolume(i, l.muted ? 0 : l.volume));
   player.setAlertMode(p.alertsOnly, p.alertMinutes * 60000);

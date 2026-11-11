@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the ATSC player (scanner/player) to WebAssembly for the Viewer: the module goes beside the
+# Builds the ATSC player (scanner/player) to WebAssembly for the Watch page: the module goes beside the
 # UI's scripts (scanner/src/ui/static/player/atsc_player.wasm), and the scanner's test that it was
 # built from the crate's current sources is blessed with their hash. Run after changing the crate,
 # and commit the module and its .source with the change. Needs the wasm32-unknown-unknown target

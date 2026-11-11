@@ -98,11 +98,11 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
 | `GET`/`PUT /api/v1/mode` | The unit's mode (`scanner`, `atsc`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner` and `tv`; `js/modules.js` maps them to the modes |
-| `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Viewer | The Viewer asks for it every second: it is not pushed on `/ws/live` |
-| `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP | UI Channels and Viewer; `tools/atsc_check.py` | Results are in memory only |
+| `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Watch (play and stop; the state itself is pushed on `/ws/live` as `atsc_live` since 091) | Stop has no notion of who else is on the stream: Watch stops the receiver only when the pushed `viewers` is at most 1 |
+| `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP | UI Channels and Watch; `tools/atsc_check.py` | Results are in memory only |
 | `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | — |
-| `GET /api/v1/atsc/recordings` | The TV recordings on the SD card: RF channel, size, programmes | UI Viewer | — |
-| `GET /api/v1/atsc/stream/{rf}` | An RF channel's transport stream as it plays (`program`: one programme) | UI Viewer (its picture and sound; its address and a playlist for VLC); VLC and other players | Its source is a recording until the radio core decodes 8-VSB (bake D) |
+| `GET /api/v1/atsc/recordings` | The TV recordings on the SD card: RF channel, size, programmes | UI Watch | — |
+| `GET /api/v1/atsc/stream/{rf}` | An RF channel's transport stream as it plays (`program`: one programme) | UI Watch (its picture and sound; its address and a playlist for VLC); VLC and other players | Live from the radio core's 8-VSB block (bake D) when it plays that channel, else its recording |
 
 ## Configuration
 
@@ -192,9 +192,9 @@ The list below follows them.
 
 ### What a code review may change
 
-Written with change 090 (2026-11-10), which built the module rail, the new Now page and the
-packet data switch on these routes. Each row is something the pages lean on that a review of the
-API is likely to move, with what would have to follow in the UI.
+Written with changes 090 and 091 (2026-11-10), which built the module rail, the new Now page,
+the packet data switch and TV's Watch page on these routes. Each row is something the pages lean
+on that a review of the API is likely to move, with what would have to follow in the UI.
 
 | Route or field | What may change | What follows in the UI |
 |----------------|-----------------|------------------------|
@@ -208,8 +208,10 @@ API is likely to move, with what would have to follow in the UI.
 | `GET /api/v1/activity/talkgroups` as the bank's list | The bank's talkgroups are the aliases plus those heard in the last week (`hours=168`, `limit=1000`), asked for at most every 5 minutes, not pushed. A review may give the live site's talkgroups a route of their own, with each one's treatment | `knownTalkgroups` in `views/talkgroups.js` |
 | `status.live.state` `away` | It means another mode has the radio, and also the moment a mode changes. With a third mode (`data`) the shell needs to know which mode has it: `status.mode` says so today | `js/modules.js` (`scannerLine`), the shell's notice in `js/main.js`, Now's site strip |
 | `PUT /api/v1/mode` | It returns once the radio is the new mode's (seconds when a site goes live again). The values are the daemon's (`atsc`), not the UI's (`tv`). `Modes::set` assumes two modes (`DATA_MODE.md` §8) | `giveRadio` in `js/main.js`; a module's `mode` in `js/modules.js` |
-| ATSC routes outside ATSC mode | `POST /api/v1/atsc/scan` and `…/live` are refused with a message when the radio is the scanner's. The pages do not check first: the shell's notice says the radio is elsewhere, and the button still shows | Channels and Viewer are unchanged in 090 |
-| `GET /api/v1/atsc/live` | Polled each second by the Viewer; the brief says no page polls | `views/viewer.js` |
+| ATSC routes outside ATSC mode | `POST /api/v1/atsc/scan` and `…/live` are refused with a message when the radio is the scanner's. Since 091 the pages change the mode first (`PUT /api/v1/mode`, after asking), then call them: two requests where a review may want one (a scan or a play that takes the radio) | `giveRadio` in `js/mode.js`, called by Watch's Play and Channels' Scan |
+| `/ws/live` `atsc_live` (091) | Live TV's whole state once a second while it changes (the codeword counts move every second while a channel plays), 40 fields of MER each time. A review may send less, or only what moved | `views/watch.js` (`want({ atsc_live: true })`) |
+| `POST /api/v1/atsc/live/stop` and `viewers` | The receiver has one stop for every player. Watch decides from the last pushed `viewers` whether another player is on the stream, up to a second old | `stopLive` in `views/watch.js` |
+| The TV scan's results | In memory only (`GET /api/v1/atsc/scan`): after a restart Watch lists no channel until a scan runs again. A review may keep the last scan with the unit's state | Watch's list (`tv/pick.js` `channelsOf`) |
 | `PUT /api/v1/hold` with `lane` | The site's hold and a lane's share a route and two status fields (`hold`, `lane_holds`) | Now's traffic cards |
 | `recording.every_call` | No route or page sets it apart from the whole recording setting, so the per-talkgroup `record` flag has no control in the bank | When it gets one, the bank gains a Record control (`record` is already in `PUT …/talkgroups/{tg}`) |
 

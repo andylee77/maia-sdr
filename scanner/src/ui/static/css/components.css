@@ -403,40 +403,146 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* ── Spectrum ─────────────────────────────────────────────── */
 .spectrum { width: 100%; height: 260px; display: block; border-radius: var(--radius-sm); background: var(--bg-sunken); }
 
-/* ── Viewer: the picture area (dark in either theme, as a picture is) ── */
-.screen {
-  aspect-ratio: 16 / 9; width: 100%; max-height: 72vh; overflow: auto;
-  display: flex; flex-direction: column; gap: 14px; padding: 18px 22px;
-  background: #000; color: #d8dde3; border-radius: var(--radius-sm);
+/* ── Watch (TV): the channels, the picture with its controls and the programme, the signal.
+   One column on a narrow or short screen. On a wider one the page fills the screen: the channels
+   in a column of their own, the signal under the picture; from 1360 px the signal is a column
+   on the right. ── */
+.watch { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.tv-stage { order: 1; display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.tv-channels { order: 2; }
+.tv-signal { order: 3; }
+.tv-channels .card-body { max-height: 46vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.tv-channels .card-head .input { width: 7.5em; min-height: 28px; padding: 3px 9px; }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .watch {
+    min-height: 0;
+    grid-template-columns: 300px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: "list stage" "list signal";
+  }
+  .tv-channels { grid-area: list; min-height: 0; display: flex; flex-direction: column; }
+  .tv-channels .card-body { flex: 1; min-height: 0; max-height: none; }
+  .tv-stage { grid-area: stage; min-height: 0; }
+  .tv-signal { grid-area: signal; }
+  .tv-stage .tv-screen { aspect-ratio: auto; flex: 1 1 0; min-height: 180px; }
 }
-.screen .dim { color: #9aa4ae; }
-.screen-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 1.25em; }
-.screen-title .r { margin-left: auto; font-size: 0.8em; color: #9aa4ae; }
-.screen-stats {
-  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 6px 16px;
-  font-variant-numeric: tabular-nums;
+@media (min-width: 1360px) and (min-height: 600px) {
+  .watch {
+    grid-template-columns: 300px minmax(0, 1fr) 320px;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "list stage signal";
+  }
+  .tv-signal { min-height: 0; overflow-y: auto; }
 }
-.screen-stats .k { color: #8b95a0; }
-.screen-stats .r { text-align: right; color: #9aa4ae; }
-.screen-note { margin-top: auto; color: #6f7882; font-size: 0.88em; }
-.screen a { color: #8fbff0; overflow-wrap: anywhere; }
-.screen-play { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
-.screen { position: relative; }
-.screen-picture { position: absolute; inset: 0; width: 100%; height: 100%; display: none; border-radius: inherit; }
-.screen.playing .screen-picture { display: block; }
-.screen.playing .screen-title, .screen.playing .screen-stats { visibility: hidden; }
-.screen.playing .screen-play { position: relative; z-index: 1; padding: 6px 8px; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.6); }
-.screen .btn { background: #1d232a; border-color: #3a434d; color: #d8dde3; }
-.screen .btn:hover { border-color: #8fbff0; }
-.screen-play .screen-note { margin-top: 0; }
-.screen-empty { margin: auto; color: #8b95a0; }
+
+/* The large view: the picture across the page, the channels a strip of chips below it; the
+   signal and the programme's streams are the small view's. */
+.watch.large .tv-signal, .watch.large .tv-program, .watch.large .tv-channels .card-head { display: none; }
+.watch.large .tv-channels .card-body { max-height: none; overflow: visible; border-top: 0; }
+.watch.large .tv-list { display: flex; gap: 8px; overflow-x: auto; padding: 10px; }
+.watch.large .tv-row {
+  flex: none; width: auto; min-width: 7.2em; min-height: 52px;
+  grid-template-columns: minmax(0, 1fr); gap: 0; padding: 6px 12px;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg-control);
+}
+.watch.large .tv-row:first-child { border-top: 1px solid var(--line-strong); }
+.watch.large .tv-row.sel { border-color: var(--accent-line); background: var(--accent-soft); }
+.watch.large .tv-row .sub, .watch.large .tv-sig { display: none; }
+.watch.large .tv-num { font-size: 0.86em; font-weight: 500; color: var(--text-dim); }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .watch.large {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: "stage" "list";
+  }
+}
+
+/* A channel: its number, its name, the MER the scan read. */
+.tv-row {
+  display: grid; grid-template-columns: 3.4em minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  width: 100%; min-height: 48px; padding: 5px 14px;
+  border: 0; border-top: 1px solid var(--line);
+  background: transparent; text-align: left; cursor: pointer;
+}
+.tv-row:first-child { border-top: 0; }
+.tv-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.tv-row.sel { background: var(--bg-control); }
+.tv-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tv-num { font-family: var(--mono); font-weight: 600; }
+.tv-row.live .tv-num, .tv-row.live .tv-name { color: var(--accent); }
+.tv-text { min-width: 0; display: grid; }
+.tv-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-sig { font-family: var(--mono); font-size: 0.86em; color: var(--text-dim); }
+
+/* The picture (dark in either theme, as a picture is): the canvas fills it and keeps the
+   picture's shape inside; the channel's name and the player's state lie over it until a picture
+   is up. */
+.tv-screen {
+  position: relative; overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius);
+  background: #000; color: #d8dde3;
+}
+/* Full screen: the picture alone. */
+.tv-screen:fullscreen { border-radius: 0; }
+.tv-screen:fullscreen .tv-over { display: none; }
+.tv-picture { position: absolute; inset: 0; width: 100%; height: 100%; display: block; visibility: hidden; }
+.tv-screen.playing .tv-picture { visibility: visible; }
+.tv-over {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 20px; text-align: center;
+}
+.tv-over-title { font-size: 1.7em; font-weight: 650; }
+.tv-over-note { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 34em; color: #9aa4ae; }
+
+/* Its controls. */
+.tv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 14px; }
+.tv-play {
+  width: 44px; height: 44px; flex: none;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink); cursor: pointer;
+}
+.tv-play:disabled { opacity: 0.5; cursor: default; }
+.tv-play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tv-bar .btn.small.icon { width: 36px; height: 36px; min-height: 36px; }
+.tv-now { min-width: 0; margin-left: 4px; }
+.tv-title { font-size: 1.15em; font-weight: 650; }
+.tv-now .sub { font-size: 0.9em; color: var(--text-dim); }
+.tv-other {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 9px 14px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg-raised));
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent);
+}
+.tv-other .btn { margin-left: auto; }
+
+/* The programme's streams as the scan read them. */
+.tv-program {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 5px 16px;
+  padding: 12px 16px; font-size: 0.92em; font-variant-numeric: tabular-nums;
+}
+.tv-program .k { color: var(--text-faint); }
+.tv-program .r { text-align: right; color: var(--text-dim); font-family: var(--mono); font-size: 0.94em; }
+.tv-program a { overflow-wrap: anywhere; }
+
+/* The signal: the MER, its last fields as bars, the receiver's counts. */
+.tv-signal { display: grid; gap: 10px; align-content: start; padding: 14px 18px; }
+.tv-signal .card-head { margin-bottom: 0; }
+.tv-mer-line { display: flex; align-items: baseline; gap: 8px; }
+.tv-mer { font-size: 2.2em; font-weight: 650; line-height: 1.1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.tv-bars { height: 44px; display: flex; align-items: flex-end; gap: 2px; }
+.tv-bars span { flex: 1; min-width: 1px; border-radius: 2px; background: var(--accent-line); }
+.tv-signal .kv { font-size: 0.92em; }
 
 @media (max-width: 640px) {
   .call-tg { font-size: 1.8em; }
   .log-line { grid-template-columns: 8.2em minmax(0, 1fr); }
   .log-line .c { display: none; }
   .spectrum { height: 200px; }
-  .screen { aspect-ratio: auto; min-height: 56vw; padding: 12px 14px; }
-  .screen-stats { grid-template-columns: max-content minmax(0, 1fr); }
-  .screen-stats .r { grid-column: 2; text-align: left; }
+  .tv-program { grid-template-columns: max-content minmax(0, 1fr); }
+  .tv-program .r { grid-column: 2; text-align: left; }
 }

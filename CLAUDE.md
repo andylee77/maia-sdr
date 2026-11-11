@@ -17,15 +17,16 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `tools/atsc_live_check.py` names stations live and watches a channel. Known limit: a channel
   where every codeword fails holds the live thread at a core.
 - **The ATSC player (084):** `doc/changes/084_atsc_player.md`: our own decoders in Rust for the
-  browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Viewer plays any
-  named channel live (085), or a recorded one without the block. H.262 (2000) and its corrigenda
+  browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Watch page (091) plays
+  any named channel live (085), or a recorded one without the block. H.262 (2000) and its corrigenda
   are in `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
-  (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`);
-  the other pages keep their old layouts inside it. Checks: `runs/ui_check/modules_check.mjs`
-  and `now_rail.mjs`.
+  (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
+  and TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`); Activity,
+  Systems, Channels, Diagnostics and Settings keep their old layouts inside the rail. Checks:
+  `runs/ui_check/modules_check.mjs`, `now_rail.mjs` and `tv_watch.mjs`.
 
 ## Layout
 
@@ -33,7 +34,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 |------|------|
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
-| `scanner/player/` | The ATSC player (`atsc-player`, MIT, no dependencies, built to WebAssembly for the Viewer): the transport stream, AC-3, MPEG-2 video. FFmpeg is only its tests' reference (084) |
+| `scanner/player/` | The ATSC player (`atsc-player`, MIT, no dependencies, built to WebAssembly for the Watch page): the transport stream, AC-3, MPEG-2 video. FFmpeg is only its tests' reference (084) |
 | `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.1.0, product "rad1", its 8-VSB block in `vsb/`), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`, the Verilator benches in `test_verilator/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |

@@ -3,15 +3,16 @@
 // itself while the unit is in it, and its pages stay readable while another module has it. A
 // module without one is a tool every mode shares.
 //
-// A page is a view exporting mount(el) -> { update(store), unmount() }. A new module is an entry
-// here, its views, and its mode in the daemon.
+// A page is a view exporting mount(el) -> { update(store), unmount() }; one with `fill` takes the
+// whole screen and scrolls its own panes. A new module is an entry here, its views, and its mode
+// in the daemon.
 
 import { mhz } from './format.js';
 import * as now from './views/now.js';
 import * as activity from './views/activity.js';
 import * as systems from './views/systems.js';
 import * as channels from './views/channels.js';
-import * as viewer from './views/viewer.js';
+import * as watch from './views/watch.js';
 import * as diag from './views/diagnostics.js';
 import * as settings from './views/settings.js';
 
@@ -45,7 +46,7 @@ export const MODULES = [
     label: 'Scanner',
     icon: 'tower',
     pages: [
-      { key: 'now', label: 'Now', view: now },
+      { key: 'now', label: 'Now', view: now, fill: true },
       { key: 'activity', label: 'Activity', view: activity },
       { key: 'systems', label: 'Systems', view: systems },
     ],
@@ -61,12 +62,12 @@ export const MODULES = [
     label: 'TV',
     icon: 'tv',
     pages: [
+      { key: 'watch', label: 'Watch', view: watch, fill: true },
       { key: 'channels', label: 'Channels', view: channels },
-      { key: 'viewer', label: 'Viewer', view: viewer },
     ],
     line: tvLine,
     working: () => true,
-    away: 'These pages show what the last TV scan found. Scanning and watching need the radio.',
+    away: 'These pages show what the last TV scan found. A scan or Play takes the radio.',
   },
   { id: 'diag', label: 'Diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag }] },
   { id: 'settings', label: 'Settings', icon: 'tune', pages: [{ key: 'settings', label: 'Settings', view: settings }] },

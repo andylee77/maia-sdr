@@ -1,12 +1,15 @@
-// The Channels page (ATSC TV mode): the TV channel finder. Pick the bands and settings, then one table of
-// the channels asked for, filled in as /ws/live reports the scan: each channel as its window is read
-// (what it holds: 8-VSB by its pilot, a signal without the 8-VSB pilot, or nothing; its carrier to
-// noise, its pilot and its power), then its station's own names as its channel is decoded. A
-// channel picked in the table shows its spectrum and its station's virtual channels.
+// The Channels page (the TV module): the TV channel finder. Pick the bands and settings, then one
+// table of the channels asked for, filled in as /ws/live reports the scan: each channel as its
+// window is read (what it holds: 8-VSB by its pilot, a signal without the 8-VSB pilot, or nothing;
+// its carrier to noise, its pilot and its power), then its station's own names as its channel is
+// decoded. A channel picked in the table shows its spectrum and its station's virtual channels,
+// each with a way to Watch. A scan gives the radio to TV first, when another module has it.
 
 import { h, card, toast, table, setClass } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
 import { api } from '../api.js';
+import { giveRadio } from '../mode.js';
+import { channelKey, pickChannel } from '../tv/pick.js';
 import { inline } from './cards.js';
 
 const KIND = {
@@ -54,8 +57,9 @@ function stationText(st) {
   return { text: 'too weak to decode', title: `${st.failed} of ${st.packets} packets failed${st.mer_db == null ? '' : `; MER ${num(st.mer_db, 1)} dB`}` };
 }
 
-// A decoded station: how it decoded, then its virtual channels.
-function stationDetails(st) {
+// A decoded station on RF channel `rf`: how it decoded, then its virtual channels, each with
+// the way to Watch it.
+function stationDetails(st, rf) {
   if (!st) return [];
   if (st.error) return [h('p', { class: 'dim', text: `Not decoded: ${st.error}.` })];
   const clock = st.time_unix ? `; its clock ${new Date(st.time_unix * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` : '';
@@ -63,13 +67,14 @@ function stationDetails(st) {
     + `${num(st.packets)} packets, ${num(st.failed)} beyond Reed-Solomon${clock}.`;
   const out = [h('p', { class: 'dim', text: how })];
   if (st.channels.length) {
-    out.push(table(['Channel', 'Name', 'Long name', 'Program', 'Service', ''], st.channels.map(c => h('tr', null,
+    out.push(table(['Channel', 'Name', 'Long name', 'Program', 'Service', '', ''], st.channels.map(c => h('tr', null,
       h('td', { class: 'num', text: `${c.major}.${c.minor}` }),
       h('td', { text: c.short_name }),
       h('td', { class: 'dim', text: c.long_name || DASH }),
       h('td', { class: 'num', text: String(c.program) }),
       h('td', { text: SERVICE[c.service_type] || `type ${c.service_type}` }),
-      h('td', { class: 'dim', text: [c.hidden ? 'hidden' : '', c.access_controlled ? 'scrambled' : ''].filter(Boolean).join(', ') })))));
+      h('td', { class: 'dim', text: [c.hidden ? 'hidden' : '', c.access_controlled ? 'scrambled' : ''].filter(Boolean).join(', ') }),
+      h('td', { style: { textAlign: 'right' } }, h('a', { class: 'btn small', href: '#watch', text: 'Watch', onclick: () => pickChannel(channelKey(rf, c)) }))))));
   }
   return out;
 }
@@ -202,6 +207,11 @@ export function mount(el) {
         const g = gain.value.trim();
         if (g && !(Number(g) >= -3 && Number(g) <= 76)) throw new Error('Gain: -3 to 76 dB, or empty for the AGC');
         go.disabled = true;
+        // A scan needs the radio: TV takes it first, when the user agrees.
+        if (!(await giveRadio('atsc', 'TV'))) {
+          go.disabled = false;
+          return;
+        }
         await api.atscScan({ channels: chosen(), frames: n, gain_db: g ? Math.round(Number(g)) : null, identify: name.checked });
       } catch (e) {
         toast(e.message, true);
@@ -323,7 +333,7 @@ export function mount(el) {
         drawChannel(canvas, picked);
         redraw = () => drawChannel(canvas, picked);
         const ch = now.found.find(x => x.number === n);
-        about.replaceChildren(...stationDetails(ch && ch.station));
+        about.replaceChildren(...stationDetails(ch && ch.station, n));
       } catch (e) {
         toast(e.message, true);
       }
@@ -361,7 +371,7 @@ export function mount(el) {
           else body.prepend(tr);
           r = { tr, sig };
           rows.set(n, r);
-          if (n === pickedNumber && ch && !plot.hidden) about.replaceChildren(...stationDetails(ch.station));
+          if (n === pickedNumber && ch && !plot.hidden) about.replaceChildren(...stationDetails(ch.station, n));
         }
         after = r.tr;
       }

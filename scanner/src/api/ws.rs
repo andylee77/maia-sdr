@@ -144,7 +144,7 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
-/// `window` and `crystal` messages.
+/// `window`, `crystal` and `atsc_live` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| live_feed(socket, s))
 }
@@ -154,6 +154,7 @@ const FEED_TICK: Duration = Duration::from_millis(250);
 const RADIO_EVERY: Duration = Duration::from_secs(3);
 const WINDOW_EVERY: Duration = Duration::from_secs(5);
 const CRYSTAL_EVERY: Duration = Duration::from_secs(1);
+const ATSC_LIVE_EVERY: Duration = Duration::from_secs(1);
 /// Event log lines sent at most at once.
 const EVENTS_MAX: usize = 500;
 
@@ -173,6 +174,9 @@ struct Wants {
     window: bool,
     /// `crystal`: the crystal correction (as `GET /api/v1/radio/crystal`) when it changed.
     crystal: bool,
+    /// `atsc_live`: live TV's state (`live`, as `GET /api/v1/atsc/live`) when it changed, looked
+    /// at each second.
+    atsc_live: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -186,7 +190,7 @@ struct EventsWant {
 
 impl Wants {
     fn any(&self) -> bool {
-        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live
     }
 }
 
@@ -198,6 +202,8 @@ struct Sent {
     window: Option<Instant>,
     crystal: Option<Instant>,
     crystal_text: String,
+    atsc_live: Option<Instant>,
+    atsc_live_text: String,
 }
 
 fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
@@ -235,6 +241,14 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         let text = message("crystal", "crystal", s.crystal.status().await);
         if text != sent.crystal_text {
             sent.crystal_text = text.clone();
+            out.push(text);
+        }
+    }
+    if w.atsc_live && due(sent.atsc_live, ATSC_LIVE_EVERY, now) {
+        sent.atsc_live = Some(now);
+        let text = message("atsc_live", "live", v1::atsc::live_stats(s).await);
+        if text != sent.atsc_live_text {
+            sent.atsc_live_text = text.clone();
             out.push(text);
         }
     }

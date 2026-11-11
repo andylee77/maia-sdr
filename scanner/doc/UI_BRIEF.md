@@ -17,9 +17,10 @@ and the decisions taken with him. The current pages stay only until the new ones
 | The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
-| Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Channels, Viewer; changes 080 and 081), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
+| Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
 | Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header. A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
 | Hold | Not on every row (Andy, 2026-11-10): Hold is on the card of the call on the air, Release there and in the site strip. |
+| TV | Watch, then Channels (change 091). Watch cycles three views (Andy, 2026-11-10): small (the channels, the picture, the signal), large (the picture across the page, the channels a strip below) and full screen with nothing over the picture. Play and Scan take the radio themselves, after asking. |
 
 ## Backend work before the UI
 

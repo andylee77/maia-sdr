@@ -60,7 +60,7 @@ const MER_FIELDS: usize = 40;
 /// A player's view of the live stream: whole block packets' transport stream packets.
 pub type LiveReceiver = broadcast::Receiver<Arc<Vec<u8>>>;
 
-/// What live TV is doing, for the Viewer.
+/// What live TV is doing, for the Watch page.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct LiveStats {
     /// The radio core has the 8-VSB block: live TV can play.
