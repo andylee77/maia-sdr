@@ -80,8 +80,8 @@ pub struct Reset {
     pub restarting: bool,
 }
 
-/// Back to a new unit: no systems, sites, aliases, recordings or history, and the default
-/// settings. The crystal calibration and the TLS certificates stay: they are the board's.
+/// Back to a new unit: no systems, sites, aliases, recordings, history or TV scan, and the
+/// default settings. The crystal calibration and the TLS certificates stay: they are the board's.
 pub async fn factory_reset(State(s): State<Arc<AppState>>) -> ApiResult<Reset> {
     let lease = take_radio(&s)?;
     s.live.stop_discarding().await;
@@ -95,6 +95,7 @@ pub async fn factory_reset(State(s): State<Arc<AppState>>) -> ApiResult<Reset> {
         gone
     };
     config::forget_sites(&s.paths, &gone);
+    crate::services::atsc::kept::forget(&s.paths.tv_scan());
     s.log.system("config", format!("factory reset: {} sites, {recordings} recordings and {calls} calls removed; restarting", gone.len()));
     restart_soon(&s, lease);
     Ok(Json(Reset { sites: gone.len(), recordings, calls, restarting: true }))

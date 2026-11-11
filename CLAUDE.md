@@ -24,8 +24,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
-  and TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`); Activity,
-  Systems, Channels, Diagnostics and Settings keep their old layouts inside the rail. Checks:
+  and TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`); the last TV
+  scan is kept on the flash (092). Activity, Systems, Channels, Diagnostics and Settings keep
+  their old layouts inside the rail. Checks:
   `runs/ui_check/modules_check.mjs`, `now_rail.mjs` and `tv_watch.mjs`.
 
 ## Layout
@@ -109,7 +110,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-10-06-rec1`) | The unit in use; its feed on the directional (Yagi) since 085 |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-10-06-rec1`) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:

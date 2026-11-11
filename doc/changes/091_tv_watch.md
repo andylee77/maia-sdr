@@ -71,7 +71,7 @@ TV's first page, at `#watch`.
 ## Not in this change
 
 - **The scan's results are kept in memory only:** after a restart of the scanner Watch has no
-  channels until a TV scan runs again (about two minutes, with the radio).
+  channels until a TV scan runs again (about a minute, with the radio). Change 092 keeps them.
 - Channels keeps its layout.
 - The player crate's header (`scanner/player/src/lib.rs`) still says "Viewer page": a change
   there means building its module again.
@@ -110,8 +110,7 @@ TV's first page, at `#watch`.
   - 30.1 WFOXHD on RF 14, picked while playing, played;
   - Stop left the unit's receiver idle; Return to Scanner brought Clay back live at 100 %.
 - An earlier run that evening named 6 stations with 30 channels. The October scan on the
-  directional antenna named 16 (081). In these scans VHF RF 9, 10 and 13 read 9 to 13 dB of
-  carrier to noise, and eight UHF channels over 15 dB were decoded with every codeword failing,
-  at an MER of 12 to 17 dB. The scan's code did not change in 091; the antenna feed and the
-  evening's reception were not looked into.
+  directional antenna named 16 (081). Unit A was on the radio antenna that evening, not the TV
+  antenna (Andy): VHF RF 9, 10 and 13 read 9 to 13 dB of carrier to noise, and eight UHF
+  channels over 15 dB were decoded with every codeword failing, at an MER of 12 to 17 dB.
 - `scanner/doc/API_FIELDS.md` is regenerated from unit A.

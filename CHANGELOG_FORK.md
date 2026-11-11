@@ -5,6 +5,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-10] 092: The TV scan is kept across a restart
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** a TV scan's results lived in memory, so after a restart of the scanner Watch listed
+  no channel until a scan ran again. Andy asked for the list to be kept. Record:
+  `doc/changes/092_tv_scan_kept.md`.
+- **Kept:** a scan that finishes is written to `state/tv_scan.json` on the flash (39 KB for 33
+  channels with 7 stations) and is the last scan again at start. One cut short or failed is not
+  kept; a factory reset forgets it.
+- **Not kept:** the windows' spectra. After a restart a channel on Channels opens with its
+  station and Watch buttons, and says its spectrum comes with the next scan.
+
 ## [2026-11-10] 091: TV: the Watch page with three views, and Channels in the rail
 
 **Branch:** fishball-p25 (local)

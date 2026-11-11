@@ -2,7 +2,7 @@
 //! id, its virtual channels (the major.minor numbers viewers see, each with its short name, its
 //! long name when sent, its program number and service type) and its clock.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::ts::{PAT_PID, PSIP_PID};
 
@@ -14,7 +14,7 @@ const EXTENDED_CHANNEL_NAME: u8 = 0xA0;
 /// GPS time's epoch (1980-01-06) in Unix seconds.
 const GPS_EPOCH_UNIX: i64 = 315_964_800;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VirtualChannel {
     pub major: u16,
     pub minor: u16,

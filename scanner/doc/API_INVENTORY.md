@@ -99,8 +99,8 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 |-------|---------|---------|------------------|
 | `GET`/`PUT /api/v1/mode` | The unit's mode (`scanner`, `atsc`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner` and `tv`; `js/modules.js` maps them to the modes |
 | `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Watch (play and stop; the state itself is pushed on `/ws/live` as `atsc_live` since 091) | Stop has no notion of who else is on the stream: Watch stops the receiver only when the pushed `viewers` is at most 1 |
-| `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP | UI Channels and Watch; `tools/atsc_check.py` | Results are in memory only |
-| `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | — |
+| `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP; after a restart, the last scan that finished (092) | UI Channels and Watch; `tools/atsc_check.py` | Nothing says a scan came back from before a restart, or how old the antenna's state is: only its `finished_unix_ms` |
+| `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | Not kept across a restart: 404 until the next scan |
 | `GET /api/v1/atsc/recordings` | The TV recordings on the SD card: RF channel, size, programmes | UI Watch | — |
 | `GET /api/v1/atsc/stream/{rf}` | An RF channel's transport stream as it plays (`program`: one programme) | UI Watch (its picture and sound; its address and a playlist for VLC); VLC and other players | Live from the radio core's 8-VSB block (bake D) when it plays that channel, else its recording |
 
@@ -192,8 +192,8 @@ The list below follows them.
 
 ### What a code review may change
 
-Written with changes 090 and 091 (2026-11-10), which built the module rail, the new Now page,
-the packet data switch and TV's Watch page on these routes. Each row is something the pages lean
+Written with changes 090 to 092 (2026-11-10), which built the module rail, the new Now page,
+the packet data switch, TV's Watch page and the kept TV scan on these routes. Each row is something the pages lean
 on that a review of the API is likely to move, with what would have to follow in the UI.
 
 | Route or field | What may change | What follows in the UI |
@@ -211,7 +211,7 @@ on that a review of the API is likely to move, with what would have to follow in
 | ATSC routes outside ATSC mode | `POST /api/v1/atsc/scan` and `…/live` are refused with a message when the radio is the scanner's. Since 091 the pages change the mode first (`PUT /api/v1/mode`, after asking), then call them: two requests where a review may want one (a scan or a play that takes the radio) | `giveRadio` in `js/mode.js`, called by Watch's Play and Channels' Scan |
 | `/ws/live` `atsc_live` (091) | Live TV's whole state once a second while it changes (the codeword counts move every second while a channel plays), 40 fields of MER each time. A review may send less, or only what moved | `views/watch.js` (`want({ atsc_live: true })`) |
 | `POST /api/v1/atsc/live/stop` and `viewers` | The receiver has one stop for every player. Watch decides from the last pushed `viewers` whether another player is on the stream, up to a second old | `stopLive` in `views/watch.js` |
-| The TV scan's results | In memory only (`GET /api/v1/atsc/scan`): after a restart Watch lists no channel until a scan runs again. A review may keep the last scan with the unit's state | Watch's list (`tv/pick.js` `channelsOf`) |
+| The kept TV scan (092) | The last finished scan comes back after a restart as `state: done` with nothing to tell it from one run since, and without its spectra (`…/scan/channel/{n}` is a 404). A review may mark it (`kept: true`), keep the spectra on the card, or let a scan of some channels add to the kept list where it now replaces it | Channels reads the 404 as "not kept across a restart"; Watch shows the scan's date in the programme's Read row |
 | `PUT /api/v1/hold` with `lane` | The site's hold and a lane's share a route and two status fields (`hold`, `lane_holds`) | Now's traffic cards |
 | `recording.every_call` | No route or page sets it apart from the whole recording setting, so the per-talkgroup `record` flag has no control in the bank | When it gets one, the bank gains a Record control (`record` is already in `PUT …/talkgroups/{tg}`) |
 

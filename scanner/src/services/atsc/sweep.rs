@@ -1,13 +1,17 @@
 //! The channel finder's runs. In ATSC mode it holds the radio (the mode's lease), so it tunes as
 //! it likes; going back to scanner mode stops a run first and takes the radio from it. A run
 //! sweeps the channels' spectrum, then decodes each 8-VSB channel strong enough for its names.
+//! A run that finishes is kept with the unit's state (`kept`), and is the last scan again after
+//! a restart.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::OwnedMutexGuard;
 
+use super::kept;
 use super::live::{Live, LiveReceiver};
 use super::{usable_half, AtscRequest, AtscScan, ChannelSpectrum, FoundChannel, Station};
 use crate::hardware::ad9361::GainMode;
@@ -53,6 +57,8 @@ pub struct Atsc {
     state: Mutex<AtscScan>,
     /// The last scan's windows.
     spectra: Mutex<Vec<WindowSpectrum>>,
+    /// Where a finished scan is kept, and whether this binary may write the file (`restore`).
+    keep: Mutex<Option<(PathBuf, bool)>>,
     /// The radio while ATSC mode lasts; a run or live TV holds this lock.
     radio: Arc<tokio::sync::Mutex<Option<Held>>>,
     /// Scanner mode is coming back: no new run, and the running one stops.
@@ -64,6 +70,30 @@ pub struct Atsc {
 impl Atsc {
     pub fn state(&self) -> AtscScan {
         self.lock().clone()
+    }
+
+    /// At start: the scan kept at `path` is the last scan again (without its spectra), and the
+    /// scans that finish from now on are kept there.
+    pub fn restore(&self, path: PathBuf) {
+        let (scan, writable) = kept::load(&path);
+        if let Some(scan) = scan {
+            *self.lock() = scan;
+        }
+        *self.keep.lock().unwrap_or_else(|e| e.into_inner()) = Some((path, writable));
+    }
+
+    /// Keep the scan that just finished, where one is kept.
+    async fn keep(&self, scan: AtscScan, log: &EventLog) {
+        let Some((path, writable)) = self.keep.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
+        if !writable {
+            log.system("atsc", format!("TV scan {} not kept: {} belongs to a newer version", scan.id, path.display()));
+            return;
+        }
+        let id = scan.id;
+        let saved = tokio::task::spawn_blocking(move || kept::save(&path, &scan)).await;
+        if let Err(e) = saved.map_err(anyhow::Error::from).and_then(|r| r) {
+            log.system("atsc", format!("TV scan {id} not kept: {e:#}"));
+        }
     }
 
     pub fn cancel(&self) {
@@ -189,7 +219,7 @@ impl Atsc {
     async fn run<H: RadioHw>(self: Arc<Self>, id: u64, req: AtscRequest, radio: OwnedMutexGuard<Option<Held>>, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) {
         let result = self.sweep(&req, &tuner, &log).await;
         drop(radio);
-        let summary = {
+        let (summary, finished) = {
             let mut d = self.lock();
             d.finished_unix_ms = unix_ms();
             d.lo_hz = None;
@@ -201,16 +231,21 @@ impl Atsc {
                     d.error = Some(format!("{e:#}"));
                 }
             }
-            format!(
+            let summary = format!(
                 "TV scan {id} {} on {} channels: {} 8-VSB, {} without an 8-VSB pilot (ATSC 3.0 or other), {} vacant",
                 d.state,
                 d.found.len(),
                 d.count(Kind::Vsb),
                 d.count(Kind::NoPilot),
                 d.count(Kind::Vacant)
-            )
+            );
+            // A scan cut short or failed is not kept: the last one that finished stays.
+            (summary, (d.state == "done").then(|| d.clone()))
         };
         log.system("atsc", summary);
+        if let Some(scan) = finished {
+            self.keep(scan, &log).await;
+        }
     }
 
     async fn sweep<H: RadioHw>(&self, req: &AtscRequest, tuner: &Tuner<H>, log: &EventLog) -> Result<()> {

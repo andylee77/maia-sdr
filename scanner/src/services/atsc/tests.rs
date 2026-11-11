@@ -142,6 +142,43 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
     assert!(lease.is_normal());
 }
 
+#[tokio::test]
+async fn a_finished_scan_is_the_last_scan_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state").join("tv_scan.json");
+    let tuner = Arc::new(Tuner::new(Air::default(), 0.0));
+    let log = Arc::new(EventLog::default());
+    let lease = RadioLease::default();
+    let atsc = Arc::new(Atsc::default());
+    atsc.restore(path.clone());
+    assert_eq!(atsc.state().state, "idle", "nothing kept yet");
+    atsc.enter(lease.take(Lease::Atsc).unwrap(), None).await;
+    atsc.start(AtscRequest { channels: vec![18, 19, 25], frames: 2, identify: false, ..Default::default() }, tuner.clone(), log.clone()).unwrap();
+    let done = finished(&atsc).await;
+    assert_eq!(done.state, "done");
+    // Written once the scan is over.
+    for _ in 0..200 {
+        if path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let again = Atsc::default();
+    again.restore(path.clone());
+    let back = again.state();
+    assert_eq!((back.id, back.state, back.finished_unix_ms), (done.id, "done", done.finished_unix_ms));
+    assert_eq!(back.found, done.found);
+    assert!(atsc.channel_spectrum(19).is_some() && again.channel_spectrum(19).is_none(), "its spectra are not kept");
+    // A scan cut short leaves the kept one as it is.
+    atsc.start(AtscRequest { frames: 2, identify: false, ..Default::default() }, tuner.clone(), log.clone()).unwrap();
+    atsc.cancel();
+    assert_eq!(finished(&atsc).await.state, "cancelled");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let still = Atsc::default();
+    still.restore(path);
+    assert_eq!((still.state().id, still.state().found.len()), (done.id, 3));
+}
+
 #[tokio::test(start_paused = true)]
 async fn leaving_atsc_mode_stops_a_scan_first() {
     let atsc = Arc::new(Atsc::default());

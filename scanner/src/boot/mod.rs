@@ -80,6 +80,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     ));
     let modes = Arc::new(Modes::default());
     let atsc = Arc::new(Atsc::default());
+    atsc.restore(paths.tv_scan());
     match (mode, &live_site) {
         (Mode::Atsc, _) => {
             let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, config: &config, paths: &paths, log: &log };

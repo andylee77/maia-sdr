@@ -325,17 +325,24 @@ export function mount(el) {
     async function pick(n) {
       pickedNumber = n;
       for (const [k, r] of rows) setClass(r.tr, 'sel', k === n);
+      const ch = now.found.find(x => x.number === n);
+      plot.hidden = false;
+      about.replaceChildren(...stationDetails(ch && ch.station, n));
       try {
         picked = await api.atscChannel(n);
-        plot.hidden = false;
+        if (pickedNumber !== n) return;
+        canvas.hidden = false;
         title.textContent = `RF ${n}, ${mhz(picked.low_hz, 0)} to ${mhz(picked.high_hz, 0)} (shaded), as its window read it: `
           + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
         drawChannel(canvas, picked);
         redraw = () => drawChannel(canvas, picked);
-        const ch = now.found.find(x => x.number === n);
-        about.replaceChildren(...stationDetails(ch && ch.station, n));
-      } catch (e) {
-        toast(e.message, true);
+      } catch {
+        // A scan kept across a restart comes back without its spectra.
+        if (pickedNumber !== n) return;
+        picked = null;
+        redraw = null;
+        canvas.hidden = true;
+        title.textContent = `RF ${n}: its spectrum is not kept across a restart of the scanner. The next scan reads it again.`;
       }
     }
 

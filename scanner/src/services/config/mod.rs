@@ -3,7 +3,8 @@
 //! - `radio.json`: the hardware and services (`radio`).
 //! - `systems.json`: systems, their aliases (what to follow, record and where it plays) and their
 //!   sites (`systems`).
-//! - `state/`: the live site, the crystal calibration and per-site learned data (`state`).
+//! - `state/`: the live site, the crystal calibration and per-site learned data (`state`), and
+//!   the last TV scan (`services::atsc::kept`).
 //!
 //! Files are versioned JSON under `<flash>/scanner/`, written atomically and only when something
 //! changes. A missing file is the default, so a new unit starts with no systems. A file written
@@ -67,6 +68,11 @@ impl Paths {
 
     pub fn site_state(&self, site: &str) -> PathBuf {
         self.root.join("state").join("sites").join(format!("{site}.json"))
+    }
+
+    /// The last TV scan that finished (`services::atsc::kept`).
+    pub fn tv_scan(&self) -> PathBuf {
+        self.root.join("state").join("tv_scan.json")
     }
 }
 

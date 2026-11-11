@@ -31,7 +31,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
 | GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with their aliases and sites, the live site (`download=true`: as a file) |
 | PUT | `/api/v1/config` | replace the configuration with an exported document (checked whole first); the scanner restarts |
-| POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, aliases, recordings or history, default settings (the crystal calibration stays); the scanner restarts |
+| POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts |
 | GET | `/api/v1/radio` | radio configuration, hardware and tuning |
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
 | PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
@@ -72,8 +72,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/scan/add` | add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent) |
 | GET | `/api/v1/mode` | the unit's mode: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV) |
 | PUT | `/api/v1/mode` | change mode (`mode`): ATSC mode has the radio to itself with the live site paused; scanner mode brings the site back with the configured gain; kept across restarts |
-| GET | `/api/v1/atsc/scan` | the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock) |
-| GET | `/api/v1/atsc/scan/channel/{n}` | one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm) |
+| GET | `/api/v1/atsc/scan` | the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock); after a restart, the last scan that finished |
+| GET | `/api/v1/atsc/scan/channel/{n}` | one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm); not kept across a restart |
 | GET | `/api/v1/atsc/scan/options` | the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once |
 | POST | `/api/v1/atsc/scan` | scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on) |
 | POST | `/api/v1/atsc/scan/cancel` | stop the TV scan |

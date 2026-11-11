@@ -14,7 +14,7 @@
 //!   The plateau over it is the channel's carrier to noise up to the shoulders (35–45 dB down),
 //!   read in one window at one gain: the AGC's choices do not enter it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::Channel;
 
@@ -36,7 +36,7 @@ pub const OCCUPIED_DB: f32 = 6.0;
 /// of noise-like signal reads this many bins' worth of its power.
 const ENBW_BINS: f64 = 2.0044;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     /// ATSC 1.0: the pilot is there.
     #[serde(rename = "8vsb")]

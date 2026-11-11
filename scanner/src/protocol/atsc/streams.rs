@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::ts::{pid, Sections, PAT_PID};
 use super::vsb::{DATA_SEGMENTS, FIELD_SEGMENTS, SEGMENT};
@@ -33,7 +33,29 @@ pub struct Multiplex {
     pub null_bps: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// A name out of a fixed list. An alias, so that serde's derive does not take the field for text
+/// borrowed from what it reads.
+pub type Fixed = &'static str;
+
+/// A stream's kinds, and the display aspects a sequence header names: the fixed names a kept scan
+/// is read back to (`services::atsc::kept`).
+const KINDS: [Fixed; 3] = ["video", "audio", "data"];
+const ASPECTS: [Fixed; 4] = ["1:1", "4:3", "16:9", "2.21:1"];
+
+/// `name` as the one of `names` it equals.
+fn fixed<E: serde::de::Error>(name: &str, names: &[Fixed]) -> Result<Fixed, E> {
+    names.iter().copied().find(|n| *n == name).ok_or_else(|| E::custom(format!("{name:?} is not one of {names:?}")))
+}
+
+fn kind_name<'de, D: Deserializer<'de>>(d: D) -> Result<Fixed, D::Error> {
+    fixed(&String::deserialize(d)?, &KINDS)
+}
+
+fn aspect_name<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Fixed>, D::Error> {
+    Option::<String>::deserialize(d)?.map(|a| fixed(&a, &ASPECTS)).transpose()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
     /// The program number, as a virtual channel names it.
     pub number: u16,
@@ -44,12 +66,13 @@ pub struct Program {
     pub streams: Vec<Stream>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stream {
     pub pid: u16,
     pub stream_type: u8,
     /// video, audio or data.
-    pub kind: &'static str,
+    #[serde(deserialize_with = "kind_name")]
+    pub kind: Fixed,
     /// The stream type's codec ("MPEG-2", "H.264", "AC-3", ...).
     pub codec: String,
     /// ISO 639, from the PMT.
@@ -60,7 +83,7 @@ pub struct Stream {
     pub audio: Option<AudioFormat>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VideoFormat {
     pub width: u16,
     pub height: u16,
@@ -68,12 +91,13 @@ pub struct VideoFormat {
     pub progressive: Option<bool>,
     pub frame_rate: Option<f32>,
     /// The display aspect: "16:9", "4:3", "2.21:1", or "1:1" (square pixels).
-    pub aspect: Option<&'static str>,
+    #[serde(deserialize_with = "aspect_name")]
+    pub aspect: Option<Fixed>,
     /// Profile and level, such as "Main@High".
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioFormat {
     /// "5.1", "2.0", "1.0", or "1+1" for dual mono.
     pub channels: String,
@@ -259,13 +283,8 @@ fn mpeg2_video(es: &[u8]) -> Option<VideoFormat> {
     let h = es.get(i..i + 4)?;
     let width = (u16::from(h[0]) << 4) | u16::from(h[1] >> 4);
     let height = (u16::from(h[1] & 0x0F) << 8) | u16::from(h[2]);
-    let aspect = match h[3] >> 4 {
-        1 => Some("1:1"),
-        2 => Some("4:3"),
-        3 => Some("16:9"),
-        4 => Some("2.21:1"),
-        _ => None,
-    };
+    // aspect_ratio_information 1 to 4 (H.262 Table 6-3), in `ASPECTS`' order.
+    let aspect = usize::from(h[3] >> 4).checked_sub(1).and_then(|i| ASPECTS.get(i).copied());
     let frame_rate = match h[3] & 0x0F {
         1 => Some(24000.0 / 1001.0),
         2 => Some(24.0),

@@ -5,6 +5,7 @@
 //! channel strong enough is tuned on its own, a short raw IQ capture decoded, and the station's
 //! own name for itself read: its virtual channels and transport stream id (`protocol::atsc::receiver`).
 
+pub mod kept;
 pub mod live;
 pub mod stream;
 pub mod sweep;
@@ -101,9 +102,11 @@ pub fn options() -> AtscOptions {
 }
 
 /// One channel as the scan read it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FoundChannel {
     pub number: u8,
+    /// The plan's name for its band; a kept scan takes it from the plan again (`kept`).
+    #[serde(skip_deserializing)]
     pub band: &'static str,
     pub center_hz: u64,
     pub kind: Kind,
@@ -128,7 +131,7 @@ pub struct FoundChannel {
 }
 
 /// A channel decoded: what its PSIP named, and how well it decoded.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Station {
     pub tsid: Option<u16>,
     /// The virtual channels it carries (major.minor, names, programs).
