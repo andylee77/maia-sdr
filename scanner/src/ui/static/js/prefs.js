@@ -1,6 +1,7 @@
 // This browser's listening preferences, kept across page loads in localStorage (a private window
 // or blocked storage keeps them for the page only): whether Listen was on, the volume, the
-// leveller, each traffic lane's volume and mute, and alerts-only listening.
+// leveller, each traffic lane's volume and mute, whether the lanes play apart (Traffic 1 on the
+// left, Traffic 2 on the right), and alerts-only listening.
 
 const KEY = 'scanner.listen';
 const DEFAULTS = {
@@ -12,6 +13,8 @@ const DEFAULTS = {
   normalize: true,
   // Traffic 1 and Traffic 2.
   lanes: [{ volume: 1, muted: false }, { volume: 1, muted: false }],
+  // Traffic 1 on the left speaker and Traffic 2 on the right; off: both on both.
+  split: true,
   // Play only the talkgroups an alert tone opened, for `alertMinutes` (audio/gate.js).
   alertsOnly: false,
   alertMinutes: 2,

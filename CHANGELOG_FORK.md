@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 096: Now as a monitoring station's front: the tuners first
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the Now page "way more user friendly and clean", "grounded into a
+  trunked monitoring station that has 2 traffic tuners", with "easier control of what to listen,
+  record". He picked layout A of the three drawn in 095. Record:
+  `doc/changes/096_now_tuners_first.md`.
+- **The page:** the site bar (the site, whether it decodes, the hold, what is recorded), the two
+  tuners side by side (the call in large type, Hold, the talkgroup the tuner is kept on, its last
+  calls to play again), the talkgroups (their tuner, Rec mark and Listen switch; one selected,
+  with its controls in a bar and the arrow keys stepping through the list), and the calls with
+  the picked call's player docked under them.
+- **Sound follows the tuner:** Traffic 1 on the left speaker, Traffic 2 on the right; Left /
+  Right in the header turns it off.
+- **What is recorded** is set on the page: Off, Marked (the talkgroups' Rec marks) or Every
+  call. `PUT /api/v1/radio/recording` takes any of its fields.
+- **The radio pushes the live site's talkgroups** (`talkgroups` on `/ws/live`,
+  `GET /api/v1/talkgroups`), each with how the follower treats it and whether its calls are
+  recorded. The page asks the history nothing by itself and holds no copy of the follower's
+  rule.
+- **One talkgroup's controls:** `follow` in `PUT …/talkgroups/{tg}`, and `DELETE` to remove its
+  alias.
+- The calls the page keeps are bounded, and a lost connection shows.
+
 ## [2026-11-11] 095: Goals, capabilities and features; a review of the UI and its API
 
 **Branch:** fishball-p25 (local)

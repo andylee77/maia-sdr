@@ -5,8 +5,9 @@
 //
 // The jitter buffer, resampling PLL and per-sample pan are `Ring` (ring.js), whose source text is
 // injected into the worklet; the alerts-only gate is `AlertGate` (gate.js), injected into the
-// Worker. Before a lane's audio the server sends a {"type":"meta"} text frame naming its call,
-// talkgroup and speaker (left, right or both); the Worker tags each block with that pan. Before
+// Worker. Before a lane's audio the server sends a {"type":"meta"} text frame naming its call
+// and talkgroup; the Worker tags each block with its lane's pan (lane one left and lane two right
+// while the lanes are split, else both). Before
 // the frame that makes a call's audio an alert tone it sends {"type":"alert"}: the Worker opens
 // the gate and tells the page. Binary frames start with a 4-byte header [lane, 0, 0, 0]; the
 // worklet keeps one ring per lane and mixes them at each lane's volume, so a call on the left and
@@ -58,9 +59,9 @@ registerProcessor('lane-audio', LaneAudio);
 
 export const WORKER_SRC = AlertGate.toString() + `
 let port = null, ws = null, url = null, backoff = 1000, timer = null, chunks = 0, lag = 0, last = 0;
-let pans = [0, 0];
+let split = false;
 const gate = new AlertGate();
-function panOf(speaker) { return speaker === 'left' ? -1 : speaker === 'right' ? 1 : 0; }
+function panOf(lane) { return split ? (lane === 1 ? 1 : -1) : 0; }
 function report(force) {
   const now = Date.now();
   if (force || now - last > 250) { self.postMessage({ type: 'status', chunks, lag }); last = now; }
@@ -77,10 +78,8 @@ function connect() {
         const c = JSON.parse(ev.data);
         const lane = c && c.lane === 1 ? 1 : 0;
         if (c && c.type === 'lag') { lag += c.skipped || 0; report(true); }
-        else if (c && c.type === 'meta') {
-          pans[lane] = panOf(c.speaker);
-          gate.call(lane, c.tg, c.call_id, Date.now());
-        } else if (c && c.type === 'alert') {
+        else if (c && c.type === 'meta') gate.call(lane, c.tg, c.call_id, Date.now());
+        else if (c && c.type === 'alert') {
           for (const block of gate.alert(lane, c.tg, c.call_id, Date.now())) send(block);
           self.postMessage({ type: 'alert', alert: c });
         }
@@ -91,7 +90,7 @@ function connect() {
     const i16 = new Int16Array(ev.data, 4);
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-    const block = { type: 'pcm', lane, data: f32, pan: pans[lane] };
+    const block = { type: 'pcm', lane, data: f32, pan: panOf(lane) };
     if (gate.pass(lane, block)) send(block);
     chunks++;
     report(false);
@@ -106,6 +105,7 @@ self.onmessage = e => {
   const m = e.data;
   if (m.type === 'init') { port = m.port; url = m.url; connect(); }
   else if (m.type === 'gate') gate.setMode(m.on, m.windowMs);
+  else if (m.type === 'split') split = !!m.on;
   else if (m.type === 'shutdown') { url = null; clearTimeout(timer); if (ws) try { ws.close(); } catch (e) {} }
 };
 `;

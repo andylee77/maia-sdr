@@ -116,9 +116,8 @@ function openedText(open) {
 }
 
 // Live audio: the button starts and stops it, and a page load starts it again when it was on.
-// The volume (live audio, recordings and the TV's sound, up to full scale), the leveller and
-// alerts-only listening are this browser's (prefs.js); the server says which speaker each call
-// is on.
+// The volume (live audio, recordings and the TV's sound, up to full scale), the leveller, the
+// lanes apart on the two speakers and alerts-only listening are this browser's (prefs.js).
 $('listen').addEventListener('click', () => {
   const on = !player.playing;
   setPrefs({ listening: on });
@@ -132,6 +131,10 @@ $('vol').addEventListener('input', e => {
 });
 $('vol').addEventListener('change', e => setPrefs({ volume: e.target.value / 100 }));
 $('norm').addEventListener('click', () => setPrefs({ normalize: !getPrefs().normalize }));
+$('split').addEventListener('click', () => setPrefs({ split: !getPrefs().split }));
+// The lanes play apart only where the site runs two: one lane alone plays on both speakers.
+let twoLanes = false;
+const applySplit = () => player.setSplit(getPrefs().split && twoLanes);
 $('alerts-only').addEventListener('click', () => setPrefs({ alertsOnly: !getPrefs().alertsOnly }));
 $('alert-window').addEventListener('change', e => setPrefs({ alertMinutes: Number(e.target.value) }));
 onPrefs(p => {
@@ -139,11 +142,12 @@ onPrefs(p => {
   setRecordingVolume(p.volume);
   tv.setVolume(p.volume);
   player.setNormalize(p.normalize);
+  applySplit();
   p.lanes.forEach((l, i) => player.setLaneVolume(i, l.muted ? 0 : l.volume));
   player.setAlertMode(p.alertsOnly, p.alertMinutes * 60000);
   if (document.activeElement !== $('vol')) $('vol').value = String(Math.round(p.volume * 100));
   $('vol').title = `Volume ${$('vol').value} %`;
-  for (const [id, on] of [['norm', p.normalize], ['alerts-only', p.alertsOnly]]) {
+  for (const [id, on] of [['split', p.split], ['norm', p.normalize], ['alerts-only', p.alertsOnly]]) {
     setClass($(id), 'on', on);
     $(id).setAttribute('aria-pressed', String(on));
   }
@@ -167,6 +171,11 @@ subscribe(s => {
   if (landing && s.status) {
     landing = false;
     if (current.module.mode && current.module !== owner()) location.hash = `#${owner().pages[0].key}`;
+  }
+  const two = ((s.traffic && s.traffic.channels) || []).length > 1;
+  if (two !== twoLanes) {
+    twoLanes = two;
+    applySplit();
   }
   shell(s);
   if (current) current.view.update(s);

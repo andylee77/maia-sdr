@@ -1,33 +1,46 @@
-// Now: the live site at a glance, filling the screen. On the left the talkgroup bank
-// (talkgroups.js). In the middle the site strip (the system and the site to listen to, picked
-// from two lists, and whether its control channel decodes), the two traffic channels side by
-// side (lane 1 on the left speaker, lane 2 on the right, each with this browser's volume and
-// mute for it) and the site's calls. On the right the picked call (call_rows.js). The control
-// channel's counters are on Diagnostics. Everything comes from the store, which the radio pushes.
+// Now: a trunked monitoring station's front, filling the screen. Across the top the site bar
+// (the site listened to and whether its control channel decodes, the radio's hold, what is
+// recorded) and the two traffic tuners side by side: Traffic 1 and Traffic 2, each with its call
+// or what it waits for, the talkgroup it is kept on, its last calls to play again, and this
+// browser's volume and mute for it. Under them the talkgroups (talkgroups.js) and the site's
+// calls with the picked call's player (now_calls.js). Everything shown is pushed by the radio
+// (the store), and every control is one write to it.
 
 import { h, toast, setText, setClass, icon } from '../dom.js';
 import { api } from '../api.js';
 import { refresh, boardNow } from '../store.js';
-import { mhz, ago, pct, num, dur, unitLabel, DASH } from '../format.js';
+import { mhz, pct, num, dur, bytes, unitLabel } from '../format.js';
 import { protocol } from '../protocols.js';
 import { player } from '../audio/player.js';
 import { getPrefs, setLane, onPrefs } from '../prefs.js';
 import { tgLabel, nameOf } from '../aliases.js';
-import { talkgroupBank, knownTalkgroups, heardVersion } from './talkgroups.js';
+import { talkgroupList, talkgroupsOf } from './talkgroups.js';
 import { callsPane } from './now_calls.js';
-import { alertLabel, channel, SIDE } from './call_rows.js';
+import { alertLabel, channel, recordingOf, SIDE } from './call_rows.js';
 
 // A control channel with no message for this long is shown as silent.
 const SILENT_MS = 5000;
 // Voice this recent: the call is talking; after it, the call hangs until it closes.
 const VOICE_HOLD_MS = 1500;
-// The traffic cards' clocks move between pushes.
+// The tuners' clocks move between pushes.
 const TICK_MS = 250;
 const PHASE = { acquiring: 'Acquiring', voice: 'Voice', hang: 'Hang', ending: 'Ended' };
+// A tuner's last calls offered to play again.
+const REPLAYS = 3;
+// What is recorded, as the bar offers it: [key, on the button, what it means, what is sent].
+const RECORD = [
+  ['off', 'Off', 'No call is recorded', { enabled: false }],
+  ['marked', 'Marked', 'Only the calls of the talkgroups marked Rec are recorded', { enabled: true, every_call: false }],
+  ['every', 'Every call', 'Every followed call is recorded', { enabled: true, every_call: true }],
+];
 
 const known = v => v !== null && v !== undefined;
+const liveOf = s => {
+  const lv = s && s.status && s.status.live;
+  return lv && lv.state === 'live' ? lv : null;
+};
 
-// Hold the live site on `tg`, or release the hold (null).
+// Hold the radio on `tg`: only it is followed, on both tuners. Null releases the hold.
 async function setHold(tg) {
   try {
     await api.setHold(tg);
@@ -38,46 +51,43 @@ async function setHold(tg) {
   }
 }
 
-function fact(label) {
-  const v = h('span', { class: 'fact-v' });
-  return { el: h('div', { class: 'fact' }, h('span', { class: 'fact-k', text: label }), v), set: t => setText(v, t ?? DASH) };
-}
-
-// The site strip: what is live and whether it decodes; the lists make another site live.
-function siteStrip() {
-  const sysPick = h('select', { class: 'input pick', 'aria-label': 'System' });
-  const sitePick = h('select', { class: 'input pick', 'aria-label': 'Site' });
+// The site bar: the site listened to (another picked from the list is made live), whether it
+// decodes, the hold, and what is recorded.
+function siteBar() {
+  const pick = h('select', { class: 'input pick', 'aria-label': 'The site listened to' });
   const dot = h('span', { class: 'dot' });
   const state = h('span', { class: 'site-state' });
   const health = h('span', { class: 'dim' });
   const hold = h('span', { class: 'row' });
-  const facts = h('span', { class: 'site-facts' });
-  const el = h('section', { class: 'card now-site', 'aria-label': 'Live site' }, sysPick, sitePick, h('span', { class: 'row' }, dot, state), health, hold, facts);
+  const none = h('span', { class: 'row', hidden: true }, h('span', { text: 'No systems yet.' }), h('a', { class: 'btn small primary', href: '#systems', text: 'Scan for systems' }));
+  const rec = RECORD.map(([key, text, title]) => h('button', { type: 'button', text, title, dataset: { key } }));
+  const recSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'What is recorded' }, ...rec);
+  const stored = h('span', { class: 'dim' });
+  const el = h('section', { class: 'card now-site', 'aria-label': 'Live site' },
+    pick, none, h('span', { class: 'row' }, dot, state), health, hold, h('div', { class: 'spacer' }),
+    h('span', { class: 'dim', text: 'Record' }), recSeg, stored);
 
   let s = null;
-  // A system picked whose sites are not live: its sites are offered until one is made live.
-  let picked = null;
   let busy = false;
-  let drawnPicks = null;
-  let drawnFacts = null;
+  let drawnPick = null;
   let drawnHold;
 
   const systems = () => (s && s.systems) || [];
-  const live = () => {
-    const l = s && s.status && s.status.live;
-    return l && l.state === 'live' ? l : null;
-  };
-  const siteLabel = id => {
-    for (const x of systems()) for (const y of x.sites) if (y.id === id) return y.label;
-    return id;
+  const siteOf = id => {
+    for (const x of systems()) for (const y of x.sites) if (y.id === id) return y;
+    return null;
   };
 
-  async function activate(site) {
+  pick.addEventListener('change', async () => {
+    const site = siteOf(pick.value);
+    // Out of the list, so it shows the live site again when the radio refuses.
+    pick.blur();
+    drawnPick = null;
+    if (!site) return;
     busy = true;
     draw(s);
     try {
       await api.activate(site.id);
-      picked = null;
       toast(`${site.label} is live`);
       await refresh();
     } catch (e) {
@@ -86,41 +96,39 @@ function siteStrip() {
       busy = false;
       draw(s);
     }
+  });
+
+  for (const b of rec) {
+    b.addEventListener('click', async () => {
+      const [, , , body] = RECORD.find(x => x[0] === b.dataset.key);
+      try {
+        await api.setRecording(body);
+        const marked = talkgroupsOf(s).filter(t => t.record).length;
+        toast(b.dataset.key === 'marked' ? `Recording the talkgroups marked Rec: ${num(marked)} now` : b.dataset.key === 'every' ? 'Recording every followed call' : 'Recording is off');
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
   }
 
-  sysPick.addEventListener('change', () => {
-    picked = sysPick.value;
-    const sys = systems().find(x => x.id === picked);
-    const liveId = live() && live().site.id;
-    if (sys && sys.sites.length === 1 && sys.sites[0].id !== liveId) activate(sys.sites[0]);
-    else draw(s);
-  });
-  sitePick.addEventListener('change', () => {
-    const sys = systems().find(x => x.id === sysPick.value);
-    const site = sys && sys.sites.find(y => y.id === sitePick.value);
-    if (site) activate(site);
-  });
-
-  function drawPicks(st) {
+  // The sites by system; never rebuilt under an open list.
+  function drawPick(st) {
     const list = systems();
-    const l = live();
-    const liveId = l ? l.site.id : null;
-    if (picked && !list.some(x => x.id === picked)) picked = null;
-    const sys = list.find(x => x.id === picked) || list.find(x => x.sites.some(y => y.id === liveId)) || list[0];
+    const lv = liveOf(s);
+    const liveId = lv ? lv.site.id : null;
     // A switch, a scan or another module has the radio: no site can be made live meanwhile.
     const locked = busy || (st !== 'live' && st !== 'no_site');
-    const key = JSON.stringify([list.map(x => [x.id, x.label, x.sites.map(y => [y.id, y.label, y.control.freq_hz])]), liveId, sys && sys.id, locked]);
-    if (key === drawnPicks) return;
-    drawnPicks = key;
-    sysPick.hidden = sitePick.hidden = !list.length;
-    sysPick.replaceChildren(...list.map(x => h('option', { value: x.id, text: x.label })));
-    sysPick.value = sys ? sys.id : '';
-    const onLive = !!sys && sys.sites.some(y => y.id === liveId);
-    sitePick.replaceChildren(
-      ...(onLive ? [] : [h('option', { value: '', text: sys && sys.sites.length ? 'Pick a site' : 'No sites' })]),
-      ...(sys ? sys.sites : []).map(y => h('option', { value: y.id, text: `${y.label} · ${mhz(y.control.freq_hz)}` })));
-    sitePick.value = onLive ? liveId : '';
-    sysPick.disabled = sitePick.disabled = locked;
+    pick.disabled = locked;
+    pick.hidden = !list.length;
+    none.hidden = !!list.length || !s.systems;
+    if (document.activeElement === pick) return;
+    const key = JSON.stringify([list.map(x => [x.id, x.label, x.sites.map(y => [y.id, y.label, y.control.freq_hz])]), liveId]);
+    if (key === drawnPick) return;
+    drawnPick = key;
+    pick.replaceChildren(
+      ...(liveId ? [] : [h('option', { value: '', text: 'No site is live: pick one' })]),
+      ...list.map(x => h('optgroup', { label: x.label }, ...x.sites.map(y => h('option', { value: y.id, text: `${x.label} › ${y.label} · ${mhz(y.control.freq_hz)}` })))));
+    pick.value = liveId || '';
   }
 
   // Whether the control channel decodes, and how well.
@@ -129,10 +137,14 @@ function siteStrip() {
     let cls = '';
     let more = '';
     health.title = '';
-    if (!lv || lv.state === 'no_site') {
-      text = systems().length ? 'No site is live: pick one to listen to.' : '';
+    if (!s.connected) {
+      text = 'Not connected to the radio: this is how it was.';
+      cls = ' warn';
+    } else if (!lv || lv.state === 'no_site') {
+      text = systems().length ? 'No site is live.' : '';
     } else if (lv.state === 'switching') {
-      text = `Switching to ${siteLabel(lv.to)}…`;
+      const to = siteOf(lv.to);
+      text = `Switching to ${to ? to.label : lv.to}…`;
     } else if (lv.state === 'scanning') {
       text = 'Scanning for systems: the live site is paused.';
     } else if (lv.state === 'away') {
@@ -152,58 +164,51 @@ function siteStrip() {
     setText(health, more);
   }
 
-  // The live system's type and the identities, once per site and edit.
-  function drawFacts() {
-    const l = live();
-    const list = systems();
-    const sys = l && list.find(x => x.id === l.system.id);
-    const key = JSON.stringify([list.length, !!s.systems, l && l.site, l && l.system, sys && [sys.details, sys.identity]]);
-    if (key === drawnFacts) return;
-    drawnFacts = key;
-    if (!list.length && s.systems) {
-      facts.replaceChildren(h('span', { text: 'No systems yet.' }), h('a', { class: 'btn small primary', href: '#systems', text: 'Scan for systems' }));
-      return;
-    }
-    if (!l) {
-      facts.replaceChildren();
-      return;
-    }
-    const p = protocol(l.system.protocol);
-    const d = (sys && sys.details) || {};
-    const sysId = sys && sys.identity && Object.values(sys.identity).some(known) ? p.systemIdentity(sys.identity) : [];
-    const ids = [...sysId, ...p.siteIdentity(l.site.identity || {})].filter(([, v]) => known(v));
-    facts.replaceChildren(
-      h('span', { text: d.system_type || p.label }),
-      ...ids.map(([k, v]) => h('span', { class: 'nowrap' }, h('span', { class: 'k', text: k }), String(v))));
-    facts.title = [d.location, d.county, d.voice].filter(Boolean).join(' · ');
-  }
-
   function drawHold() {
-    const held = (live() && s.status.hold) || null;
+    const held = (liveOf(s) && s.status.hold) || null;
     if (held === drawnHold) return;
     drawnHold = held;
+    const t = held && talkgroupsOf(s).find(x => x.tg === held);
     hold.replaceChildren(...(held ? [
-      h('span', { class: 'badge hang', text: `Holding TG ${held}` }),
+      h('span', { class: 'badge hang', text: `Holding ${t ? t.label : `TG ${held}`}` }),
       h('button', { class: 'btn small', type: 'button', text: 'Release', onclick: () => setHold(null) }),
     ] : []));
+  }
+
+  // What is recorded, and what the card holds.
+  function drawRecord() {
+    const p = s.talkgroups && s.talkgroups.recording;
+    const now = !p ? null : !p.enabled ? 'off' : p.every_call ? 'every' : 'marked';
+    for (const b of rec) {
+      const on = b.dataset.key === now;
+      setClass(b, 'on', on);
+      b.setAttribute('aria-pressed', String(on));
+      b.disabled = !p;
+    }
+    const st = s.recordings && s.recordings.storage;
+    const free = st && st.sd_status && known(st.sd_status.free_bytes) ? st.sd_status.free_bytes : null;
+    const where = st && st.store === 'sd' ? 'the card' : 'RAM';
+    setText(stored, s.recordings ? [`${num(s.recordings.total)} recorded`, st && st.store === 'sd' && free !== null ? `${bytes(free)} free on ${where}` : st ? `to ${where}` : ''].filter(Boolean).join(' · ') : '');
+    stored.title = st && st.sd_status && st.sd_status.state !== 'ok' && st.store === 'sd' ? `SD card ${st.sd_status.state.replace('_', ' ')}: saving to RAM` : 'Recordings of this site';
+    setClass(stored, 'warn', !!st && st.store === 'sd' && !!st.sd_status && st.sd_status.state !== 'ok');
   }
 
   function draw(store) {
     s = store;
     if (!s || !s.status) return;
     const lv = s.status.live;
-    drawPicks(lv ? lv.state : 'no_site');
+    drawPick(lv ? lv.state : 'no_site');
     drawState(lv);
-    drawFacts();
     drawHold();
+    drawRecord();
   }
 
   return { el, draw };
 }
 
-// The talkgroups a traffic channel can be kept on, by name, then number: the known ones heard in
-// the clear or not heard at all (a channel kept on an encrypted one would never play).
-const keepable = s => knownTalkgroups(s).filter(t => !t.encrypted).map(t => [t.tg, t.name]);
+// The talkgroups a tuner can be kept on: those not heard only encrypted (a tuner kept on one of
+// those would never play).
+const keepable = s => talkgroupsOf(s).filter(t => t.kind !== 'enc').map(t => [t.tg, t.name]);
 
 function idleLine(s, ch) {
   const lv = s.status.live;
@@ -211,11 +216,8 @@ function idleLine(s, ch) {
   if (!lv || lv.state !== 'live') return 'No site is live.';
   // A lane the live site does not run (not every lane decodes every protocol).
   if (!ch) return 'Not used at this site.';
-  const parts = [];
-  if (ch.on_data_channel) parts.push(`Waiting on the data channel, ${mhz(ch.tuned_hz)}.`);
-  const last = s.calls && s.calls.recent.find(x => x.lane === ch.lane);
-  if (last) parts.push(`Last: ${tgLabel(last.tg, last.tg_name)} from ${unitLabel(last.source, last.source_name)}, ${ago(boardNow() - last.ended_unix_ms)}.`);
-  return parts.join(' ') || 'Waiting for a grant.';
+  if (ch.on_data_channel) return `Waiting on the data channel, ${mhz(ch.tuned_hz)}.`;
+  return 'Waiting for a grant.';
 }
 
 // This browser's volume and mute for a lane (prefs.js); moving the volume unmutes it.
@@ -241,77 +243,104 @@ function laneAudio(lane) {
   return { el: h('span', { class: 'lane-audio' }, mute, slider), stop };
 }
 
-// One traffic channel: its call, or what it waits for; the talkgroup it is kept on; its audio
-// here. The site's hold is offered on the call it carries, and nowhere else on the page.
-function trafficCard(lane) {
+// One traffic tuner: its call, or what it waits for; the radio's hold on the call it carries;
+// the talkgroup it is kept on; its last calls, to play again (`play(call)`); its audio here.
+function tunerCard(lane, play) {
   const audio = laneAudio(lane);
   // The newest alert tone the player heard on this lane, while it is the lane's call.
   let alerted = null;
   const offAlert = player.onAlert(a => {
     if (a.lane === lane - 1) alerted = a;
   });
+  const kicker = h('span', { class: 'kicker' });
   const flags = h('span', { class: 'row' });
   const phase = h('span', { class: 'badge' });
-  const pick = h('select', { class: 'input lane-hold', 'aria-label': `Keep traffic ${lane} on a talkgroup`, title: 'Follow only this talkgroup on this channel (the other channel follows as before)' });
-  pick.addEventListener('change', async () => {
-    const tg = pick.value ? Number(pick.value) : null;
+  const keepOn = h('select', { class: 'input tuner-keep', 'aria-label': `Keep Traffic ${lane} on a talkgroup`, title: 'Follow only this talkgroup on this tuner (the other tuner follows as before)' });
+  keepOn.addEventListener('change', async () => {
+    const tg = keepOn.value ? Number(keepOn.value) : null;
     // Out of the list, so it shows what the radio then holds: the pick, or what was there when
     // the radio refuses.
-    pick.blur();
-    drawnPick = null;
-    pickSeen = [];
+    keepOn.blur();
+    drawnKeep = null;
     try {
       await api.setHold(tg, lane);
-      toast(tg === null ? `Traffic ${lane} follows every talkgroup` : `Traffic ${lane} follows only TG ${tg}`);
+      toast(tg === null ? `Traffic ${lane} follows any talkgroup` : `Traffic ${lane} follows only TG ${tg}`);
       await refresh();
     } catch (e) {
       toast(e.message, true);
     }
   });
-  // What the list was last worked out from, and what it was last drawn as.
-  let pickSeen = [];
-  let drawnPick = null;
+  let drawnKeep = null;
+  let split = false;
+  const offPrefs = onPrefs(p => {
+    split = p.split;
+  });
 
   // Rebuilt when the list or the kept talkgroup changed, never under an open list.
-  function drawPick(s) {
-    const lv = s.status.live;
-    pick.disabled = !lv || lv.state !== 'live';
-    if (document.activeElement === pick) return;
+  function drawKeep(s) {
+    keepOn.disabled = !liveOf(s);
+    if (document.activeElement === keepOn) return;
     const held = (s.status.lane_holds || [])[lane - 1] ?? null;
-    const seen = [s.calls, s.systems, heardVersion(), held];
-    if (seen.every((v, i) => v === pickSeen[i])) return;
-    pickSeen = seen;
     const list = keepable(s);
     const key = JSON.stringify([held, list]);
-    if (key === drawnPick) return;
-    drawnPick = key;
-    const opts = [h('option', { value: '', text: 'Any talkgroup' })];
-    if (held !== null && !list.some(([tg]) => tg === held)) opts.push(h('option', { value: String(held), text: `TG ${held}` }));
-    for (const [tg, name] of list) opts.push(h('option', { value: String(tg), text: name ? `${name} (${tg})` : `TG ${tg}` }));
-    pick.replaceChildren(...opts);
-    pick.value = held === null ? '' : String(held);
-    setClass(pick, 'held', held !== null);
+    if (key === drawnKeep) return;
+    drawnKeep = key;
+    const opts = [h('option', { value: '', text: 'Follows any talkgroup' })];
+    if (held !== null && !list.some(([tg]) => tg === held)) opts.push(h('option', { value: String(held), text: `Only TG ${held}` }));
+    for (const [tg, name] of list) opts.push(h('option', { value: String(tg), text: name ? `Only ${name} (${tg})` : `Only TG ${tg}` }));
+    keepOn.replaceChildren(...opts);
+    keepOn.value = held === null ? '' : String(held);
+    setClass(keepOn, 'held', held !== null);
   }
 
-  const tg = h('div', { class: 'call-tg' });
-  const sub = h('div', { class: 'call-sub' });
+  const dot = h('span', { class: 'tg-dot' });
+  const tg = h('span', { class: 'tuner-name' });
+  const sub = h('div', { class: 'tuner-sub' });
+  const clock = h('div', { class: 'tuner-clock' });
+  const clockSub = h('div', { class: 'sub' });
   const holdSlot = h('span');
-  const f = { air: fact('On air'), voice: fact('Voice'), freq: fact('Frequency') };
-  const facts = h('div', { class: 'call-facts' }, ...Object.values(f).map(x => x.el));
-  const el = h('section', { class: 'card call-card', 'aria-label': `Traffic ${lane}, ${SIDE[lane].toLowerCase()} speaker` },
-    h('div', { class: 'card-head' }, h('h2', { text: `Traffic ${lane} · ${SIDE[lane]}` }), flags, h('div', { class: 'spacer' }), phase),
-    h('div', { class: 'call-main' }, tg, sub),
-    h('div', { class: 'call-foot' }, facts, h('div', { class: 'spacer' }), pick, audio.el, holdSlot));
+  const before = h('span', { class: 'tuner-before' });
+  const el = h('section', { class: 'card tuner', 'aria-label': `Traffic ${lane}` },
+    h('div', { class: 'row' }, kicker, phase, flags, h('div', { class: 'spacer' }), audio.el),
+    h('div', { class: 'tuner-main' }, h('div', { class: 'tuner-what' }, h('div', { class: 'tuner-tg' }, dot, tg), sub), h('div', { class: 'tuner-when' }, clock, clockSub)),
+    h('div', { class: 'tuner-foot' }, holdSlot, keepOn, h('div', { class: 'spacer' }), before));
   let drawnFlags = null;
   let drawnHold = null;
+  let drawnBefore = null;
+
+  // The tuner's last calls with a recording, newest first.
+  function drawBefore(s, site) {
+    const recs = new Map(((s.recordings && s.recordings.items) || []).map(r => [r.id, r]));
+    const last = ((s.calls && s.calls.recent) || []).filter(x => x.lane === lane && x.site === site && recordingOf(x, recs)).slice(0, REPLAYS);
+    const key = last.map(x => x.call).join();
+    if (key === drawnBefore) return;
+    drawnBefore = key;
+    before.replaceChildren(...(last.length ? [h('span', { class: 'sub', text: 'Before' })] : []), ...last.map(x => {
+      const r = recordingOf(x, recs);
+      return h('button', {
+        class: 'replay', type: 'button', title: `Play ${tgLabel(x.tg, x.tg_name)} from ${unitLabel(x.source, x.source_name)} again`,
+        onclick: () => play(x),
+      }, icon('play', 12), `${tgLabel(x.tg, x.tg_name)} · ${dur(r.duration_ms)}`);
+    }));
+  }
+
+  let seenRecent = null;
+  let seenRecs = null;
 
   function draw(s) {
-    drawPick(s);
+    const lv = liveOf(s);
+    const two = ((s.traffic && s.traffic.channels) || []).length > 1;
+    setText(kicker, `Traffic ${lane}${split && two ? ` · ${SIDE[lane]}` : ''}`);
+    drawKeep(s);
+    if (!s.calls || s.calls.recent !== seenRecent || s.recordings !== seenRecs) {
+      seenRecent = s.calls && s.calls.recent;
+      seenRecs = s.recordings;
+      drawBefore(s, lv ? lv.site.id : null);
+    }
     const ch = ((s.traffic && s.traffic.channels) || []).find(x => x.lane === lane);
-    const call = ch && ch.call;
+    const call = lv && ch && ch.call;
     el.classList.remove('voice', 'hang', 'acquiring');
     setClass(el, 'idle', !call);
-    facts.hidden = !call;
     if (!call) {
       phase.className = 'badge';
       setText(phase, 'Idle');
@@ -319,8 +348,11 @@ function trafficCard(lane) {
       drawnHold = null;
       flags.replaceChildren();
       holdSlot.replaceChildren();
+      dot.hidden = true;
       setText(tg, 'Waiting for a call');
       setText(sub, idleLine(s, ch));
+      setText(clock, '');
+      setText(clockSub, '');
       return;
     }
     const lastVoice = known(ch.last_voice_ms_ago) ? ch.last_voice_ms_ago + (Date.now() - s.trafficAt) : null;
@@ -343,18 +375,20 @@ function trafficCard(lane) {
       drawnFlags = fk;
       flags.replaceChildren(...fl.map(([cls, t, title]) => h('span', { class: `badge ${cls}`, text: t, title })));
     }
+    const listed = talkgroupsOf(s).find(t => t.tg === call.tg);
+    dot.hidden = false;
+    dot.style.background = listed ? listed.color : 'var(--idle)';
     setText(tg, tgLabel(call.tg, call.tg_name));
-    setText(sub, [nameOf(call.tg, call.tg_name) ? `TG ${call.tg}` : '', `from ${unitLabel(call.source, call.source_name)}`].filter(Boolean).join(' · '));
-    f.air.set(dur(Math.max(0, boardNow() - call.started_unix_ms)));
-    f.voice.set(call.voice_frames ? dur(call.voice_frames * 20) : 'none yet');
-    f.freq.set([mhz(call.freq_hz), channel(call)].filter(Boolean).join(' · '));
+    setText(sub, [nameOf(call.tg, call.tg_name) ? `TG ${call.tg}` : '', `from ${unitLabel(call.source, call.source_name)}`, [mhz(call.freq_hz), channel(call)].filter(Boolean).join(' ')].filter(Boolean).join(' · '));
+    setText(clock, dur(Math.max(0, boardNow() - call.started_unix_ms)));
+    setText(clockSub, call.voice_frames ? `voice ${dur(call.voice_frames * 20)}` : 'no voice yet');
     const held = s.status.hold || null;
     const hk = `${call.tg}|${held}`;
     if (hk !== drawnHold) {
       drawnHold = hk;
       holdSlot.replaceChildren(held === call.tg
-        ? h('button', { class: 'btn small', type: 'button', text: 'Release', title: 'Follow every talkgroup again', onclick: () => setHold(null) })
-        : h('button', { class: 'btn small', type: 'button', text: 'Hold', title: `Follow only TG ${call.tg}`, onclick: () => setHold(call.tg) }));
+        ? h('button', { class: 'btn small lit', type: 'button', text: 'Release', title: 'Follow every talkgroup again', onclick: () => setHold(null) })
+        : h('button', { class: 'btn small', type: 'button', text: 'Hold', title: `Follow only ${tgLabel(call.tg, call.tg_name)}, until released`, onclick: () => setHold(call.tg) }));
     }
   }
 
@@ -364,35 +398,47 @@ function trafficCard(lane) {
     stop() {
       audio.stop();
       offAlert();
+      offPrefs();
     },
   };
 }
 
 export function mount(el) {
-  const bank = talkgroupBank();
-  const site = siteStrip();
-  const lanes = [trafficCard(1), trafficCard(2)];
   const calls = callsPane();
-  el.append(h('div', { class: 'now' }, bank.el, site.el, h('div', { class: 'now-traffic' }, ...lanes.map(x => x.el)), calls.list, calls.detail));
+  const list = talkgroupList({ hold: setHold });
+  const site = siteBar();
+  const tuners = [tunerCard(1, calls.play), tunerCard(2, calls.play)];
+  const root = h('div', { class: 'now' }, site.el, h('div', { class: 'now-tuners' }, ...tuners.map(x => x.el)), list.el, calls.el);
+  el.append(root);
   let last = null;
+  // The tuners' clocks, while the radio is heard from.
   const tick = setInterval(() => {
-    if (last && last.status) for (const l of lanes) l.draw(last);
+    if (last && last.status && last.connected) for (const t of tuners) t.draw(last);
   }, TICK_MS);
+  // The page's keys go to the talkgroup list, away from any field.
+  const onKey = e => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target instanceof Element && e.target.closest('input:not([type=checkbox]), select, textarea')) return;
+    if (list.key(e)) e.preventDefault();
+  };
+  document.addEventListener('keydown', onKey);
 
   return {
     update(s) {
       last = s;
       if (!s.status) return;
+      // With the radio not heard from, the page shows how things were, and says so.
+      setClass(root, 'stale', !s.connected);
       site.draw(s);
-      for (const l of lanes) l.draw(s);
-      bank.draw(s);
+      for (const t of tuners) t.draw(s);
+      list.draw(s);
       calls.draw(s);
     },
     unmount() {
       clearInterval(tick);
+      document.removeEventListener('keydown', onKey);
       calls.stop();
-      bank.stop();
-      for (const l of lanes) l.stop();
+      for (const t of tuners) t.stop();
     },
   };
 }

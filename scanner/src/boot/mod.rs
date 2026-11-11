@@ -139,6 +139,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         atsc,
         burst: Arc::default(),
         notices,
+        heard: Default::default(),
         clock,
         crystal,
         packet_data,

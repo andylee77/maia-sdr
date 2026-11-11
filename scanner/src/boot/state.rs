@@ -45,6 +45,8 @@ pub struct AppState {
     /// The radio core's burst timing check (a diagnostic).
     pub burst: Arc<BurstCheck>,
     pub notices: Notices,
+    /// The live site's talkgroups of the last week, kept between reads of the history.
+    pub heard: crate::api::v1::talkgroups::HeardWeek,
     pub clock: Arc<Clock>,
     pub crystal: Arc<Crystal<Hardware>>,
     pub packet_data: Arc<PacketData>,

@@ -13,7 +13,7 @@ use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
 use crate::services::config::radio::{
-    Calls, Clock, CrystalTracking, Gain, GainMode, History, PacketDataFollow, RadioConfig, Recording, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+    Calls, Clock, CrystalTracking, Gain, GainMode, History, PacketDataFollow, RadioConfig, Recording, Storage, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
 };
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
@@ -79,15 +79,44 @@ pub struct RecordingSet {
     pub deleted: usize,
 }
 
-/// Apply and keep the recording settings; a lowered retention deletes the oldest at once.
-pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recording>) -> ApiResult<RecordingSet> {
-    req.check().map_err(ApiError::bad_request)?;
+/// The recording settings to change; one left out stays as it is.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingEdit {
+    pub enabled: Option<bool>,
+    pub every_call: Option<bool>,
+    pub storage: Option<Storage>,
+    pub ram_max_count: Option<u32>,
+    pub sd_keep_days: Option<u32>,
+    pub locked_keep_days: Option<u32>,
+    pub sd_max_mb: Option<u64>,
+    pub folder_max_count: Option<u32>,
+}
+
+impl RecordingEdit {
+    fn onto(self, mut r: Recording) -> Recording {
+        r.enabled = self.enabled.unwrap_or(r.enabled);
+        r.every_call = self.every_call.unwrap_or(r.every_call);
+        r.storage = self.storage.unwrap_or(r.storage);
+        r.ram_max_count = self.ram_max_count.unwrap_or(r.ram_max_count);
+        r.sd_keep_days = self.sd_keep_days.unwrap_or(r.sd_keep_days);
+        r.locked_keep_days = self.locked_keep_days.unwrap_or(r.locked_keep_days);
+        r.sd_max_mb = self.sd_max_mb.unwrap_or(r.sd_max_mb);
+        r.folder_max_count = self.folder_max_count.unwrap_or(r.folder_max_count);
+        r
+    }
+}
+
+/// Apply and keep the recording settings given; a lowered retention deletes the oldest at once.
+pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<RecordingEdit>) -> ApiResult<RecordingSet> {
     let mut c = s.config.lock().await;
-    c.radio.value.recording = req.clone();
+    let next = req.onto(c.radio.value.recording.clone());
+    next.check().map_err(ApiError::bad_request)?;
+    c.radio.value.recording = next.clone();
     config::save(&s.paths.radio(), &c.radio)?;
     drop(c);
-    let deleted = s.recordings.set_policy(Policy::from(&req));
-    Ok(Json(RecordingSet { recording: req, deleted }))
+    let deleted = s.recordings.set_policy(Policy::from(&next));
+    Ok(Json(RecordingSet { recording: next, deleted }))
 }
 
 /// The radio settings the gain and recording endpoints do not cover.

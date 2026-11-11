@@ -1,7 +1,6 @@
-// A system's aliases as the pages read them: the alias of a talkgroup, what it means for
-// following (as the follower decides it), and a talkgroup's name and colour on screen.
-
-const known = v => v !== null && v !== undefined;
+// A system's aliases as the pages read them: the alias that names a talkgroup, and a
+// talkgroup's name and colour on screen. How a talkgroup is treated (followed, its tuner, its
+// priority, recorded) is the radio's to say: it pushes the live site's talkgroups (store.js).
 
 // The alias of talkgroup `tg` in `sys`: the one naming it alone, else the first range holding it.
 export function aliasOf(sys, tg) {
@@ -13,21 +12,6 @@ export function aliasOf(sys, tg) {
     }
   }
   return ranged;
-}
-
-// How `sys` treats talkgroup `tg`: followed or not, where it plays, and its priority (null:
-// none). `needsPriority`: the system follows only talkgroups that have one.
-export function routeOf(sys, tg) {
-  const a = aliasOf(sys, tg);
-  const l = (sys && sys.listening) || { follow_unmonitored: true, unmonitored_speaker: 'both' };
-  const priority = a && known(a.priority) ? a.priority : null;
-  return {
-    alias: a,
-    followed: !(a && a.do_not_monitor) && (l.follow_unmonitored || priority !== null),
-    speaker: a ? a.speaker : l.unmonitored_speaker,
-    priority,
-    needsPriority: !l.follow_unmonitored,
-  };
 }
 
 // A talkgroup's own name: its alias's, unless that is only its number ("TG 300", what an alias

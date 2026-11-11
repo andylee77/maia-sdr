@@ -6,7 +6,8 @@
 // AudioWorklet there, so a ScriptProcessorNode runs the same rings
 // (ring.js) and gate (gate.js) on the main thread.
 //
-// Each lane plays at its own volume under the master volume. In alerts-only mode the gate holds a
+// Each lane plays at its own volume under the master volume, lane one on the left and lane two on
+// the right while the lanes are split, else both on both. In alerts-only mode the gate holds a
 // lane's call back until an alert tone opens its talkgroup; the player keeps when each opened
 // talkgroup closes, for the page to show. A browser starts audio only after a click on the page:
 // a player started without one waits (`resume`).
@@ -18,8 +19,8 @@ import { wsUrl } from '../api.js';
 
 const AUDIO_PATH = '/ws/audio?v=2';
 
-// The speaker of a lane's call, from its meta frame, as a pan: -1 left, 0 both, +1 right.
-const PAN = { left: -1, both: 0, right: 1 };
+// A lane's pan while the lanes are split: -1 left, +1 right; 0 is both.
+const LANE_PAN = [-1, 1];
 
 class Player {
   constructor() {
@@ -33,7 +34,7 @@ class Player {
     this.spn = null;
     this.volume = 1; // linear gain, 0..1
     this.laneVol = [1, 1];
-    this.pans = [0, 0];
+    this.split = false;
     this.gate = new AlertGate();
     this.alertsOnly = false;
     this.windowMs = 120000;
@@ -51,6 +52,12 @@ class Player {
     this.laneVol[lane] = Math.max(0, Math.min(1, Number(v) || 0));
     if (this.mode === 'worklet' && this.node) this.node.port.postMessage({ type: 'vol', lane, v: this.laneVol[lane] });
     if (this.spn) this.spn[lane].vol = this.laneVol[lane];
+  }
+
+  // Lane one on the left and lane two on the right, or both on both.
+  setSplit(on) {
+    this.split = !!on;
+    if (this.worker) this.worker.postMessage({ type: 'split', on: this.split });
   }
 
   // Volume normalization (ring.js) on every lane.
@@ -170,6 +177,7 @@ class Player {
       else if (m.type === 'alert') this.heard(m.alert);
     };
     this.worker.postMessage({ type: 'gate', on: this.alertsOnly, windowMs: this.windowMs });
+    this.worker.postMessage({ type: 'split', on: this.split });
     this.worker.postMessage({ type: 'init', url: wsUrl(AUDIO_PATH), port: mc.port1 }, [mc.port1]);
   }
 
@@ -201,10 +209,8 @@ class Player {
           const c = JSON.parse(ev.data);
           const lane = c.lane === 1 ? 1 : 0;
           if (c.type === 'lag') this.lagSkipped += c.skipped || 0;
-          else if (c.type === 'meta') {
-            this.pans[lane] = PAN[c.speaker] ?? PAN.both;
-            this.gate.call(lane, c.tg, c.call_id, Date.now());
-          } else if (c.type === 'alert') {
+          else if (c.type === 'meta') this.gate.call(lane, c.tg, c.call_id, Date.now());
+          else if (c.type === 'alert') {
             for (const b of this.gate.alert(lane, c.tg, c.call_id, Date.now())) write(lane, b);
             this.heard(c);
           }
@@ -212,7 +218,7 @@ class Player {
         return;
       }
       const lane = new Uint8Array(ev.data, 0, 1)[0] === 1 ? 1 : 0;
-      const block = { data: new Int16Array(ev.data, 4), pan: this.pans[lane] };
+      const block = { data: new Int16Array(ev.data, 4), pan: this.split ? LANE_PAN[lane] : 0 };
       if (this.gate.pass(lane, block)) write(lane, block);
       this.chunks++;
       this.lastChunkAt = Date.now();

@@ -1,35 +1,31 @@
-// Now's calls: every call of the live site, newest first (those on the air, then every closed
-// one; the radio pushes the newest, older ones are read from the history as the list reaches its
-// end), and the picked call beside the list (call_rows.js draws the rows and the panel).
+// Now's calls: every call of the live site, newest first, and the picked call's recording in a
+// panel docked under the list (call_rows.js draws the rows and the panel). The calls on the air
+// are drawn at each push; the closed ones only when one closed, learned its recording or was
+// read from the history. The radio pushes the newest; older ones are read from the history as
+// the list reaches its end, and only so many are kept, so a page left open does not grow.
 
 import { h, setText, setClass, keyedList } from '../dom.js';
 import { api } from '../api.js';
 import { boardNow } from '../store.js';
-import { num, bytes } from '../format.js';
+import { num } from '../format.js';
 import { callKey, recordingOf, alertsOf, detailPanel, createRow, updateRow } from './call_rows.js';
 
-// The call list's ages move between pushes.
+// The list's ages move between pushes while the board's clock is not set.
 const AGES_MS = 5000;
 // Calls read from the history a page at a time as the list is scrolled to its end.
 const PAGE = 100;
-const FILTERS = [['all', 'All', 'Every call'], ['followed', 'Followed', 'Only the calls a traffic channel followed'], ['alerts', 'Alerts', 'Only the calls with an alert tone']];
+// Closed calls kept: this many, and a page more for each page read, up to the most.
+const KEEP = 300;
+const KEEP_MOST = 2000;
+const FILTERS = [['all', 'All', 'Every call'], ['heard', 'Heard', 'Only the calls a tuner followed'], ['alerts', 'Alerts', 'Only the calls with an alert tone']];
 
 // Kept while the page is left for another.
 let filter = 'all';
 
 const known = v => v !== null && v !== undefined;
 
-function recordingNote(st) {
-  if (!st) return '';
-  if (!st.enabled) return 'Recording is off (Settings).';
-  const where = st.store === 'sd' ? 'SD card' : 'RAM';
-  const state = st.sd_status.state;
-  const sd = state === 'ok' || st.store !== 'sd' ? '' : state === 'failing' ? ' (SD card writes failing: saving to RAM until one lands)' : ` (SD card ${state.replace('_', ' ')}: saving to RAM)`;
-  return `Recording to ${where}${sd}: ${num(st.sd.count + st.ram.count)} kept, ${bytes(st.sd.bytes + st.ram.bytes)}.`;
-}
-
-// The calls and the picked call's panel: `list` and `detail` to show, `draw(store)` at each
-// push, `stop()`. Closed calls stay in the list once seen, so a long session keeps them all.
+// The calls and the picked call's panel: `el` to show, `draw(store)` at each push, `play(call)`
+// to pick a call and play its recording, `stop()`.
 export function callsPane() {
   const count = h('span', { class: 'dim' });
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Talkgroup or radio', 'aria-label': 'Filter the calls' });
@@ -37,30 +33,38 @@ export function callsPane() {
     filter = value;
     draw(s, true);
   } }));
-  const rows = h('div', { class: 'calls' });
+  const onAir = h('div', { class: 'calls' });
+  const closedRows = h('div', { class: 'calls' });
   const empty = h('div', { class: 'calls-empty' });
   const moreBtn = h('button', { class: 'btn small', type: 'button', text: 'Load older calls' });
   const moreText = h('span');
   const more = h('div', { class: 'calls-more' }, moreText, moreBtn);
-  const list = h('section', { class: 'card flush now-calls', 'aria-label': 'Calls' },
-    h('div', { class: 'card-head' }, h('h2', { text: 'Calls' }), count, h('div', { class: 'spacer' }), h('div', { class: 'row', role: 'group', 'aria-label': 'Which calls' }, ...chips), search),
-    h('div', { class: 'card-body' }, rows, empty, more));
   let s = null;
-  let drawn = null;
+  // What the closed rows were last drawn from.
+  let drawn = [];
   // The picked call's key, and a play asked for with the pick.
   let picked = null;
   let playAsked = false;
   const detail = detailPanel(() => {
     picked = null;
     draw(s, true);
-  });
+  }, '', { compact: true });
+  const el = h('section', { class: 'card flush now-calls', 'aria-label': 'Calls' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'Calls' }), count, h('div', { class: 'spacer' }), h('div', { class: 'row', role: 'group', 'aria-label': 'Which calls' }, ...chips), search),
+    h('div', { class: 'card-body' }, onAir, closedRows, empty, more),
+    detail.el);
   const pick = (x, play) => {
     picked = callKey(x);
     playAsked = play;
     draw(s, true);
   };
-  // This site's closed calls by key, and the history's paging.
-  const book = { site: null, closed: new Map(), done: false, loading: false, error: null, total: null, totalAt: 0, version: 0 };
+  // This site's closed calls by key, how many are kept, and the history's paging.
+  const book = { site: null, closed: new Map(), keep: KEEP, done: false, loading: false, error: null, version: 0 };
+  // The closed calls as last listed, newest first.
+  let closed = [];
+  // The newest recordings by id, and the store's part they were taken from.
+  let recs = new Map();
+  let recsOf = null;
   search.addEventListener('input', () => draw(s, true));
   moreBtn.addEventListener('click', () => loadOlder());
 
@@ -78,7 +82,7 @@ export function callsPane() {
 
   async function loadOlder() {
     const site = liveSite();
-    if (!site || book.loading || book.done) return;
+    if (!site || book.loading || book.done || book.closed.size >= KEEP_MOST) return;
     let oldest = Infinity;
     for (const x of book.closed.values()) oldest = Math.min(oldest, x.started_unix_ms);
     if (oldest === Infinity) oldest = boardNow() + 1;
@@ -89,6 +93,7 @@ export function callsPane() {
       const q = new URLSearchParams({ site, from: '1', to: String(oldest), limit: String(PAGE) });
       const r = await api.activity('calls', q.toString());
       if (book.site !== site) return;
+      book.keep = Math.min(KEEP_MOST, book.closed.size + PAGE);
       for (const x of r.items) if (!book.closed.has(callKey(x))) book.closed.set(callKey(x), x);
       book.done = r.items.length < PAGE;
       book.version++;
@@ -103,16 +108,14 @@ export function callsPane() {
     }
   }
 
-  // The site's calls in the history, at most every 30 s.
-  async function readTotal(site) {
-    if (Date.now() - book.totalAt < 30000) return;
-    book.totalAt = Date.now();
-    try {
-      const d = await api.activity('sites');
-      const st = d.sites.find(x => x.site === site);
-      if (book.site === site) book.total = st ? st.calls : 0;
-      draw(s, true);
-    } catch { /* read again later */ }
+  // The pushed calls join the kept ones (they learn their recordings and alerts), and the oldest
+  // past what is kept go.
+  function keep(recent, site) {
+    for (const x of recent) if (x.site === site) book.closed.set(callKey(x), x);
+    if (book.closed.size <= book.keep) return;
+    const byAge = [...book.closed.entries()].sort((a, b) => b[1].started_unix_ms - a[1].started_unix_ms);
+    book.closed = new Map(byAge.slice(0, book.keep));
+    book.done = false;
   }
 
   function draw(store, force) {
@@ -120,60 +123,68 @@ export function callsPane() {
     if (!s || !s.status) return;
     const site = liveSite();
     if (site !== book.site) {
-      Object.assign(book, { site, closed: new Map(), done: false, error: null, total: null, totalAt: 0, version: book.version + 1 });
+      Object.assign(book, { site, closed: new Map(), keep: KEEP, done: false, error: null, version: book.version + 1 });
       picked = null;
     }
-    const key = [s.calls, s.recordings, s.systems, book.version];
-    if (!force && drawn && key.every((v, i) => v === drawn[i])) return;
-    drawn = key;
-    if (site) readTotal(site);
+    const v = s.calls || { open: [], recent: [] };
+    if (s.recordings !== recsOf) {
+      recsOf = s.recordings;
+      recs = new Map(((s.recordings && s.recordings.items) || []).map(r => [r.id, r]));
+    }
+    const lv = s.status.live;
+    const sys = lv && lv.state === 'live' ? (s.systems || []).find(x => x.id === lv.system.id) : null;
+    const clockValid = !!(s.status.clock && s.status.clock.valid);
+    const ctx = { now: boardNow(), clockValid, recs, site, sys, picked };
+    const q = search.value.trim().toLowerCase();
+    const shows = x => (filter !== 'heard' || !x.not_followed)
+      && (filter !== 'alerts' || alertsOf(x, recordingOf(x, recs)).length > 0)
+      && (!q || [x.tg, x.tg_name, x.source, x.source_name].some(f => known(f) && String(f).toLowerCase().includes(q)));
+
+    // On the air: at each push.
+    const open = v.open.filter(shows);
+    keyedList(onAir, open, callKey, () => createRow(pick), (row, x) => updateRow(row, x, ctx));
+    onAir.hidden = !open.length;
+
+    // The closed ones: when what they are drawn from changed.
+    const from = [v.recent, s.recordings, s.systems, book.version, filter, q, picked, v.open.map(callKey).join(), clockValid];
+    if (force || from.some((x, i) => x !== drawn[i])) {
+      drawn = from;
+      keep(v.recent, site);
+      const openKeys = new Set(v.open.map(callKey));
+      closed = [...book.closed.values()].filter(x => !openKeys.has(callKey(x))).sort((a, b) => b.started_unix_ms - a.started_unix_ms);
+      const items = closed.filter(shows);
+      keyedList(closedRows, items, callKey, () => createRow(pick), (row, x) => updateRow(row, x, ctx));
+      empty.hidden = items.length + open.length > 0;
+      setText(empty, !s.calls ? 'Loading…' : q || filter !== 'all' || closed.length ? 'No matching calls.' : site ? 'No calls yet.' : 'No site is live.');
+      const full = book.closed.size >= KEEP_MOST;
+      more.hidden = !site;
+      moreBtn.hidden = book.done || book.loading || full;
+      setText(moreBtn, filtering() ? 'Search older calls' : 'Load older calls');
+      setText(moreText, book.error ? `Older calls not read: ${book.error}`
+        : book.loading ? 'Reading older calls…'
+          : book.done ? (closed.length ? `All ${num(closed.length)} calls of this site.` : '')
+            : full ? `The newest ${num(closed.length)} calls. Older ones are on Activity.` : '');
+    }
     chips.forEach((chip, i) => {
       const on = FILTERS[i][0] === filter;
       setClass(chip, 'on', on);
       chip.setAttribute('aria-pressed', String(on));
     });
-    const v = s.calls || { open: [], recent: [] };
-    // The pushed calls replace what was read of them (they learn their recordings and alerts).
-    for (const x of v.recent) if (x.site === site) book.closed.set(callKey(x), x);
-    const openKeys = new Set(v.open.map(callKey));
-    const closed = [...book.closed.values()].filter(x => !openKeys.has(callKey(x))).sort((a, b) => b.started_unix_ms - a.started_unix_ms);
-    const all = [...v.open, ...closed];
-    const recs = new Map(((s.recordings && s.recordings.items) || []).map(r => [r.id, r]));
-    const q = search.value.trim().toLowerCase();
-    const items = all.filter(x => (filter !== 'followed' || !x.not_followed)
-      && (filter !== 'alerts' || alertsOf(x, recordingOf(x, recs)).length > 0)
-      && (!q || [x.tg, x.tg_name, x.source, x.source_name].some(f => known(f) && String(f).toLowerCase().includes(q))));
-    const storage = s.recordings && s.recordings.storage;
-    const total = book.total === null ? null : Math.max(book.total, closed.length);
-    const recorded = s.recordings ? s.recordings.total : null;
-    setText(count, s.calls ? [
-      total === null ? `${num(all.length)} calls` : `${num(all.length)} of ${num(total)} calls`,
-      known(recorded) ? `${num(recorded)} recorded` : '',
-      storage && !storage.enabled ? 'recording off' : '',
-    ].filter(Boolean).join(' · ') : '');
-    count.title = recordingNote(storage);
-    const lv = s.status.live;
-    const sys = lv && lv.state === 'live' ? (s.systems || []).find(x => x.id === lv.system.id) : null;
-    const ctx = { now: boardNow(), clockValid: !!(s.status.clock && s.status.clock.valid), recs, site, sys, picked };
-    keyedList(rows, items, callKey, () => createRow(pick), (el, x) => updateRow(el, x, ctx));
-    empty.hidden = items.length > 0;
-    setText(empty, !s.calls ? 'Loading…' : q || filter !== 'all' || all.length ? 'No matching calls.' : lv && lv.state === 'live' ? 'No calls yet.' : 'No site is live.');
-    more.hidden = !site;
-    moreBtn.hidden = book.done || book.loading;
-    setText(moreBtn, filtering() ? 'Search older calls' : 'Load older calls');
-    setText(moreText, book.error ? `Older calls not read: ${book.error}` : book.loading ? 'Reading older calls…' : book.done ? `All ${num(all.length)} calls of this site.` : '');
+    setText(count, s.calls ? [v.open.length ? `${num(v.open.length)} on the air` : '', `${num(closed.length)} listed`].filter(Boolean).join(' · ') : '');
     // The picked call, whether or not the filter lists it.
-    const x = picked ? all.find(c => callKey(c) === picked) : null;
+    const x = picked ? v.open.find(c => callKey(c) === picked) || book.closed.get(picked) || null : null;
     if (picked && !x) picked = null;
-    detail.show(x || null, ctx, playAsked);
+    detail.show(x, ctx, playAsked);
     playAsked = false;
   }
 
-  const ages = setInterval(() => draw(s, true), AGES_MS);
+  const ages = setInterval(() => {
+    if (s && s.status && !(s.status.clock && s.status.clock.valid)) draw(s, true);
+  }, AGES_MS);
   return {
-    list,
-    detail: detail.el,
+    el,
     draw,
+    play: x => pick(x, true),
     stop() {
       clearInterval(ages);
       io.disconnect();

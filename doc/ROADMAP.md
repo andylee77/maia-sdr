@@ -65,11 +65,11 @@ What each goal needs from each layer, and where that layer stands.
 |------------|-------|-----|
 | P25 Phase 1 (LSM and C4FM) and DMR Tier III trunking; one follower with two lanes, priorities, pre-emption, a site hold and a hold per lane | **exists** | G1 |
 | Aliases (SDRTrunk's model, D15): name, group, colour, IDs and ranges, priority, do-not-monitor, record, speaker; a system's listening settings | **exists** in the configuration and the API | G1 |
-| One alias removed or edited by itself, radios' aliases, edits to many at once, a colour or group set from a page | not built: only the whole list can be replaced, and `PUT …/talkgroups/{tg}` never removes what it made | G1, Aliases |
-| How a talkgroup is treated (followed, where, priority), served by the daemon | not built: the pages work it out again in `js/aliases.js` from the follower's rule | G1, G2 |
-| The live site's talkgroups pushed (each with its name, treatment and when it was last heard) | not built: Now asks the history every 5 minutes, and the site's call count every 30 s | G1, G2 |
+| Radios' aliases, edits to many at once, a colour or group set from a page | not built: beyond one talkgroup's controls (`PUT` and `DELETE …/talkgroups/{tg}`) only the whole list can be replaced | G1, Aliases |
+| How a talkgroup is treated (followed, its tuner, priority, recorded), served by the daemon | **exists** (096: `GET /api/v1/talkgroups`, by the follower's own rule) | G1, G2 |
+| The live site's talkgroups pushed (each with its name, treatment and when it was last heard) | **exists** (096: `talkgroups` on `/ws/live`) | G1, G2 |
 | A changed radio setting shown in every browser | half built: the daemon announces it (`changed`, `what: radio`) and no page acts on it | G1 |
-| Recording: every followed call, or the calls of talkgroups marked `record`; by day on the card; locks; retention | **exists**; which of the two is not settable from a page (Q2) | G1 |
+| Recording: every followed call, or the calls of talkgroups marked `record`; by day on the card; locks; retention | **exists**; Now's Record sets which (096) | G1 |
 | The history on the card, the activity routes, CSV | **exists** | G1 |
 | RadioReference CSV import (`POST …/radioreference`, `/preview`) | **exists**, with no page | G1, Aliases |
 | SDRTrunk playlist import and export | **decided** (UI_BRIEF), not built | G1, Aliases |
@@ -87,7 +87,7 @@ What each goal needs from each layer, and where that layer stands.
 |------------|-------|-----|
 | The module rail; a module is an entry in `js/modules.js`; viewing a module does not move the radio | **exists** (090) | all |
 | Scanner: Now, Activity, Systems. TV: Watch, Channels. Tools: Diagnostics, Settings | **exists** (090 to 094) | G1, G3 |
-| Now as a monitoring station's front | **open** (Q1): the first thing to build | G1, G2 |
+| Now as a monitoring station's front | **exists** (096: layout A, the tuners first) | G1, G2 |
 | An Aliases tab; pages for the RadioReference and SDRTrunk imports; adding by hand | **decided**, not built | G1 |
 | Settings and Diagnostics split: the whole radio, and a part per module | **decided**; how is **open** (Q5) | G1, G3 |
 | Files: what is on the card, to download | **decided**, not built (Q6) | G1 |
@@ -163,10 +163,9 @@ What G1 and G2 need (the depth is Q7 to Q10):
 
 | Page | Feature | State |
 |------|---------|-------|
-| **Now** | The talkgroup bank (follow, speaker, priority, name), the site strip, the two traffic cards with a hold per lane, the calls, the picked call with its recording | **exists** (090) |
-| | Redone as a monitoring station's front: clean, with easier control of what is heard and what is recorded | **open** (Q1 to Q4): next |
-| | A Record control per talkgroup | waits for Q2 |
-| | Sound by tuner: Traffic 1 left, Traffic 2 right | **open** (Q3) |
+| **Now** | A monitoring station's front (layout A): the site bar with what is recorded; the two tuners, each with its call, its hold, the talkgroup it is kept on and its last calls to play again; the talkgroups with their tuner, Rec mark and Listen switch, one selected with its controls in a bar; the calls with the picked call's player | **exists** (096) |
+| | Sound by tuner: Traffic 1 left, Traffic 2 right, with a switch for both on both | **exists** (096) |
+| | The day's totals in the calls' heading; an alias's colour and group | not built |
 | **Activity** | Who talks, the totals and chart, calls, alerts, packet data, the picked call | **exists** (093) |
 | | Time per speaker in a call (072's open item); packet data kept in the history and its contents decoded (074b, parked) | **idea** |
 | **Systems** | The scan for systems; the systems and their sites edited in place | **exists** (093) |
@@ -192,14 +191,12 @@ The page and the handheld's panel share one model, so the page's work is not don
 
 How the follower treats a talkgroup's `speaker` today (`trunking/follow/mod.rs`): `left` goes to
 Traffic 1 only, `right` to Traffic 2 only, `both` to either, and a busy tuner does not borrow the
-other. So the field is the talkgroup's tuner. The browser then pans by the same field, so an
-"either" talkgroup plays in both ears whichever tuner follows it, while the card reads
-"Traffic 2 · Right" (Q3).
+other. So the field is the talkgroup's tuner. Since 096 the page calls it that, and the browser plays
+each tuner on its own speaker (Q3).
 
 Recording today (`services/recordings/mod.rs`): a followed call is recorded when recording is on
 and either `recording.every_call` is on (the default) or its talkgroup's alias says `record`.
-`PUT /api/v1/radio/recording` takes `every_call`, and no page sends it, so the per-talkgroup flag
-never decides anything (Q2).
+Now's Record sets which, since 096 (Q2).
 
 ### TV
 
@@ -258,7 +255,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | # | Step | Needs first |
 |---|------|-------------|
 | 1 | **The structure, the code review, its clear defects** (095) | — |
-| 2 | **Now, redone.** The page from the layout Andy picks, on Now's model | Q1 to Q4. In the API: the live site's talkgroups pushed with their treatment (no poll, one rule); the recording choice settable; one alias removed again |
+| 2 | **Now, redone:** done in 096 from layout A. Left of this step: `/ws/live` sending only what changed, the hold's two routes | Andy's use of the page. Q2 to Q4 are built as recommended, and his to change |
 | 3 | **Aliases.** The tab; the alias model's gaps; the RadioReference import's page; the SDRTrunk playlist import and export | Step 2 (the rows and the bank's rule are shared). In the API: one alias by itself, radios' aliases, many at once, the playlist routes |
 | 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
 | 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
@@ -300,20 +297,24 @@ Each has a recommendation first. Short answers are enough.
 
 **Now (step 2)**
 
-- **Q1. Which layout?** The drawn options, with unit A's data, are shown with this document.
+- **Q1. Which layout?** Answered 2026-11-11: A, the tuners first. Built in 096.
 - **Q2. What decides whether a call is recorded?** Recommended: one setting with three positions,
   on Now and in Settings: *off*, *marked talkgroups* (a talkgroup's Record mark decides),
   *every followed call* (the marks are shown lit and locked). It needs no new field. The
   alternative: keep "every call" and add a per-talkgroup "never record", which SDRTrunk's alias
-  model has no place for.
+  model has no place for. **Built as recommended in 096** (layout A was drawn with it); say if it
+  should be the other.
 - **Q3. Does sound follow the tuner?** Recommended: Traffic 1 always plays left and Traffic 2
   right, with a switch in the header for both ears; a talkgroup's setting then reads "Traffic 1,
-  Traffic 2 or either". It is a change in the browser's player only. The alternative is today's:
-  a talkgroup set to left or right is panned, and an "either" one plays in both ears.
+  Traffic 2 or either". It is a change in the browser's player only. The alternative: a talkgroup
+  set to left or right is panned, and an "either" one plays in both ears, as before 096.
+  **Built as recommended in 096,** with Left / Right in the header to turn it off.
 - **Q4. What is in the talkgroup list once an import adds hundreds of names?** Recommended: the
   talkgroups heard in the last week, plus those with a setting of their own (a priority, a tuner,
   Record, or switched off); a name alone does not list one, and everything is on the Aliases tab.
-  The alternative: a list picked by hand (a scan list), which needs a new field.
+  The alternative: a list picked by hand (a scan list), which needs a new field. **Still open:**
+  096 keeps the list as it was (an alias, or heard in the last week); the bound comes with the
+  import (step 3).
 
 **The tools (steps 4 to 6)**
 
@@ -371,26 +372,20 @@ What the review found that a fix on the spot does not settle, by the step that t
 defects fixed at once and the whole ranked list are in `doc/changes/095_structure_and_review.md`;
 what it recommends for each API quirk the pages lean on is in `scanner/doc/API_INVENTORY.md`.
 
-**Step 2, Now:**
+**Step 2, Now** (096 took the first five and measured the sixth; two are left):
 
-- **The talkgroups are pushed, with their treatment.** Today the page asks the history every
-  5 minutes and the site's call count every 30 s, and works out each talkgroup's treatment from
-  the follower's rule kept a second time in `js/aliases.js`.
-- **The list of talkgroups is bounded** (Q4). Every aliased talkgroup is a row of six controls
-  today; an import of a large system would make thousands.
-- **The calls are bounded.** The page keeps every closed call it has seen and draws the whole
-  list at each push.
-- **A lost connection shows.** With the socket down the cards keep counting a call that may be
-  over.
-- **One click, one small write.** A configuration write is a write, two syncs and a rename on
-  the flash inside its handler, on a runtime of two workers that also run trunking and live
-  audio. Measure it on unit A before the page makes more of them; write off the workers if it
-  costs.
-- **Writes change one thing.** `PUT /radio/recording` replaces the whole object (a body without
-  `every_call` sets it back to on); a talkgroup's alias, once made, cannot be removed; the
-  site's hold and a lane's share a route.
-- **`/ws/live` sends what changed.** Per client per second it builds and compares the status,
-  the scan and the kept TV scan (85 KB), and sends the traffic because one age in it moved.
+- **Done:** the talkgroups are pushed with their treatment, by the follower's own rule, and the
+  page asks the history nothing by itself; the calls kept are bounded and the closed rows are
+  drawn only when they change; a lost connection shows; a talkgroup's alias can be removed
+  again, and `PUT /radio/recording` takes any of its fields.
+- **Measured: one click, one small write.** A talkgroup write through the API, its save to the
+  flash included, took 14 to 18 ms on unit A (five writes, 096). It still runs inside its handler,
+  on the two workers that also run trunking and live audio; a write that meets the flash's
+  garbage collection may take longer, which five writes did not show.
+- **Left: the site's hold and a lane's share a route.**
+- **Left: `/ws/live` sends what changed.** Per client per second it builds and compares the
+  status, the scan and the kept TV scan (85 KB), and sends the traffic because one age in it
+  moved. The talkgroups come whole at each change (6 KB for unit A's 42).
 
 **Step 3, Aliases:** the trap where a talkgroup's edit lands on an alias the follower does not
 read; a call by its id; Activity's one loader for every change (five requests a click, none

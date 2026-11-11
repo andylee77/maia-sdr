@@ -7,10 +7,11 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/routes` | this list |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |
+| GET | `/api/v1/talkgroups` | the live site's talkgroups: those its system's aliases name and those heard in the last week, each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording |
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any, and each traffic lane's own |
 | PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before |
 | GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
-| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal) |
+| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal) |
 | GET | `/ws/events` | a text frame when a call opens or closes, a recording is saved or a call's alert tones are known |
 | GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged |
 | GET | `/api/v1/data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
@@ -41,7 +42,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/radio/crystal` | crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit) |
 | POST | `/api/v1/radio/crystal/calibrate` | measure the crystal correction on the live control channel now (about 7 s) |
 | POST | `/api/v1/clock` | set the board clock (`unix_ms`, a browser's time) |
-| PUT | `/api/v1/radio/recording` | recording on/off, where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps |
+| PUT | `/api/v1/radio/recording` | any of: recording on/off (`enabled`), every followed call or only those of talkgroups marked record (`every_call`), where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps |
 | GET | `/api/v1/recordings` | recordings newest first (`limit`, `site`), with the stores' state |
 | DELETE | `/api/v1/recordings` | delete every recording of `store` (sd, ram or all) |
 | GET | `/api/v1/recordings/{id}` | one recording's WAV (`{id}` or `{id}.wav`; byte ranges) |
@@ -53,7 +54,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/systems/{id}/aliases` | a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings |
 | PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once) |
 | PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
-| PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker |
+| PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one |
+| DELETE | `/api/v1/systems/{id}/talkgroups/{tg}` | remove the alias that names one talkgroup alone: it is then treated as a talkgroup with none |
 | POST | `/api/v1/systems/{id}/radioreference` | import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack |
 | POST | `/api/v1/systems/{id}/radioreference/preview` | what that import would change; nothing is saved |
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site: its name, identity (kept when absent), channels and receiver settings (the live site goes live again with the change) |

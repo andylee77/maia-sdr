@@ -21,7 +21,8 @@ page has yet is marked "Still to come" in them.
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
 | Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
 | Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header. A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
-| Hold | Not on every row (Andy, 2026-11-10): Hold is on the card of the call on the air, Release there and in the site strip. |
+| Hold | Not on every row (Andy, 2026-11-10): Hold is on the tuner's card of the call on the air and in the selected talkgroup's bar, Release there and in the site bar. |
+| Now | Layout A, "tuners first" (Andy, 2026-11-11, from three drawn options; change 096): the site bar, the two tuners, the talkgroups with one selected and its controls in a bar under them, the calls with the picked call's player docked under them. Sound follows the tuner (Traffic 1 left, Traffic 2 right), and what is recorded is Off, Marked or Every call; both as drawn, and Andy's to change. |
 | TV | Watch, then Channels (change 091). Watch cycles three views (Andy, 2026-11-10): small (the channels, the picture, the signal), large (the picture across the page, the channels a strip below) and full screen with nothing over the picture. Play and Scan take the radio themselves, after asking. |
 
 ## Backend work before the UI
@@ -54,13 +55,13 @@ In this order; each item is usable through the API on its own.
    | `ids` | Talkgroups, talkgroup ranges, radios, radio ranges. |
    | `priority` | 1 (highest) to 100 (lowest), or "do not monitor" (SDRTrunk's -1). A higher priority takes a traffic channel from a lower one. |
    | `record` | Its calls are recorded. |
-   | `speaker` | Left, right or both (ours; SDRTrunk has none). |
+   | `speaker` | Its traffic tuner: Traffic 1 (`left`), Traffic 2 (`right`) or either (`both`). Ours; SDRTrunk has none. |
 
    Per system:
 
    - **Talkgroups with no alias:** followed at the lowest priority, or not at all. SDRTrunk calls
      the second "ignore unmonitored calls".
-   - **Where they play:** left, right or both.
+   - **Their traffic tuner:** Traffic 1, Traffic 2 or either.
    - **Pre-emption:** whether priority pre-empts.
 
    Recording keeps a "record every followed call" switch beside the per-alias flag. The hold
@@ -91,19 +92,19 @@ Then three ways in: scan for systems, add one by hand, or import an SDRTrunk pla
 ### Now (home)
 
 p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`, in git history since p25-httpd left the repo).
-Done (change 090 laid it out anew, filling the screen): the talkgroup bank on the left (every
-talkgroup with an alias of its own or heard in the last week: followed or not, its speaker, its
-priority and its name, each set in place), the site strip with its two lists (picking a site
-makes it live), the traffic channels as "Traffic 1 · Left" and "Traffic 2 · Right", each with a
-talkgroup list that keeps that channel on one talkgroup (the clear talkgroups of the last week;
-a lane the site does not run says so) and this browser's volume and mute for it, the calls
-(every call of the site, older ones read as the list scrolls, with filters for the followed
-ones and the ones with alert tones), and the picked call on the right: its recording's player
-with its alert tones as bookmarks, and its details. The header keeps Listen across reloads, the
-volume, the leveller and "Alerts only" (play only the talkgroups an alert tone opened, for a
-chosen time). The control channel's counters moved to Diagnostics.
-Still to come: recording per talkgroup (the radio records every followed call, and nothing sets
-that apart yet), an alias's colour and group, and range aliases as rows of their own.
+Done (change 096, from the layout Andy picked of three drawn; 090 had laid it out before): the
+site bar (one list of every site by system, whether the control channel decodes, the radio's
+hold, what is recorded: Off, Marked or Every call), the two tuners side by side ("Traffic 1" and
+"Traffic 2": the call in large type, Hold, the talkgroup the tuner is kept on, its last calls to
+play again, this browser's volume and mute for it), the talkgroups (those listened to, those
+switched off, those heard only encrypted; a row has its tuner, its Rec mark and its Listen
+switch; one is selected, by a click or the arrow keys, and a bar holds its controls: Hold, Skip,
+Record, tuner, priority, Rename), and the calls with the picked call's player docked under them.
+Everything on it is pushed, the talkgroups with how each is treated included. The header keeps
+Listen across reloads, the volume, Left / Right (Traffic 1 on the left speaker, Traffic 2 on the
+right), the leveller and "Alerts only". The control channel's counters are on Diagnostics.
+Still to come: an alias's colour and group, range aliases as rows of their own, and the day's
+totals in the calls' heading.
 
 - **Locked top:** the header, the system card and the active channels stay on screen. Only the
   call history scrolls, in its own pane.

@@ -86,13 +86,13 @@ STRUCTS["alias"] = [
     ("priority", "number or null", "Monitor priority, 1 (highest) to 100 (lowest); a higher one takes a traffic channel from a lower one. Null: unmonitored (see `listening`)."),
     ("do_not_monitor", "bool", "Never followed (SDRTrunk's priority -1)."),
     ("record", "bool", "Its calls are recorded (when recording is not set to every call)."),
-    ("speaker", "string", "Where it plays: `both`, `left` or `right`."),
+    ("speaker", "string", "Its traffic lane: `left` lane 1 only, `right` lane 2 only, `both` either. The UI plays lane 1 on the left speaker and lane 2 on the right."),
     ("icon", "string, absent when none", "SDRTrunk's icon name, kept for the round trip."),
 ]
 
 STRUCTS["listening"] = [
     ("follow_unmonitored", "bool", "Talkgroups with no priority (no alias, or an alias without one) are followed at the lowest priority; false: only those with a priority (SDRTrunk's \"ignore unmonitored calls\")."),
-    ("unmonitored_speaker", "string", "Where those play: `both`, `left` or `right`."),
+    ("unmonitored_speaker", "string", "Their traffic lane: `both` (either), `left` (lane 1) or `right` (lane 2)."),
     ("preempt", "bool", "A higher priority takes a traffic channel from a lower one."),
 ]
 
@@ -441,6 +441,30 @@ ROUTES: dict[str, list] = {
         ("@recent[]", "call"),
     ],
     "/api/v1/calls/{id}": [("@", "call")],
+    "/api/v1/talkgroups": [
+        ("site", "string or null", "The live site; null when none."),
+        ("system", "string or null", "Its system."),
+        ("listening", "object or null", "How the system treats talkgroups with no priority; null with no live site."),
+        ("@listening", "listening"),
+        ("recording", "object", "What decides whether a followed call is recorded."),
+        ("recording.enabled", "bool", "Recording is on."),
+        ("recording.every_call", "bool", "Every followed call is recorded; false: only those of talkgroups marked `record`."),
+        ("items", "array", "The site's talkgroups by number: those an alias names, and those heard in the last week or among the calls listed now."),
+        ("items[]", "object", "One talkgroup."),
+        ("items[].tg", "number", "The talkgroup."),
+        ("items[].name", "string or null", "Its alias's name; null while that is only its number."),
+        ("items[].group", "string or null", "Its alias's group."),
+        ("items[].color", "string or null", "Its alias's colour, `#rrggbb`."),
+        ("items[].own", "bool", "An alias names it alone: its controls are its own."),
+        ("items[].followed", "bool", "The follower follows its calls, by its alias and the listening settings (an encrypted call never)."),
+        ("items[].speaker", "string", "Its traffic lane: `left` lane 1 only, `right` lane 2 only, `both` either."),
+        ("items[].priority", "number or null", "Its monitor priority, 1 (highest) to 100."),
+        ("items[].record", "bool", "Its alias says record its calls."),
+        ("items[].recorded", "bool", "Its calls are recorded now: it is followed, recording is on, and it is marked or every call is."),
+        ("items[].calls", "number", "Its calls in the last week."),
+        ("items[].encrypted", "number", "How many of them were encrypted."),
+        ("items[].last_ms", "number or null", "When it was last heard (unix ms); null: not in the last week."),
+    ],
     "/api/v1/hold": [
         ("site", "string or null", "The live site; null when none."),
         ("tg", "number or null", "The talkgroup the whole site is held on; null when not held."),
@@ -1203,10 +1227,11 @@ NOT_JSON: dict[str, str] = {
     "/ws/live": (
         "A WebSocket of text frames, each a JSON object with `type`; the payload is under the key named:\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
-        "| `snapshot` | `status`, `calls` (`open`, `recent`), `traffic`, `scan`, `atsc` | On connect, and after `lag`. |\n"
+        "| `snapshot` | `status`, `calls` (`open`, `recent`), `traffic`, `talkgroups`, `scan`, `atsc` | On connect, and after `lag`. |\n"
         "| `status` | `status` (as `GET /api/v1/status`) | Each second, and at once when the live site changes. |\n"
         "| `traffic` | `traffic`: `channels[]` (each traffic channel: `lane`, `tuned_hz`, `following_tg`, `on_data_channel`, `voice_frames`, `last_voice_ms_ago`, `call`) and `open[]` (every call on the air) | When a traffic channel changes. |\n"
         "| `call_opened`, `call_closed` | `call` (as `GET /api/v1/calls/{id}`) | As a call opens or closes. |\n"
+        "| `talkgroups` | `talkgroups` (as `GET /api/v1/talkgroups`) | When the live site changes, an alias, the listening settings or what decides recording change, or a call opens on a talkgroup not listed yet. Between them a page keeps `last_ms` current from the calls it is pushed. |\n"
         "| `recording` | `recording` (as an item of `GET /api/v1/recordings`) | As a recording is saved. |\n"
         "| `alert` | `call`, `alerts` (each as an item of `GET /api/v1/activity/alerts`, `dispatch` null) | When a closed call's alert tones are known, after its recording. |\n"
         "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"

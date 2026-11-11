@@ -42,8 +42,10 @@ export const api = {
   saveRadioSettings: settings => request('PUT', '/api/v1/radio/settings', settings),
   setClockSource: source => request('PUT', '/api/v1/radio/clock', { source }),
   setPacketData: follow => request('PUT', '/api/v1/radio/packet_data', { follow }),
-  // One talkgroup's controls (`edit`: any of name, priority, do_not_monitor, record, speaker).
+  // One talkgroup's controls (`edit`: any of name, priority, follow, record, speaker).
   setTalkgroup: (system, tg, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/talkgroups/${tg}`, edit),
+  // Its alias removed: it is a talkgroup with no settings of its own again.
+  forgetTalkgroup: (system, tg) => request('DELETE', `/api/v1/systems/${encodeURIComponent(system)}/talkgroups/${tg}`),
   setTime: unix_ms => request('POST', '/api/v1/clock', { unix_ms }),
   crystal: () => request('GET', '/api/v1/radio/crystal'),
   setCrystal: tracking => request('PUT', '/api/v1/radio/crystal', tracking),
@@ -66,6 +68,7 @@ export const api = {
   atscLiveStart: rf => request('POST', '/api/v1/atsc/live', { rf }),
   atscLiveStop: () => request('POST', '/api/v1/atsc/live/stop'),
   recordings: (limit, site) => request('GET', `/api/v1/recordings?limit=${limit}${site ? `&site=${encodeURIComponent(site)}` : ''}`),
+  // Any of the recording settings (`enabled`, `every_call`, the store and its limits).
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
   lockRecording: (id, locked) => request('PUT', `/api/v1/recordings/${id}/lock`, { locked }),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),

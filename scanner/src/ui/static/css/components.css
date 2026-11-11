@@ -186,73 +186,80 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .metrics { display: grid; gap: 8px 12px; align-items: end; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
 .metrics .m-value { white-space: nowrap; }
 
-/* ── Now: the talkgroup bank, the site strip, the traffic channels, the calls and the picked
-   call. One column on a narrow or short screen, where the page scrolls: the picked call shows
-   above the bank and the calls once there is one. On a wider screen the page fills the screen
-   and each pane scrolls on its own: the bank has a column beside the calls, and the picked call
-   covers it until it is closed. From 1360 px the bank is on the left and the picked call keeps
-   the right. ── */
+/* ── Now: the site bar, the two traffic tuners, the talkgroups and the calls. One column on a
+   narrow or short screen, where the page scrolls. On a wider one the page fills the screen: the
+   bar and the tuners across the top, and under them the talkgroups beside the calls, each
+   scrolling on its own. ── */
 .now { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
-.now-site { order: 1; }
-.now-traffic { order: 2; display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.call-detail { order: 3; }
-.now-bank { order: 4; }
-.now-calls { order: 5; }
-.now-bank .card-body { max-height: 34vh; overflow-y: auto; }
-.call-detail.empty { display: none; }
+.now-tuners { display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.now-list .card-body { max-height: 46vh; overflow-y: auto; }
 @media (max-width: 860px) {
-  .now-traffic { grid-template-columns: minmax(0, 1fr); }
+  .now-tuners { grid-template-columns: minmax(0, 1fr); }
 }
 @media (min-width: 1000px) and (min-height: 600px) {
   .now {
     min-height: 0;
-    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-columns: minmax(340px, 34%) minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr);
-    grid-template-areas: "site side" "traffic side" "calls side";
+    grid-template-areas: "site site" "tuners tuners" "list calls";
   }
   .now-site { grid-area: site; }
-  .now-traffic { grid-area: traffic; }
+  .now-tuners { grid-area: tuners; }
+  .now-list { grid-area: list; }
   .now-calls { grid-area: calls; }
-  .now-bank, .call-detail { grid-area: side; }
-  .call-detail { z-index: 1; }
-  .now-bank, .now-calls { min-height: 0; display: flex; flex-direction: column; }
-  .now-bank .card-body, .now-calls .card-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
-  .call-detail { min-height: 0; overflow-y: auto; }
+  .now-list, .now-calls { min-height: 0; display: flex; flex-direction: column; }
+  .now-list .card-body, .now-calls .card-body { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 }
-@media (min-width: 1360px) and (min-height: 600px) {
-  .now {
-    grid-template-columns: 320px minmax(0, 1fr) 340px;
-    grid-template-areas: "bank site detail" "bank traffic detail" "bank calls detail";
-  }
-  .now-bank { grid-area: bank; }
-  .call-detail { grid-area: detail; }
-  .call-detail.empty { display: block; }
-}
+/* The radio is not heard from: what is shown is how it was. */
+.now.stale .tuner, .now.stale .now-list, .now.stale .now-calls { opacity: 0.55; }
 
-/* The site strip. */
+/* The site bar. */
 .now-site { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; }
-.now-site select.pick { font-weight: 600; max-width: 22em; }
+.now-site select.pick { font-weight: 600; max-width: 30em; }
+.now-site .spacer { flex: 1; }
+.now-site .row:empty { display: none; }
 .site-state { font-weight: 600; }
-.site-facts { margin-left: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; color: var(--text-faint); font-size: 0.92em; }
-.site-facts .k { margin-right: 5px; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.06em; }
+.now-site .warn { color: var(--warn); }
 
-/* A traffic channel: its call, or what it waits for. Its border takes the call's phase. */
-.call-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; }
-.call-card .card-head { margin-bottom: 0; }
-.call-card.voice { border-color: color-mix(in srgb, var(--voice) 55%, var(--line)); }
-.call-card.hang { border-color: color-mix(in srgb, var(--hang) 55%, var(--line)); }
-.call-card.acquiring { border-color: color-mix(in srgb, var(--acquire) 55%, var(--line)); }
-.call-main { min-height: 4.3em; }
-.call-tg { font-size: 1.9em; font-weight: 650; line-height: 1.15; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.call-card.idle .call-tg { color: var(--text-faint); }
-.call-sub { margin-top: 3px; color: var(--text-dim); }
-.call-foot { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; min-height: 38px; }
-.call-facts { display: flex; flex-wrap: wrap; gap: 4px 22px; }
-.fact { display: grid; gap: 1px; }
-.fact-k { font-size: 0.8em; color: var(--text-faint); }
-.fact-v { font-family: var(--mono); font-size: 0.95em; font-variant-numeric: tabular-nums; }
-.lane-hold { max-width: 13em; min-height: 28px; padding: 2px 8px; font-size: 0.86em; }
-.lane-hold.held { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* One of a few: the picked one is filled. */
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.seg button { min-height: 28px; padding: 2px 11px; border: 0; background: transparent; color: var(--text-dim); font-size: 0.86em; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button:hover:not(:disabled) { color: var(--text); }
+.seg button.on, .seg button.on:hover { background: var(--accent); color: var(--accent-ink); }
+.seg button:disabled { opacity: 0.5; cursor: default; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.btn.quiet { background: transparent; }
+.btn.lit { border-color: var(--accent); color: var(--accent); }
+
+/* A traffic tuner: its call, or what it waits for. Its border takes the call's phase. */
+.tuner { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; }
+.tuner.voice { border-color: color-mix(in srgb, var(--voice) 55%, var(--line)); }
+.tuner.hang { border-color: color-mix(in srgb, var(--hang) 55%, var(--line)); }
+.tuner.acquiring { border-color: color-mix(in srgb, var(--acquire) 55%, var(--line)); }
+.tuner-main { display: flex; align-items: flex-start; gap: 16px; min-height: 4.5em; }
+.tuner-what { flex: 1; min-width: 0; }
+.tuner-tg { display: flex; align-items: center; gap: 12px; font-size: 2.1em; font-weight: 650; line-height: 1.15; letter-spacing: -0.01em; }
+.tuner-tg .tg-dot { width: 14px; height: 14px; border-radius: 4px; }
+.tuner-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tuner.idle .tuner-name { color: var(--text-faint); }
+.tuner-sub { margin-top: 4px; color: var(--text-dim); font-size: 1.05em; }
+.tuner-when { text-align: right; }
+.tuner-clock { font-size: 2.1em; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tuner-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; min-height: 30px; }
+.tuner-foot > span:empty { display: none; }
+.tuner-foot .spacer { flex: 1; }
+.tuner-keep { max-width: 17em; min-height: 28px; padding: 2px 8px; font-size: 0.86em; }
+.tuner-keep.held { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tuner-before { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.replay {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 26px; padding: 2px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--text-dim);
+  font-size: 0.84em; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer;
+}
+.replay:hover { border-color: var(--accent); color: var(--text); }
 /* A lane's volume and mute in this browser. */
 .lane-audio { display: inline-flex; align-items: center; gap: 4px; }
 .lane-audio .vol { width: 76px; }
@@ -263,40 +270,79 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .rec-player .seek { flex: 1 1 auto; width: 110px; min-width: 60px; accent-color: var(--accent); cursor: pointer; }
 .rec-player .rec-time { font-size: 0.84em; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* The talkgroup bank: a talkgroup a row, with its priority, its speaker and whether it is
-   followed. */
-.now-bank .card-head .input { width: 7.5em; min-height: 28px; padding: 3px 9px; }
-.now-bank .card-body { border-top: 1px solid var(--line); }
-.tg-row {
-  display: grid; grid-template-columns: 10px minmax(0, 1fr) 3em 3em 38px;
-  align-items: center; gap: 8px;
-  min-height: 46px; padding: 4px 14px;
-  border-top: 1px solid var(--line);
-}
-.tg-list .tg-row:first-child { border-top: 0; }
-.tg-head {
-  position: sticky; top: 0; z-index: 1;
-  min-height: 26px; border-top: 0; border-bottom: 1px solid var(--line);
-  background: var(--bg-raised);
-  color: var(--text-faint); font-size: 0.78em; text-align: center;
-}
-.tg-row.on-air { background: color-mix(in srgb, var(--voice) 8%, transparent); }
-.tg-row.off .tg-name, .tg-row.off .tg-name::placeholder { color: var(--text-faint); }
+/* The talkgroups. A row: the talkgroup, its tuner, its Record mark, its Listen switch. The bar
+   under the list holds the selected talkgroup's controls. */
+.now-list .card-head { padding-bottom: 10px; }
+.now-list .card-head .input { width: 8em; min-height: 28px; padding: 3px 9px; }
+.now-list .card-body { border-top: 1px solid var(--line); }
 .tg-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.tg-text { min-width: 0; }
-.inline.tg-name { width: calc(100% + 5px); margin-left: -5px; font-weight: 600; text-overflow: ellipsis; }
-.inline.tg-name::placeholder { color: var(--text); font-style: normal; }
-.tg-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inline.tg-pri { width: 100%; text-align: center; font-family: var(--mono); appearance: textfield; -moz-appearance: textfield; }
-.inline.tg-pri::-webkit-inner-spin-button, .inline.tg-pri::-webkit-outer-spin-button { appearance: none; margin: 0; }
-.inline.tg-pri::placeholder { font-style: normal; }
-.btn.small.tg-spk { width: 100%; padding: 2px 0; }
-.tg-row .switch { justify-self: end; }
-.tg-enc { grid-column: 3 / -1; justify-self: end; display: inline-flex; color: var(--text-faint); }
+.tgl-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 44px 28px 38px;
+  align-items: center; gap: 12px;
+  min-height: 46px; padding: 4px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.tgl-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.tgl-row.sel, .tgl-row.sel:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.tgl-row.air .sub { color: var(--voice); }
+.tgl-row.off .tgl-name { color: var(--text-dim); }
+.tgl-cols, .tgl-cols:hover {
+  min-height: 28px; cursor: default; background: none;
+  border-top: 1px solid var(--line); border-bottom: 0;
+  color: var(--text-faint); font-size: 0.78em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.tgl-cols span + span { text-align: center; }
+.tgl-what { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tgl-text { min-width: 0; }
+.tgl-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tgl-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tgl-chip {
+  min-height: 26px; padding: 2px 0;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  background: transparent; color: var(--text-dim);
+  font-size: 0.86em; font-weight: 600; cursor: pointer;
+}
+.tgl-chip:hover { border-color: var(--accent); }
+.tgl-chip.set { border-color: var(--accent); color: var(--accent); }
+.tgl-rec {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--line-strong); border-radius: 50%;
+  background: transparent; cursor: pointer;
+}
+.tgl-rec::after, .tgl-recdot { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--idle); }
+.tgl-rec:hover:not(:disabled) { border-color: var(--danger); }
+.tgl-rec.on { border-color: color-mix(in srgb, var(--danger) 60%, var(--line-strong)); }
+.tgl-rec.on::after, .btn.lit .tgl-recdot { background: var(--danger); }
+.tgl-rec:disabled { cursor: default; opacity: 0.65; }
+.tgl-row .switch { justify-self: end; }
+.tgl-lock { grid-column: 2 / -1; justify-self: end; display: inline-flex; color: var(--text-faint); }
+.tgl-group {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; min-height: 36px; padding: 6px 14px;
+  border: 0; border-bottom: 1px solid var(--line);
+  background: var(--bg-sunken); color: var(--text-dim);
+  font-size: 0.86em; font-weight: 650; text-align: left; cursor: pointer;
+}
+/* A closed group under the fold stays in sight at the list's foot. */
+.tgl-group { position: sticky; bottom: 0; z-index: 1; }
+.tgl-group:first-of-type:has(~ .tgl-group:not([hidden])) { bottom: 36px; }
+.tgl-group svg { flex: none; transform: rotate(-90deg); }
+.tgl-group.open svg { transform: none; }
+.tgl-group:focus-visible, .tgl-chip:focus-visible, .tgl-rec:focus-visible, .replay:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tgl-hint { font-weight: 400; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tgl-bar { padding: 10px 14px; border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); background: var(--bg-sunken); }
+.tgl-controls { display: grid; gap: 8px; }
+.tgl-controls .row { flex-wrap: wrap; }
+.tgl-controls .spacer { flex: 1; }
+.tgl-rename { width: 14em; min-height: 28px; padding: 2px 8px; font-weight: 600; }
+.tgl-pri { width: 5.4em; min-height: 28px; padding: 2px 8px; }
+.tgl-pick { font-size: 0.92em; }
 
-/* The calls. A row is picked for the panel beside the list. */
+/* The calls. A row is picked for the panel that plays its recording. */
 .calls { display: grid; }
-.now-calls .card-head { flex-wrap: wrap; }
+.now-calls .card-head { flex-wrap: wrap; padding-bottom: 10px; }
 .now-calls .card-body { border-top: 1px solid var(--line); }
 .now-calls .card-head .input { width: 13em; min-height: 28px; padding: 3px 9px; }
 .call-row {
@@ -320,7 +366,15 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-row .when .badge { font-family: var(--font); }
 .call-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .call-row .c-tg, .call-row .c-src { min-width: 0; }
-.call-row .c-tg .sub { padding-left: 18px; }
+.call-row .c-tg .sub { padding-left: 46px; }
+/* The traffic lane that followed the call. */
+.c-lane { flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1px solid transparent; border-radius: 5px; font-size: 0.78em; font-weight: 700; color: var(--text-dim); }
+.c-lane:not(:empty) { background: var(--bg-control); border-color: var(--line-strong); }
+.now .call-row { grid-template-columns: 5.4em minmax(0, 1.4fr) minmax(0, 1fr) 8.5em; min-height: 42px; padding-top: 3px; padding-bottom: 3px; }
+/* A call no tuner followed takes less room. */
+.now .call-row.nf { min-height: 32px; font-size: 0.94em; }
+.now .call-row .sub:empty { display: none; }
+.now .call-row .c-freq { display: none; }
 .call-row .c-freq { font-family: var(--mono); font-size: 0.92em; color: var(--text-dim); }
 .call-row .c-end { display: flex; justify-content: flex-end; }
 .btn.small.c-play { min-width: 5.8em; font-family: var(--mono); }
@@ -357,6 +411,19 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-detail .btn.mark { color: var(--warn); }
 .call-detail .btn.locked { color: var(--accent); }
 .call-detail .kv { font-size: 0.9em; }
+/* Now's picked call: docked under the calls, what is known of it behind Details. */
+.now-calls > .call-detail {
+  max-height: 48%; overflow-y: auto;
+  padding: 10px 16px 12px;
+  border: 0; border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--bg-sunken); box-shadow: none;
+}
+.now-calls > .call-detail.empty { display: none; }
+.call-detail.compact .detail-body { gap: 8px; }
+.call-detail.compact .detail-head { align-items: center; }
+.call-detail.compact .detail-what { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.call-detail.compact .detail-title { margin-top: 0; font-size: 1.05em; }
+.call-detail.compact .detail-player .rec-player .btn.small.icon { width: 32px; height: 32px; min-height: 32px; }
 
 /* ── Activity: the bar (site and period), who talks, the totals with the chart, the lists
    (calls, alerts, packet data) and the picked call. One column on a narrow or short screen, where

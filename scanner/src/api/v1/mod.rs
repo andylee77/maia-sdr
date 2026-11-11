@@ -20,3 +20,4 @@ pub mod sites;
 pub mod status;
 pub mod system;
 pub mod systems;
+pub mod talkgroups;

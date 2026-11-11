@@ -12,7 +12,7 @@ import { mhz, ago, num, dur, clock, bytes, unitLabel, DASH, NOT_FOLLOWED, CLOSE_
 import { recordingPlayer } from '../audio/recording.js';
 import { aliasOf, tgLabel, nameOf, colorOf } from '../aliases.js';
 
-// The follower serves the left speaker's talkgroups on lane 1 and the right's on lane 2.
+// Lane 1 plays on the left speaker and lane 2 on the right while the lanes are split.
 export const SIDE = { 1: 'Left', 2: 'Right' };
 
 const known = v => v !== null && v !== undefined;
@@ -89,20 +89,28 @@ function detailRows(x, ctx, rec) {
 }
 
 // The picked call's panel. `show(x, ctx, play)` draws call `x` (null: none picked); `play` true
-// starts its recording, a number starts it that many seconds in.
-export function detailPanel(onClose, emptyText = 'Pick a call to play its recording and see what is known of it.') {
+// starts its recording, a number starts it that many seconds in. `compact`: what is known of the
+// call beyond its player waits behind a Details button.
+export function detailPanel(onClose, emptyText = 'Pick a call to play its recording and see what is known of it.', { compact = false } = {}) {
   const kicker = h('div', { class: 'kicker' });
   const title = h('div', { class: 'detail-title' });
   const sub = h('div', { class: 'dim' });
   const player = h('div', { class: 'detail-player' });
   const tools = h('div', { class: 'row' });
   const alerts = h('div', { class: 'detail-alerts' });
-  const facts = h('dl', { class: 'kv' });
+  const facts = h('dl', { class: 'kv', hidden: compact });
+  const more = compact ? h('button', { class: 'btn small', type: 'button', text: 'Details', 'aria-expanded': 'false' }) : null;
+  if (more) {
+    more.addEventListener('click', () => {
+      facts.hidden = !facts.hidden;
+      more.setAttribute('aria-expanded', String(!facts.hidden));
+    });
+  }
   const body = h('div', { class: 'detail-body', hidden: true },
-    h('div', { class: 'detail-head' }, h('div', null, kicker, title, sub), iconButton('close', 'Close', { onclick: onClose })),
+    h('div', { class: 'detail-head' }, h('div', { class: 'detail-what' }, kicker, title, sub), h('div', { class: 'row' }, more, iconButton('close', 'Close', { onclick: onClose }))),
     player, tools, alerts, facts);
   const empty = h('div', { class: 'detail-empty', text: emptyText });
-  const el = h('section', { class: 'card call-detail', 'aria-label': 'Picked call' }, empty, body);
+  const el = h('section', { class: `card call-detail${compact ? ' compact' : ''}`, 'aria-label': 'Picked call' }, empty, body);
   // The recording in the player: { id, p }.
   let rec = null;
   let drawnTools = null;
@@ -133,7 +141,7 @@ export function detailPanel(onClose, emptyText = 'Pick a call to play its record
     setText(sub, [
       nameOf(x.tg, x.tg_name) ? `TG ${x.tg}` : '',
       `from ${unitLabel(x.source, x.source_name)}`,
-      x.lane ? `Traffic ${x.lane}, ${(SIDE[x.lane] || '').toLowerCase()}` : '',
+      x.lane ? `Traffic ${x.lane}` : '',
     ].filter(Boolean).join(' · '));
 
     // The player stays while it is the same recording, so a redraw never stops it.
@@ -183,6 +191,7 @@ export function detailPanel(onClose, emptyText = 'Pick a call to play its record
 export function createRow(pick) {
   const c = {
     when: h('div', { class: 'when' }),
+    lane: h('span', { class: 'c-lane' }),
     dot: h('span', { class: 'tg-dot' }),
     tg: h('span', { class: 'tg' }),
     flag: h('span', { class: 'c-flag' }),
@@ -195,7 +204,7 @@ export function createRow(pick) {
   };
   const el = h('div', { class: 'call-row', tabindex: '0' },
     c.when,
-    h('div', { class: 'c-tg' }, h('div', { class: 'tg-line' }, c.dot, c.tg, c.flag), c.tgSub),
+    h('div', { class: 'c-tg' }, h('div', { class: 'tg-line' }, c.lane, c.dot, c.tg, c.flag), c.tgSub),
     h('div', { class: 'c-src' }, c.src, c.srcSub),
     h('div', { class: 'c-freq' }, c.freq, c.freqSub),
     c.end);
@@ -245,6 +254,9 @@ export function updateRow(el, x, ctx) {
   } else {
     setText(c.when, whenOf(x, ctx));
   }
+  // The traffic lane that followed it.
+  setText(c.lane, x.lane ? String(x.lane) : '');
+  c.lane.title = x.lane ? `Followed on Traffic ${x.lane}` : '';
   c.dot.style.background = x.not_followed ? 'var(--idle)' : colorOf(x.tg, aliasOf(ctx.sys, x.tg));
   setText(c.tg, tgLabel(x.tg, x.tg_name));
   const flagKey = alerts.map(alertLabel).join(', ');
@@ -256,6 +268,6 @@ export function updateRow(el, x, ctx) {
   setText(c.src, x.source_name || (x.source ? String(x.source) : 'unknown'));
   setText(c.srcSub, x.source_name && x.source ? String(x.source) : '');
   setText(c.freq, mhz(x.freq_hz));
-  setText(c.freqSub, [channel(x), x.lane ? (SIDE[x.lane] || '').toLowerCase() : ''].filter(Boolean).join(' · '));
+  setText(c.freqSub, channel(x));
   drawEnd(c, x, rec, open);
 }

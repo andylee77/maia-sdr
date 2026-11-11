@@ -7,7 +7,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Where a talkgroup plays. `Off`: nowhere (an alias says `do_not_monitor` instead).
+/// A talkgroup's traffic lane, named for the speaker the UI plays that lane on: `Left` lane one
+/// only, `Right` lane two only, `Both` either. `Off`: none (an alias says `do_not_monitor`
+/// instead).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
@@ -40,7 +42,7 @@ pub struct Alias {
     /// Its calls are recorded.
     #[serde(default)]
     pub record: bool,
-    /// Where it plays: both, left or right.
+    /// Its traffic lane: both (either), left (lane one) or right (lane two).
     #[serde(default)]
     pub speaker: Side,
     /// SDRTrunk's icon name, kept for the round trip.
@@ -114,7 +116,7 @@ pub struct Listening {
     /// They are followed, at the lowest priority. Off: only talkgroups with a priority are
     /// (SDRTrunk's "ignore unmonitored calls").
     pub follow_unmonitored: bool,
-    /// Where they play: both, left or right.
+    /// Their traffic lane: both (either), left (lane one) or right (lane two).
     pub unmonitored_speaker: Side,
     /// A call of a higher priority takes a traffic channel from a call of a lower one.
     pub preempt: bool,

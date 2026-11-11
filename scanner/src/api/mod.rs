@@ -83,10 +83,11 @@ routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
+    get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those its system's aliases name and those heard in the last week, each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any, and each traffic lane's own";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
-    get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal)";
+    get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal)";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes, a recording is saved or a call's alert tones are known";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged";
     get "/api/v1/data" => v1::data::get, "packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`)";
@@ -117,7 +118,7 @@ routes! {
     put "/api/v1/radio/crystal" => v1::radio::put_crystal, "crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit)";
     post "/api/v1/radio/crystal/calibrate" => v1::radio::calibrate_crystal, "measure the crystal correction on the live control channel now (about 7 s)";
     post "/api/v1/clock" => v1::radio::set_time, "set the board clock (`unix_ms`, a browser's time)";
-    put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps";
+    put "/api/v1/radio/recording" => v1::radio::put_recording, "any of: recording on/off (`enabled`), every followed call or only those of talkgroups marked record (`every_call`), where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps";
     get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
     delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";
     get "/api/v1/recordings/{id}" => v1::recordings::file, "one recording's WAV (`{id}` or `{id}.wav`; byte ranges)";
@@ -129,7 +130,8 @@ routes! {
     get "/api/v1/systems/{id}/aliases" => v1::aliases::get, "a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings";
     put "/api/v1/systems/{id}/aliases" => v1::aliases::put, "replace a system's aliases (the live site follows them at once)";
     put "/api/v1/systems/{id}/listening" => v1::aliases::put_listening, "how a system treats talkgroups with no priority, and pre-emption";
-    put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker";
+    put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one";
+    delete "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::delete_talkgroup, "remove the alias that names one talkgroup alone: it is then treated as a talkgroup with none";
     post "/api/v1/systems/{id}/radioreference" => v1::systems::import_radioreference, "import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack";
     post "/api/v1/systems/{id}/radioreference/preview" => v1::systems::preview_radioreference, "what that import would change; nothing is saved";
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site: its name, identity (kept when absent), channels and receiver settings (the live site goes live again with the change)";

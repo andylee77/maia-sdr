@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::services::config;
-use crate::services::config::aliases::{Alias, AliasId, Listening};
+use crate::services::config::aliases::{Alias, AliasId, Listening, LOWEST_PRIORITY};
 use crate::services::config::aliases::Side;
 use crate::services::config::systems::System;
 
@@ -60,6 +60,9 @@ pub struct TalkgroupEdit {
     #[serde(default, with = "double_option")]
     pub priority: Option<Option<u8>>,
     pub do_not_monitor: Option<bool>,
+    /// Followed or not, whatever the system asks of a followed talkgroup: where only those with
+    /// a priority are followed, following one with none gives it the lowest.
+    pub follow: Option<bool>,
     pub record: Option<bool>,
     pub speaker: Option<Side>,
 }
@@ -91,6 +94,7 @@ fn set_talkgroup(sys: &mut System, tg: u32, req: &TalkgroupEdit) -> Result<Alias
             sys.aliases.len() - 1
         }
     };
+    let needs_priority = !sys.listening.follow_unmonitored;
     let a = &mut sys.aliases[i];
     if let Some(name) = &req.name {
         a.name = name.trim().to_string();
@@ -104,6 +108,12 @@ fn set_talkgroup(sys: &mut System, tg: u32, req: &TalkgroupEdit) -> Result<Alias
     if let Some(d) = req.do_not_monitor {
         a.do_not_monitor = d;
     }
+    if let Some(follow) = req.follow {
+        a.do_not_monitor = !follow;
+        if follow && needs_priority && a.priority.is_none() {
+            a.priority = Some(LOWEST_PRIORITY);
+        }
+    }
     if let Some(r) = req.record {
         a.record = r;
     }
@@ -112,6 +122,21 @@ fn set_talkgroup(sys: &mut System, tg: u32, req: &TalkgroupEdit) -> Result<Alias
     }
     a.check()?;
     Ok(a.clone())
+}
+
+/// Remove the alias that names one talkgroup alone. The talkgroup is then treated as one with no
+/// alias, or as the range alias that holds it.
+pub async fn delete_talkgroup(State(s): State<Arc<AppState>>, Path((id, tg)): Path<(String, u32)>) -> ApiResult<Aliases> {
+    let out = edit(&s, &id, |sys| {
+        let before = sys.aliases.len();
+        sys.aliases.retain(|a| a.ids != [AliasId::Talkgroup { value: tg }]);
+        if sys.aliases.len() == before {
+            return Err(format!("no alias names talkgroup {tg} alone"));
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(out))
 }
 
 /// `f` applied to `sys`, which is left as it was when `f` refuses. Returns the system as it was.
@@ -178,6 +203,16 @@ mod tests {
         set(&mut sys, 300, r#"{"priority": 5}"#).unwrap();
         assert_eq!(sys.aliases.len(), 1);
         assert_eq!((sys.aliases[0].name.as_str(), sys.aliases[0].priority), ("TG 300", Some(5)));
+        // Followed or not is `follow`; where only talkgroups with a priority are followed, it
+        // gives one with none the lowest, and leaves a priority there is.
+        set(&mut sys, 300, r#"{"follow": false}"#).unwrap();
+        assert!(sys.aliases[0].do_not_monitor);
+        sys.listening.follow_unmonitored = false;
+        set(&mut sys, 300, r#"{"follow": true}"#).unwrap();
+        set(&mut sys, 301, r#"{"follow": true}"#).unwrap();
+        assert_eq!(sys.aliases.iter().map(|a| (a.do_not_monitor, a.priority)).collect::<Vec<_>>(), vec![(false, Some(5)), (false, Some(100))]);
+        sys.aliases.truncate(1);
+        sys.listening.follow_unmonitored = true;
         let before = sys.clone();
         for bad in [r#"{"priority": 0}"#, r#"{"speaker": "off"}"#, r#"{"name": " "}"#] {
             assert!(set(&mut sys, 300, bad).is_err(), "{bad} on an alias there is");

@@ -379,7 +379,8 @@ the recorder and every name shown read them, for P25 and DMR alike:
   takes a traffic channel from a call of a lower one.
 - **No priority** (no alias, or an alias without one): followed at the lowest rank on
   `unmonitored_speaker` while `follow_unmonitored` is on, else not followed (`unmonitored`).
-- **Speaker:** the traffic channel and the side a talkgroup plays on (`both`, `left`, `right`).
+- **Speaker:** the traffic lane that follows a talkgroup: `left` lane 1 only, `right` lane 2 only,
+  `both` either. The UI plays lane 1 on the left speaker and lane 2 on the right.
 - **Record:** with `recording.every_call` off, only these talkgroups' calls are recorded.
 - **Hold** (`/api/v1/hold`): one talkgroup followed whatever its alias says, until released or a
   site switch.

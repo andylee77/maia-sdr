@@ -6,11 +6,13 @@
 //!   and 20 ms of 8 kHz 16-bit mono. Without it, p25-httpd's first framing for its tools: lane
 //!   one only, the samples alone. Before a lane's first frame of a call, a text frame
 //!   `{"type":"meta","lane","tg","src","call_id","speaker"}` names it; `speaker` (left, right or
-//!   both) is where its alias plays the talkgroup. With `v=2`, before the frame that makes a
+//!   both) is the lane setting of its talkgroup's alias (the UI plays each lane on its own
+//!   speaker, and does not read it). With `v=2`, before the frame that makes a
 //!   call's audio an alert tone (`audio::alert`), `{"type":"alert","lane","tg","call_id","seq",
 //!   "kind","tones_hz","offset_ms"}`: its tone began `offset_ms` into the call's audio. A listener
 //!   that falls behind gets `{"type":"lag","skipped"}` and stays connected.
 
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +27,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::api::v1;
 use crate::api::v1::calls::{attach, named_alerts, NamedCall, Names};
 use crate::api::v1::status::status;
+use crate::api::v1::talkgroups::Talkgroups;
 use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
 use crate::radio::lane::Lane;
@@ -302,7 +305,7 @@ fn message(kind: &str, key: &str, value: impl Serialize) -> String {
     serde_json::Value::Object(m).to_string()
 }
 
-async fn snapshot(s: &AppState, names: &Names) -> String {
+async fn snapshot(s: &AppState, names: &Names, talkgroups: &Talkgroups) -> String {
     let calls = s.trunking.calls();
     let mut open: Vec<NamedCall> = calls.open.into_iter().map(|c| names.call(c)).collect();
     let mut recent: Vec<NamedCall> = calls.recent.into_iter().map(|c| names.call(c)).collect();
@@ -313,6 +316,7 @@ async fn snapshot(s: &AppState, names: &Names) -> String {
         "status": status(s),
         "calls": { "open": open, "recent": recent },
         "traffic": traffic(s, names),
+        "talkgroups": talkgroups,
         "scan": s.discovery.state(),
         "atsc": s.atsc.state(),
     })
@@ -333,10 +337,14 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
     let mut live = s.live.subscribe();
     let (mut out, mut inbound) = socket.split();
     let mut names = Names::load(&s).await;
-    if out.send(Message::Text(snapshot(&s, &names).await.into())).await.is_err() {
+    let first = v1::talkgroups::view(&s).await;
+    if out.send(Message::Text(snapshot(&s, &names, &first).await.into())).await.is_err() {
         return;
     }
     // What was sent last, to send only what changed.
+    let mut last_talkgroups = message("talkgroups", "talkgroups", &first);
+    // The talkgroups listed: a call on another one has the list sent again.
+    let mut listed: HashSet<u32> = first.items.iter().map(|t| t.tg).collect();
     let mut last_traffic = String::new();
     let mut last_scan = String::new();
     let mut last_atsc = String::new();
@@ -349,6 +357,7 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
     loop {
         let mut msgs = Vec::new();
         let mut traffic_now = false;
+        let mut talkgroups_now = false;
         tokio::select! {
             _ = feed.tick(), if wants.any() => msgs.extend(feeds(&s, &mut wants, &mut sent).await),
             _ = tick.tick() => {
@@ -371,11 +380,14 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
                 }
                 msgs.push(message("status", "status", status(&s)));
                 traffic_now = true;
+                // Another site, or none: its talkgroups.
+                talkgroups_now = true;
             }
             n = notices.recv() => match n {
-                Ok(Notice::CallOpened { call, .. }) => {
+                Ok(Notice::CallOpened { call, tg, .. }) => {
                     msgs.extend(named_call(&s, &names, call).map(|c| message("call_opened", "call", c)));
                     traffic_now = true;
+                    talkgroups_now = !listed.contains(&tg);
                 }
                 Ok(Notice::CallClosed { call, .. }) => {
                     msgs.extend(named_call(&s, &names, call).map(|c| message("call_closed", "call", c)));
@@ -392,12 +404,17 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
                     if what == "systems" {
                         names = Names::load(&s).await;
                     }
+                    // Aliases, the listening settings, or what decides recording.
+                    talkgroups_now = what == "systems" || what == "radio";
                     msgs.push(message("changed", "what", what));
                 }
                 Err(RecvError::Lagged(_)) => {
                     names = Names::load(&s).await;
+                    let now = v1::talkgroups::view(&s).await;
                     msgs.push(r#"{"type":"lag"}"#.to_string());
-                    msgs.push(snapshot(&s, &names).await);
+                    msgs.push(snapshot(&s, &names, &now).await);
+                    last_talkgroups = message("talkgroups", "talkgroups", &now);
+                    listed = now.items.iter().map(|t| t.tg).collect();
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -414,6 +431,15 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
                 }
                 Some(Ok(_)) => {}
             },
+        }
+        if talkgroups_now {
+            let now = v1::talkgroups::view(&s).await;
+            listed = now.items.iter().map(|t| t.tg).collect();
+            let t = message("talkgroups", "talkgroups", &now);
+            if t != last_talkgroups {
+                last_talkgroups = t.clone();
+                msgs.push(t);
+            }
         }
         if traffic_now {
             let t = message("traffic", "traffic", traffic(&s, &names));
