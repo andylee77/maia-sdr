@@ -8,6 +8,8 @@ use tokio::sync::oneshot;
 
 /// The control chain's DDC output rate.
 pub const CONTROL_RATE: u32 = 50_000;
+/// Captures that may wait at once: the longest holds 24 MB, and its WAV as much again.
+const MAX_CAPTURES: usize = 2;
 
 struct Capture {
     /// Interleaved values wanted (two per sample).
@@ -28,7 +30,13 @@ impl IqTap {
         if captures.is_empty() {
             return;
         }
+        // A capture whose request ended is dropped unfilled.
+        captures.retain(|c| !c.done.is_closed());
         for c in captures.iter_mut() {
+            // Its memory is taken only once samples come.
+            if c.buf.capacity() == 0 {
+                c.buf.reserve_exact(c.want);
+            }
             let n = (c.want - c.buf.len()).min(iq.len());
             c.buf.extend_from_slice(&iq[..n]);
         }
@@ -43,13 +51,17 @@ impl IqTap {
         }
     }
 
-    /// The next `samples` complex samples the decoder gets.
-    pub fn capture(&self, samples: usize) -> oneshot::Receiver<Vec<i16>> {
+    /// The next `samples` complex samples the decoder gets; `None` while `MAX_CAPTURES` wait
+    /// already. Dropping the receiver ends the capture.
+    pub fn capture(&self, samples: usize) -> Option<oneshot::Receiver<Vec<i16>>> {
         let (tx, rx) = oneshot::channel();
-        if let Ok(mut captures) = self.captures.lock() {
-            captures.push(Capture { want: samples * 2, buf: Vec::with_capacity(samples * 2), done: tx });
+        let mut captures = self.captures.lock().ok()?;
+        captures.retain(|c| !c.done.is_closed());
+        if captures.len() >= MAX_CAPTURES {
+            return None;
         }
-        rx
+        captures.push(Capture { want: samples * 2, buf: Vec::new(), done: tx });
+        Some(rx)
     }
 }
 
@@ -83,13 +95,30 @@ mod tests {
     fn a_capture_takes_exactly_what_it_asked_across_chunks() {
         let tap = IqTap::default();
         tap.push(&[9; 10]);
-        let mut rx = tap.capture(5);
+        let mut rx = tap.capture(5).unwrap();
         tap.push(&[1, 2, 3, 4, 5, 6]);
         assert!(rx.try_recv().is_err(), "three samples of five");
         tap.push(&[7, 8, 9, 10, 11, 12]);
         assert_eq!(rx.try_recv().unwrap(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         // Done captures leave the tap: nothing is copied after.
         tap.push(&[0; 4]);
+        assert!(tap.captures.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_capture_nobody_waits_for_leaves_the_tap_and_only_a_few_wait_at_once() {
+        let tap = IqTap::default();
+        // With no decoder running nothing fills them: a request that gave up frees its place.
+        let abandoned = tap.capture(6_000_000).unwrap();
+        let kept = tap.capture(4).unwrap();
+        assert!(tap.capture(4).is_none(), "two wait already");
+        assert_eq!(tap.captures.lock().unwrap().iter().map(|c| c.buf.capacity()).sum::<usize>(), 0, "no memory before samples come");
+        drop(abandoned);
+        let mut next = tap.capture(1).unwrap();
+        assert_eq!(tap.captures.lock().unwrap().len(), 2);
+        drop(kept);
+        tap.push(&[1, 2, 3, 4]);
+        assert_eq!(next.try_recv().unwrap(), vec![1, 2]);
         assert!(tap.captures.lock().unwrap().is_empty());
     }
 

@@ -27,6 +27,9 @@ const PCR_HZ: f64 = 27e6;
 /// A clock reference this far from the last, either way, starts the pacing again (the
 /// recording's start after its end).
 const PCR_JUMP: u64 = 27_000_000;
+/// A clock reference due this long ago means the player stopped reading: the pacing starts again
+/// from it.
+const LATE: Duration = Duration::from_secs(1);
 
 /// A recording a player can be served.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -264,11 +267,19 @@ pub async fn play(path: PathBuf, program: Option<u16>, tx: mpsc::Sender<Vec<u8>>
                         match (anchor, last) {
                             (Some((v0, t0)), Some(l)) if v >= l && v - l < PCR_JUMP => {
                                 let due = t0 + Duration::from_secs_f64((v - v0) as f64 / PCR_HZ);
-                                if due > Instant::now() {
+                                let now = Instant::now();
+                                if due > now {
                                     if !out.is_empty() && tx.send(std::mem::take(&mut out)).await.is_err() {
                                         return Ok(());
                                     }
                                     tokio::time::sleep_until(due).await;
+                                } else if now - due > LATE {
+                                    // The player stopped reading for a while: it plays on from
+                                    // here, and what it missed is not read into one piece.
+                                    if !out.is_empty() && tx.send(std::mem::take(&mut out)).await.is_err() {
+                                        return Ok(());
+                                    }
+                                    anchor = Some((v, Instant::now()));
                                 }
                             }
                             (a, _) => {
@@ -419,5 +430,37 @@ mod tests {
         assert_eq!(seam.len(), 20 * PACKET);
         assert_eq!(seam[5] & 0x80, 0, "the recording's last clock reference");
         assert_eq!(seam[10 * PACKET + 5] & 0x80, 0x80, "its first again, after the jump");
+    }
+
+    /// A player that stops reading for five seconds gets the recording on from where it stopped,
+    /// a piece at a time at the clock's pace, not the five seconds as one piece.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_player_is_not_sent_what_it_missed_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = recording_path(dir.path(), 14);
+        let mut file = Vec::new();
+        for i in 0..200u64 {
+            file.extend_from_slice(&packet(0x31, Some(1_000_000 + i * 2_700_000)));
+            for _ in 0..9 {
+                file.extend_from_slice(&packet(0x34, None));
+            }
+        }
+        std::fs::write(&path, &file).unwrap();
+        let (tx, mut rx) = mpsc::channel(4);
+        let task = tokio::spawn(play(path, None, tx));
+        for _ in 0..2 {
+            rx.recv().await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let start = Instant::now();
+        let mut pieces = Vec::new();
+        while pieces.len() < 12 {
+            let piece = rx.recv().await.unwrap();
+            pieces.push((start.elapsed().as_millis(), piece.len() / PACKET));
+        }
+        drop(rx);
+        task.await.unwrap().unwrap();
+        assert!(pieces.iter().all(|&(_, packets)| packets == 10), "{pieces:?}");
+        assert_eq!(pieces[11].0 - pieces[10].0, 100, "{pieces:?}");
     }
 }

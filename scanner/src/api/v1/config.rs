@@ -103,7 +103,12 @@ pub async fn factory_reset(State(s): State<Arc<AppState>>) -> ApiResult<Reset> {
 
 /// The radio lease, so no scan or site switch runs while the configuration is replaced.
 fn take_radio(s: &AppState) -> Result<LeaseGuard, ApiError> {
-    s.lease.take(Lease::Switching).ok_or_else(|| ApiError::conflict("the radio is busy (a scan or a site switch)"))
+    s.lease.take(Lease::Switching).ok_or_else(|| {
+        ApiError::conflict(match s.lease.current() {
+            Lease::Atsc => "TV has the radio: return it to the scanner first",
+            _ => "the radio is busy (a scan or a site switch)",
+        })
+    })
 }
 
 /// Restart once the response is out, holding the lease to the end.

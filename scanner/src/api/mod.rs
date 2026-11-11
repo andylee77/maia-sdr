@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -177,16 +177,24 @@ async fn routes() -> Json<&'static [RouteDoc]> {
 async fn same_origin_writes(headers: HeaderMap, req: Request, next: Next) -> Response {
     if req.method() != Method::GET && req.method() != Method::HEAD {
         let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-        let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-        if let (Some(origin), Some(host)) = (origin, host) {
-            let origin_host = origin.split_once("://").map_or(origin, |(_, h)| h);
-            if origin_host != host {
-                return ApiError { status: StatusCode::FORBIDDEN, message: format!("write from {origin} refused") }
-                    .into_response();
-            }
+        if let Some(origin) = origin.filter(|o| !same_origin(o, served_as(&headers, req.uri()))) {
+            return ApiError { status: StatusCode::FORBIDDEN, message: format!("write from {origin} refused") }.into_response();
         }
     }
     next.run(req).await
+}
+
+/// The host a request was sent to: its Host header, or over HTTP/2 (which has none) the
+/// request's authority.
+fn served_as<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
+    headers.get(header::HOST).and_then(|v| v.to_str().ok()).or_else(|| uri.authority().map(|a| a.as_str()))
+}
+
+/// The page at `origin` (`scheme://host[:port]`) is one this unit served as `host`. With no host
+/// to hold it against, it is not.
+fn same_origin(origin: &str, host: Option<&str>) -> bool {
+    let origin_host = origin.split_once("://").map_or(origin, |(_, h)| h);
+    host == Some(origin_host)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -277,6 +285,28 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_write_is_held_against_the_host_it_was_sent_to() {
+        let unit = Some("192.168.120.50:8080");
+        assert!(same_origin("http://192.168.120.50:8080", unit));
+        assert!(!same_origin("http://evil.example", unit));
+        assert!(!same_origin("https://192.168.120.50:8443", unit), "another port is another origin");
+        assert!(!same_origin("null", unit));
+        assert!(!same_origin("https://192.168.120.50:8443", None), "no host to hold the origin against");
+    }
+
+    #[test]
+    fn an_http2_request_names_its_host_in_its_authority() {
+        let mut headers = HeaderMap::new();
+        let h2: Uri = "https://192.168.120.50:8443/api/v1/config/factory-reset".parse().unwrap();
+        assert_eq!(served_as(&headers, &h2), Some("192.168.120.50:8443"));
+        assert!(!same_origin("https://evil.example", served_as(&headers, &h2)));
+        let h1: Uri = "/api/v1/hold".parse().unwrap();
+        assert_eq!(served_as(&headers, &h1), None);
+        headers.insert(header::HOST, "192.168.120.50:8080".parse().unwrap());
+        assert_eq!(served_as(&headers, &h1), Some("192.168.120.50:8080"));
+    }
 
     #[test]
     fn the_route_table_builds_and_lists_each_route_once() {

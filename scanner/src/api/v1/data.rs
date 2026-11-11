@@ -58,9 +58,10 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Api
         }
         by_site
     };
+    // Only a configured site has learned state to read: the id names a file.
     let data_channel_hz = match &site {
-        Some(id) => s.live.learned(id).await.ok().and_then(|l| l.data_channel_hz),
-        None => None,
+        Some(id) if names.contains_key(id) => s.live.learned(id).await.ok().and_then(|l| l.data_channel_hz),
+        _ => None,
     };
     let wants = |r: &str| site.as_deref().is_none_or(|w| w == r);
     let named = |site: &str, llid: u32| names.get(site).and_then(|ix| ix.radio(llid)).map(|a| a.name.clone());

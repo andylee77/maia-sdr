@@ -13,6 +13,7 @@ use crate::boot::state::AppState;
 use crate::services::config;
 use crate::services::config::aliases::{Alias, AliasId, Listening};
 use crate::services::config::aliases::Side;
+use crate::services::config::systems::System;
 
 #[derive(Serialize)]
 pub struct Aliases {
@@ -68,55 +69,71 @@ pub struct TalkgroupEdit {
 pub async fn put_talkgroup(State(s): State<Arc<AppState>>, Path((id, tg)): Path<(String, u32)>, Json(req): Json<TalkgroupEdit>) -> ApiResult<Alias> {
     let mut edited = None;
     edit(&s, &id, |sys| {
-        let own = sys.aliases.iter().position(|a| a.ids == [AliasId::Talkgroup { value: tg }]);
-        let i = match own {
-            Some(i) => i,
-            None => {
-                let base = sys.alias_index().talkgroup(tg).cloned();
-                let mut a = Alias::talkgroup(tg, format!("TG {tg}"));
-                if let Some(b) = base {
-                    a = Alias { ids: vec![AliasId::Talkgroup { value: tg }], ..b };
-                }
-                sys.aliases.push(a);
-                sys.aliases.len() - 1
-            }
-        };
-        let a = &mut sys.aliases[i];
-        if let Some(name) = &req.name {
-            a.name = name.trim().to_string();
-        }
-        if let Some(group) = &req.group {
-            a.group = Some(group.trim().to_string()).filter(|g| !g.is_empty());
-        }
-        if let Some(p) = req.priority {
-            a.priority = p;
-        }
-        if let Some(d) = req.do_not_monitor {
-            a.do_not_monitor = d;
-        }
-        if let Some(r) = req.record {
-            a.record = r;
-        }
-        if let Some(sp) = req.speaker {
-            a.speaker = sp;
-        }
-        a.check()?;
-        edited = Some(a.clone());
+        edited = Some(set_talkgroup(sys, tg, &req)?);
         Ok(())
     })
     .await?;
     Ok(Json(edited.expect("edited")))
 }
 
-/// Change a system under the config lock, save it, and have the live site follow.
-async fn edit(s: &AppState, id: &str, f: impl FnOnce(&mut config::systems::System) -> Result<(), String>) -> Result<Aliases, ApiError> {
+/// One talkgroup's controls set in `sys`; the alias as it then is, or why it cannot be.
+fn set_talkgroup(sys: &mut System, tg: u32, req: &TalkgroupEdit) -> Result<Alias, String> {
+    let own = sys.aliases.iter().position(|a| a.ids == [AliasId::Talkgroup { value: tg }]);
+    let i = match own {
+        Some(i) => i,
+        None => {
+            let base = sys.alias_index().talkgroup(tg).cloned();
+            let mut a = Alias::talkgroup(tg, format!("TG {tg}"));
+            if let Some(b) = base {
+                a = Alias { ids: vec![AliasId::Talkgroup { value: tg }], ..b };
+            }
+            sys.aliases.push(a);
+            sys.aliases.len() - 1
+        }
+    };
+    let a = &mut sys.aliases[i];
+    if let Some(name) = &req.name {
+        a.name = name.trim().to_string();
+    }
+    if let Some(group) = &req.group {
+        a.group = Some(group.trim().to_string()).filter(|g| !g.is_empty());
+    }
+    if let Some(p) = req.priority {
+        a.priority = p;
+    }
+    if let Some(d) = req.do_not_monitor {
+        a.do_not_monitor = d;
+    }
+    if let Some(r) = req.record {
+        a.record = r;
+    }
+    if let Some(sp) = req.speaker {
+        a.speaker = sp;
+    }
+    a.check()?;
+    Ok(a.clone())
+}
+
+/// `f` applied to `sys`, which is left as it was when `f` refuses. Returns the system as it was.
+fn apply(sys: &mut System, f: impl FnOnce(&mut System) -> Result<(), String>) -> Result<System, String> {
+    let mut changed = sys.clone();
+    f(&mut changed)?;
+    Ok(std::mem::replace(sys, changed))
+}
+
+/// Change a system under the config lock, save it, and have the live site follow. A change that
+/// is refused or cannot be saved leaves the system as it was.
+async fn edit(s: &AppState, id: &str, f: impl FnOnce(&mut System) -> Result<(), String>) -> Result<Aliases, ApiError> {
     let out = {
         let mut c = s.config.lock().await;
-        let sys = c.systems.value.systems.iter_mut().find(|x| x.id == id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
-        f(sys).map_err(ApiError::bad_request)?;
-        let out = Aliases { aliases: sys.aliases.clone(), listening: sys.listening };
-        config::save(&s.paths.systems(), &c.systems)?;
-        out
+        let i = c.systems.value.systems.iter().position(|x| x.id == id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
+        let before = apply(&mut c.systems.value.systems[i], f).map_err(ApiError::bad_request)?;
+        if let Err(e) = config::save(&s.paths.systems(), &c.systems) {
+            c.systems.value.systems[i] = before;
+            return Err(e.into());
+        }
+        let sys = &c.systems.value.systems[i];
+        Aliases { aliases: sys.aliases.clone(), listening: sys.listening }
     };
     s.live.aliases_changed().await;
     Ok(out)
@@ -128,5 +145,44 @@ mod double_option {
 
     pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
         Option::<T>::deserialize(d).map(Some)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::config::systems::Protocol;
+
+    fn system() -> System {
+        System {
+            id: "clay".into(),
+            label: "Clay County".into(),
+            protocol: Protocol::P25,
+            identity: Default::default(),
+            details: Default::default(),
+            aliases: Vec::new(),
+            listening: Default::default(),
+            sites: Vec::new(),
+        }
+    }
+
+    fn set(sys: &mut System, tg: u32, json: &str) -> Result<System, String> {
+        let req: TalkgroupEdit = serde_json::from_str(json).unwrap();
+        apply(sys, |s| set_talkgroup(s, tg, &req).map(|_| ()))
+    }
+
+    #[test]
+    fn a_refused_talkgroup_edit_leaves_the_system_as_it_was() {
+        let mut sys = system();
+        // A talkgroup with no alias gets one of its own, named after it.
+        set(&mut sys, 300, r#"{"priority": 5}"#).unwrap();
+        assert_eq!(sys.aliases.len(), 1);
+        assert_eq!((sys.aliases[0].name.as_str(), sys.aliases[0].priority), ("TG 300", Some(5)));
+        let before = sys.clone();
+        for bad in [r#"{"priority": 0}"#, r#"{"speaker": "off"}"#, r#"{"name": " "}"#] {
+            assert!(set(&mut sys, 300, bad).is_err(), "{bad} on an alias there is");
+            assert!(set(&mut sys, 301, bad).is_err(), "{bad} on a talkgroup with none");
+            assert_eq!(sys, before, "{bad}");
+        }
     }
 }

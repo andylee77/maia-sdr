@@ -25,7 +25,9 @@ pub async fn control(State(s): State<Arc<AppState>>, Query(p): Query<Params>) ->
     let seconds = p.seconds.unwrap_or(10).clamp(1, MAX_SECONDS);
     let control_hz = s.tuner.tuning().control_hz;
     let started = unix_ms();
-    let rx = s.receivers.iq_tap().capture((CONTROL_RATE * seconds) as usize);
+    let Some(rx) = s.receivers.iq_tap().capture((CONTROL_RATE * seconds) as usize) else {
+        return Err(ApiError::conflict("other IQ captures are running: wait for one to end"));
+    };
     let iq = match tokio::time::timeout(Duration::from_secs(u64::from(seconds) + 5), rx).await {
         Ok(Ok(iq)) => iq,
         _ => return Err(ApiError::conflict("no control IQ: no site is live")),
