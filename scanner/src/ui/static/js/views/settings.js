@@ -1,7 +1,9 @@
-// Settings: the receiver gain, the radio's other settings, packet data, the crystal, recording,
-// and the configuration as a whole (export, import, factory reset).
+// Settings, as two columns of cards: the receiver's gain, the radio's other settings (window
+// presets, call timings, the history's limits), the clock and the configuration as a whole
+// (export, import, factory reset); recording, the crystal and packet data. A setting is a row:
+// what it is on the left, its control on the right.
 
-import { h, card, clear, toast, switchInput } from '../dom.js';
+import { h, card, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
 import { store, subscribe, want } from '../store.js';
 import { ago, bytes, num } from '../format.js';
@@ -9,11 +11,26 @@ import { crystalSource, packetDataSetting } from '../protocols.js';
 
 const MODES = [['slow_attack', 'AGC, slow'], ['fast_attack', 'AGC, fast'], ['hybrid', 'AGC, hybrid'], ['manual', 'Manual']];
 
+// A setting's row: its name, a note under it, and its control (one node or several).
+function row(label, control, note) {
+  return h('div', { class: 'set-row' },
+    h('div', { class: 'set-what' }, h('div', { text: label }), note ? h('div', { class: 'sub', text: note }) : null),
+    h('div', { class: 'set-ctl' }, ...[].concat(control)));
+}
+
+const unit = text => h('span', { class: 'dim', text });
+const count = (value, min, max, label) => h('input', { class: 'input num', type: 'number', min, max, step: 1, value, 'aria-label': label });
+
+// A card's last line: a note on the left, its buttons on the right.
+function foot(note, ...buttons) {
+  return h('div', { class: 'set-foot' }, h('p', { class: 'card-note', text: note || '' }), h('div', { class: 'set-ctl' }, ...buttons));
+}
+
 function gainCard(radio) {
-  const c = card('Receiver gain');
-  const mode = h('select', { class: 'input' }, ...MODES.map(([v, t]) => h('option', { value: v, text: t })));
+  const c = card('Receiver');
+  const mode = h('select', { class: 'input', 'aria-label': 'Gain mode' }, ...MODES.map(([v, t]) => h('option', { value: v, text: t })));
   mode.value = radio.config.gain.mode;
-  const db = h('input', { class: 'input', type: 'number', min: -3, max: 76, step: 1, value: radio.config.gain.manual_db ?? 60 });
+  const db = h('input', { class: 'input num', type: 'number', min: -3, max: 76, step: 1, value: radio.config.gain.manual_db ?? 60, 'aria-label': 'Manual gain, dB' });
   const apply = h('button', { class: 'btn', type: 'button', text: 'Apply' });
   const sync = () => { db.disabled = mode.value !== 'manual'; };
   mode.addEventListener('change', sync);
@@ -26,17 +43,17 @@ function gainCard(radio) {
       toast(e.message, true);
     }
   });
-  c.body.append(h('div', { class: 'row' }, mode, db, h('span', { class: 'dim', text: 'dB' }), apply));
+  c.body.append(row('Gain', [mode, db, unit('dB'), apply], 'Applied at once.'));
   return c.el;
 }
 
 function recordingCard(radio, recs) {
   const c = card('Recording');
   const r = radio.config.recording;
-  const on = switchInput('Record followed calls', r.enabled, () => {});
-  const where = h('select', { class: 'input' }, h('option', { value: 'sd', text: 'SD card' }), h('option', { value: 'ram', text: 'RAM (lost on reboot)' }));
+  const on = switchInput('', r.enabled, () => {});
+  on.input.setAttribute('aria-label', 'Record followed calls');
+  const where = h('select', { class: 'input', 'aria-label': 'New recordings go to' }, h('option', { value: 'sd', text: 'SD card' }), h('option', { value: 'ram', text: 'RAM (lost on reboot)' }));
   where.value = r.storage;
-  const count = (value, min, max, label) => h('input', { class: 'input num', type: 'number', min, max, step: 1, value, 'aria-label': label });
   const ramN = count(r.ram_max_count, 1, 10000, 'RAM keeps, recordings');
   const sdDays = count(r.sd_keep_days, 1, 3650, 'SD card keeps, days');
   const lockedDays = count(r.locked_keep_days, 1, 3650, 'Locked ones, days');
@@ -55,12 +72,12 @@ function recordingCard(radio, recs) {
       toast(e.message, true);
     }
   });
-  const clearBtn = (label, store, what) => h('button', {
+  const clearBtn = (label, which, what) => h('button', {
     class: 'btn small danger', type: 'button', text: label,
     onclick: async () => {
       if (!confirm(`Delete ${what}? This cannot be undone.`)) return;
       try {
-        const res = await api.clearRecordings(store);
+        const res = await api.clearRecordings(which);
         toast(`${res.deleted} recording(s) deleted`);
       } catch (e) {
         toast(e.message, true);
@@ -71,17 +88,15 @@ function recordingCard(radio, recs) {
   const sd = st.sd_status;
   const free = sd.free_bytes !== null && sd.free_bytes !== undefined ? `, ${bytes(sd.free_bytes)} free` : '';
   c.body.append(
-    h('div', { class: 'row' }, on.el),
-    h('div', { class: 'row' }, h('span', { text: 'New recordings go to' }), h('div', { class: 'spacer' }), where),
-    h('div', { class: 'row' }, h('span', { text: 'RAM keeps' }), h('div', { class: 'spacer' }), ramN, h('span', { class: 'dim', text: 'recordings' })),
-    h('div', { class: 'row' }, h('span', { text: 'SD card keeps recordings' }), h('div', { class: 'spacer' }), sdDays,
-      h('span', { class: 'dim', text: 'days, locked ones' }), lockedDays, h('span', { class: 'dim', text: 'days' })),
-    h('div', { class: 'row' }, h('span', { text: 'SD card, at most' }), h('div', { class: 'spacer' }), sdMb,
-      h('span', { class: 'dim', text: 'MB,' }), perFolder, h('span', { class: 'dim', text: 'recordings a day folder' })),
-    h('div', { class: 'row end' }, save),
-    h('p', { class: 'card-note', text: 'Calls with alert tones are locked; any recording on the card can be locked from Now. Past the MB, the oldest unlocked go first.' }),
-    h('p', { class: 'card-note', text: `SD card (${sd.state.replace('_', ' ')}${free}): ${num(st.sd.count)} recordings, ${bytes(st.sd.bytes)}, ${num(st.locked.count)} locked. RAM: ${num(st.ram.count)}, ${bytes(st.ram.bytes)}.${sd.state === 'failing' && sd.detail ? ` The last write failed: ${sd.detail}` : ''}` }),
-    h('div', { class: 'row' }, clearBtn('Delete SD recordings', 'sd', 'every recording on the SD card'), clearBtn('Delete RAM recordings', 'ram', 'every recording in RAM')));
+    row('Record followed calls', on.el),
+    row('New recordings go to', where),
+    row('RAM keeps', [ramN, unit('recordings')]),
+    row('The card keeps a recording', [sdDays, unit('days')]),
+    row('A locked recording', [lockedDays, unit('days')], 'Calls with alert tones are locked; any recording on the card can be locked from Now or Activity.'),
+    row('The card holds at most', [sdMb, unit('MB')], 'Past it, the oldest unlocked go first.'),
+    row('A day\'s folder holds at most', [perFolder, unit('recordings')]),
+    foot(`SD card (${sd.state.replace('_', ' ')}${free}): ${num(st.sd.count)} recordings, ${bytes(st.sd.bytes)}, ${num(st.locked.count)} locked. RAM: ${num(st.ram.count)}, ${bytes(st.ram.bytes)}.${sd.state === 'failing' && sd.detail ? ` The last write failed: ${sd.detail}` : ''}`, save),
+    foot('', clearBtn('Delete SD recordings', 'sd', 'every recording on the SD card'), clearBtn('Delete RAM recordings', 'ram', 'every recording in RAM')));
   return c.el;
 }
 
@@ -91,13 +106,12 @@ function radioCard(radio) {
   const presets = radio.presets.map(name => {
     const box = h('input', { type: 'checkbox', value: name });
     box.checked = r.presets_allowed.includes(name);
-    return { name, box, el: h('label', { class: 'row', style: { gap: '4px' } }, box, h('span', { text: name })) };
+    return { name, box, el: h('label', { class: 'chip' }, box, h('span', { text: name })) };
   });
-  const num_ = (value, min, max, label) => h('input', { class: 'input num', type: 'number', min, max, step: 1, value, 'aria-label': label });
-  const hang = num_(r.calls.hang_ms, 500, 30000, 'Hang time, ms');
-  const grace = num_(r.calls.end_grace_ms, 0, 10000, 'End grace, ms');
-  const days = num_(r.history.retention_days, 1, 3650, 'History, days');
-  const mb = num_(r.history.sd_max_mb, 16, 32768, 'History, MB');
+  const hang = count(r.calls.hang_ms, 500, 30000, 'Hang time, ms');
+  const grace = count(r.calls.end_grace_ms, 0, 10000, 'End grace, ms');
+  const days = count(r.history.retention_days, 1, 3650, 'History, days');
+  const mb = count(r.history.sd_max_mb, 16, 32768, 'History, MB');
   const save = h('button', { class: 'btn primary', type: 'button', text: 'Save' });
   save.addEventListener('click', async () => {
     try {
@@ -112,18 +126,32 @@ function radioCard(radio) {
       toast(e.message, true);
     }
   });
-  const clockSource = h('select', { class: 'input', 'aria-label': 'Clock' },
+  c.body.append(
+    h('div', { class: 'set-row wide' },
+      h('div', { class: 'set-what' }, h('div', { text: 'Window presets the planner may use' })),
+      h('div', { class: 'chips' }, ...presets.map(p => p.el))),
+    row('A call closes after', [hang, unit('ms')], 'With no sign of life.'),
+    row('…or after its end', [grace, unit('ms')]),
+    row('The history is kept', [days, unit('days')]),
+    row('The history holds at most', [mb, unit('MB')]),
+    foot('The window presets and the call timings apply at the next site switch.', save));
+  return c.el;
+}
+
+function clockCard(radio) {
+  const c = card('Clock');
+  const source = h('select', { class: 'input', 'aria-label': 'Clock' },
     ...[['site', 'The control channel'], ['ntp', 'The internet'], ['manual', 'By hand']].map(([v, t]) => h('option', { value: v, text: t })));
-  clockSource.value = r.clock.source;
-  clockSource.addEventListener('change', async () => {
+  source.value = radio.config.clock.source;
+  source.addEventListener('change', async () => {
     try {
-      await api.setClockSource(clockSource.value);
+      await api.setClockSource(source.value);
       toast('Clock source saved');
     } catch (e) {
       toast(e.message, true);
     }
   });
-  const setNow = h('button', { class: 'btn small', type: 'button', text: 'Set it to this browser\'s time' });
+  const setNow = h('button', { class: 'btn', type: 'button', text: 'Set it now' });
   setNow.addEventListener('click', async () => {
     try {
       await api.setTime(Date.now());
@@ -133,19 +161,15 @@ function radioCard(radio) {
     }
   });
   c.body.append(
-    h('div', { class: 'row' }, h('span', { text: 'The clock comes from' }), clockSource, setNow),
-    h('div', { class: 'row' }, h('span', { text: 'Window presets the planner may use' }), ...presets.map(p => p.el)),
-    h('div', { class: 'row' }, h('span', { text: 'A call closes after' }), hang, h('span', { class: 'dim', text: 'ms with no sign of life, or' }), grace,
-      h('span', { class: 'dim', text: 'ms after its end' })),
-    h('div', { class: 'row' }, h('span', { text: 'Keep the history' }), days, h('span', { class: 'dim', text: 'days, at most' }), mb, h('span', { class: 'dim', text: 'MB' })),
-    h('div', { class: 'row end' }, save));
+    row('The clock comes from', source, 'Saved as it is picked.'),
+    row('Set it to this browser\'s time', setNow));
   return c.el;
 }
 
 // Packet data followed or not; the radio takes a change at once.
 function packetDataCard(radio) {
   const c = card('Packet data');
-  const follow = switchInput(packetDataSetting.label, radio.config.packet_data.follow, async on => {
+  const follow = switchInput('', radio.config.packet_data.follow, async on => {
     try {
       const kept = await api.setPacketData(on);
       toast(kept.follow ? 'Data traffic is followed' : 'Data traffic is not followed');
@@ -154,18 +178,19 @@ function packetDataCard(radio) {
       toast(e.message, true);
     }
   });
-  c.body.append(h('div', { class: 'row' }, follow.el), h('p', { class: 'card-note', text: packetDataSetting.note }));
+  follow.input.setAttribute('aria-label', packetDataSetting.label);
+  c.body.append(row(packetDataSetting.label, follow.el, packetDataSetting.note));
   return c.el;
 }
 
 const ppm = v => `${v >= 0 ? '+' : ''}${v.toFixed(4)} ppm`;
 const signedHz = v => `${v >= 0 ? '+' : ''}${Math.round(v)} Hz`;
 
-// The crystal correction, refreshed every few seconds while Settings is open.
+// The crystal correction, pushed by the radio while Settings is open.
 function crystalCard(initial) {
   const c = card('Crystal');
-  const lines = h('div', { class: 'stack' });
-  const anchor = h('input', { class: 'input num', type: 'number', min: 0, max: 1000, step: 1, value: initial.anchor_hz, 'aria-label': 'Anchor, Hz' });
+  const lines = h('dl', { class: 'kv' });
+  const anchor = count(initial.anchor_hz, 0, 1000, 'Anchor, Hz');
   const save = async (on) => {
     try {
       show(await api.setCrystal({ tracking: on, anchor_hz: Number(anchor.value) }));
@@ -174,8 +199,9 @@ function crystalCard(initial) {
       toast(e.message, true);
     }
   };
-  const tracking = switchInput('Follow its drift', initial.tracking, on => save(on));
-  const saveAnchor = h('button', { class: 'btn small', type: 'button', text: 'Save' });
+  const tracking = switchInput('', initial.tracking, on => save(on));
+  tracking.input.setAttribute('aria-label', 'Follow its drift');
+  const saveAnchor = h('button', { class: 'btn', type: 'button', text: 'Save' });
   saveAnchor.addEventListener('click', () => save(tracking.input.checked));
   const calibrate = h('button', { class: 'btn', type: 'button', text: 'Calibrate now' });
   calibrate.addEventListener('click', async () => {
@@ -191,24 +217,24 @@ function crystalCard(initial) {
     }
   });
   function show(s) {
-    const row = (k, v) => h('div', { class: 'row' }, h('span', { class: 'dim', text: k }), h('span', { text: v }));
     const cal = s.calibration;
-    clear(lines);
-    lines.append(
-      row('Correction', `${ppm(s.ppm)} (LO ${signedHz(s.lo_shift_hz)})`),
-      row('Measured from', s.source ? crystalSource(s.source) : 'nothing yet: the live site is not decoded'),
-      row('Calibrated', cal
+    const rows = [
+      ['Correction', `${ppm(s.ppm)} (LO ${signedHz(s.lo_shift_hz)})`],
+      ['Measured from', s.source ? crystalSource(s.source) : 'nothing yet: the live site is not decoded'],
+      ['Calibrated', cal
         ? `${ppm(cal.ppm)} ${ago(Date.now() - cal.at_unix_ms)} (spectrum ${signedHz(cal.spectrum_offset_hz)}, residual ${cal.residual_hz === null ? 'not measured' : signedHz(cal.residual_hz)})`
-        : (s.calibrating ? 'now' : 'not since start')),
-      row('Tracker', s.estimate_ppm === null ? `${num(s.samples)} samples of 60` : `${ppm(s.estimate_ppm)} from ${num(s.samples)} samples`),
-      ...(s.last_decision ? [row('Last', s.last_decision)] : []));
+        : (s.calibrating ? 'now' : 'not since start')],
+      ['Tracker', s.estimate_ppm === null ? `${num(s.samples)} samples of 60` : `${ppm(s.estimate_ppm)} from ${num(s.samples)} samples`],
+      ...(s.last_decision ? [['Last', s.last_decision]] : []),
+    ];
+    lines.replaceChildren(...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
   }
   show(initial);
   c.body.append(
     lines,
-    h('div', { class: 'row' }, tracking.el, h('span', { class: 'dim', text: 'within' }), anchor, h('span', { class: 'dim', text: 'Hz of the calibration' }), saveAnchor),
-    h('div', { class: 'row end' }, calibrate),
-    h('p', { class: 'card-note', text: 'The crystal is measured on the live control channel: once the site is decoded after start, and then followed as it warms and cools.' }));
+    row('Follow its drift', tracking.el),
+    row('…within', [anchor, unit('Hz of the calibration'), saveAnchor]),
+    foot('The crystal is measured on the live control channel: once the site is decoded after start, and then followed as it warms and cools.', calibrate));
   const stop = want({ crystal: true }, m => show(m.crystal));
   return { el: c.el, stop };
 }
@@ -263,21 +289,32 @@ function configCard() {
     }
   });
   c.body.append(
-    h('p', { class: 'card-note', text: 'The radio settings and the systems with their aliases and sites, as one file. What the radio learned on the air and the crystal calibration stay with the board.' }),
-    h('div', { class: 'row' }, exportLink, file, importBtn),
-    h('div', { class: 'row end' }, reset));
+    row('Export', exportLink, 'The radio settings and the systems with their aliases and sites, as one file. What the radio learned on the air and the crystal calibration stay with the board.'),
+    row('Import', [file, importBtn], 'Replaces the settings, systems, sites and aliases with a file\'s; the radio restarts.'),
+    row('Factory reset', reset, 'Deletes every system, site, recording and the call history, and restores the default settings. The crystal calibration stays.'));
   return c.el;
 }
 
 export function mount(el) {
-  const host = h('div', { class: 'stack' });
-  el.append(host);
+  const left = h('div', { class: 'stack' });
+  const right = h('div', { class: 'stack' });
+  el.append(h('div', { class: 'settings' }, left, right));
   let crystal = null;
+  // The page was left before the radio answered: nothing is built, so nothing is left asking.
+  let gone = false;
   Promise.all([api.radio(), api.crystal(), api.recordings(0)])
     .then(([radio, crystalStatus, recs]) => {
+      if (gone) return;
       crystal = crystalCard(crystalStatus);
-      host.append(gainCard(radio), radioCard(radio), packetDataCard(radio), crystal.el, recordingCard(radio, recs), configCard());
+      left.append(gainCard(radio), radioCard(radio), clockCard(radio), configCard());
+      right.append(recordingCard(radio, recs), crystal.el, packetDataCard(radio));
     })
     .catch(e => toast(e.message, true));
-  return { update() {}, unmount() { if (crystal) crystal.stop(); } };
+  return {
+    update() {},
+    unmount() {
+      gone = true;
+      if (crystal) crystal.stop();
+    },
+  };
 }

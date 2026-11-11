@@ -40,7 +40,7 @@ export function boardCard() {
         [`Lane ${i + 1} packets`, packets(counters[i + 1])],
       ]),
     ];
-    body.replaceChildren(h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', null, h('th', { text: k }), h('td', { text: v })))));
+    body.replaceChildren(h('dl', { class: 'kv' }, ...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])));
   }
 
   const stop = want({ radio: true }, m => show(m.radio));

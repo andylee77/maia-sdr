@@ -5,6 +5,24 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-10] 094: The last three pages in the rail's layout: Channels, Diagnostics, Settings
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the last three pages still in their old layouts. Each was one
+  1,280 px column: Channels showed a picked channel under its 33-row table, Diagnostics was
+  7,400 px long, Settings was six cards of sentences. Record:
+  `doc/changes/094_channels_diagnostics_settings.md`.
+- **Channels** fills the screen: the scan's counts and its table on the left, the picked channel
+  on the right (what was read of it, its spectrum, its station and its channels with Watch).
+- **Diagnostics** fills the screen: the spectrum across the top, the event log under it (the
+  carriers heard and the API's routes behind the same tabs), and the control channel, the
+  receive window, the tuning and the board in a column on the right.
+- **Settings** is two columns of cards, each setting a row with its name on the left and its
+  control on the right. Nothing it sends changed.
+- With this every page is in the rail's layout.
+
 ## [2026-11-10] 093: Scanner: the Activity and Systems pages in the rail's layout
 
 **Branch:** fishball-p25 (local)

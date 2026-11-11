@@ -204,6 +204,9 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .metric { display: grid; gap: 1px; }
 .metric .m-label { font-size: 0.74em; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
 .metric .m-value { font-variant-numeric: tabular-nums; font-weight: 550; }
+/* A row of them: as many columns as fit, the values on one line. */
+.metrics { display: grid; gap: 8px 12px; align-items: end; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
+.metrics .m-value { white-space: nowrap; }
 
 /* ── Now: the talkgroup bank, the site strip, the traffic channels, the calls and the picked
    call. One column on a narrow or short screen, where the page scrolls: the picked call shows
@@ -427,8 +430,6 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* The totals and the airtime chart. */
 .act-sum { display: grid; gap: 10px; padding: 12px 16px; }
 .act-sum .card-head { margin-bottom: 0; }
-.act-metrics { display: grid; gap: 8px 12px; align-items: end; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
-.act-metrics .m-value { white-space: nowrap; }
 .act-plot { width: 100%; height: 150px; display: block; }
 @media (max-height: 900px) {
   .act-plot { height: 104px; }
@@ -502,6 +503,88 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .sys-pick .sub { grid-column: 1 / -1; font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scan-pane h2 { font-size: 1.06em; }
 
+/* ── Channels (TV): the scan with its table, and the picked channel beside it. One column on a
+   narrow or short screen, the picked channel first once there is one; on a wider one the page
+   fills the screen and each side scrolls on its own. ── */
+.tvchan { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.chan-detail { order: 1; display: grid; gap: 12px; align-content: start; padding: 16px 18px; }
+.chan-list { order: 2; }
+.chan-detail.empty { display: none; }
+.chan-list .card-head { padding-bottom: 10px; margin-bottom: 0; }
+.chan-state { display: grid; gap: 8px; padding: 0 16px 12px; }
+.chan-state:empty { display: none; }
+.chan-ended { color: var(--warn); }
+.chan-list .card-body { border-top: 1px solid var(--line); }
+.chan-pad { padding: 14px 16px; margin: 0; }
+.chan-table .table th { position: sticky; top: 0; z-index: 1; background: var(--bg-raised); }
+.chan-table .table th:first-child, .chan-table .table td:first-child { padding-left: 16px; }
+.chan-table .table tr.sel td { background: var(--bg-control); }
+.chan-table .badge + .badge { margin-left: 6px; }
+.chan-plot { width: 100%; height: 200px; display: block; }
+.chan-detail .card-note { margin: 6px 0 0; }
+.chan-station { display: grid; gap: 8px; }
+.chan-vlist { display: grid; }
+.chan-vrow { display: grid; grid-template-columns: 3.4em minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 46px; padding: 5px 0; border-top: 1px solid var(--line); }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .tvchan { min-height: 0; grid-template-columns: minmax(0, 1fr) 440px; grid-template-rows: minmax(0, 1fr); }
+  .chan-list { order: 1; min-height: 0; display: flex; flex-direction: column; }
+  .chan-list .card-body { flex: 1; min-height: 0; overflow: auto; }
+  /* The table's heading stays as the body scrolls: the body is its scroller, not the wrap. */
+  .chan-list .chan-table { overflow: visible; }
+  .chan-detail { order: 2; min-height: 0; overflow-y: auto; }
+  .chan-detail.empty { display: grid; }
+}
+
+/* ── Diagnostics: the spectrum, the main pane (the event log, the carriers heard or the API's
+   routes) and the status cards. One column on a narrow or short screen; on a wider one the page
+   fills the screen: the spectrum over the main pane, the cards in a column that scrolls. ── */
+.diag { display: grid; gap: var(--gap); align-content: start; grid-template-columns: minmax(0, 1fr); }
+.diag-side { display: grid; gap: var(--gap); align-content: start; }
+.diag-plot { width: 100%; height: 180px; display: block; border-radius: var(--radius-sm); background: var(--bg-sunken); }
+.diag-main .card-head { flex-wrap: wrap; padding-bottom: 10px; margin-bottom: 0; }
+.diag-main .card-body { border-top: 1px solid var(--line); }
+.diag-main .card-body > * { max-height: 60vh; overflow: auto; }
+.diag-main .log { border: 0; border-radius: 0; }
+.diag-pad { padding: 12px 16px; }
+.diag-pad .card-note { margin: 0 0 8px; }
+.diag-side .kv { grid-template-columns: 8.5em minmax(0, 1fr); }
+.diag-side .row.end { margin-top: 10px; }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .diag {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) 440px;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "spectrum side" "main side";
+  }
+  .diag-spectrum { grid-area: spectrum; }
+  .diag-main { grid-area: main; min-height: 0; display: flex; flex-direction: column; }
+  .diag-main .card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .diag-main .card-body > * { flex: 1; min-height: 0; max-height: none; }
+  .diag-side { grid-area: side; min-height: 0; overflow-y: auto; }
+}
+@media (max-height: 900px) {
+  .diag-plot { height: 130px; }
+}
+
+/* ── Settings: two columns of cards. A setting is a row: its name, and a note under it, on the
+   left; its control on the right. ── */
+.settings { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1100px) {
+  .settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.set-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 9px 0; border-top: 1px solid var(--line); }
+.card-body > .set-row:first-child { border-top: 0; padding-top: 0; }
+.set-row.wide { display: grid; justify-content: stretch; }
+.set-what { flex: 1 1 14em; min-width: 0; }
+.set-what .sub { margin-top: 2px; font-size: 0.84em; color: var(--text-dim); }
+.set-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.set-ctl .input[type="file"] { max-width: 17em; }
+.set-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--line); }
+.set-foot .card-note { flex: 1 1 16em; margin: 0; }
+.set-foot .card-note:empty { display: none; }
+.set-foot + .set-foot { border-top: 0; padding-top: 6px; }
+.settings .kv { margin-bottom: 10px; }
+
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
 .table th { text-align: left; font-weight: 550; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--line); }
@@ -525,9 +608,6 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .log-line .f { color: var(--text-faint); }
 .c-grant { color: var(--ok); } .c-traffic { color: var(--accent); } .c-recorder { color: var(--acquire); }
 .c-vocoder { color: var(--hang); } .c-system { color: #b58cff; } .c-voice, .c-duid, .c-cc { color: var(--text-faint); }
-
-/* ── Spectrum ─────────────────────────────────────────────── */
-.spectrum { width: 100%; height: 260px; display: block; border-radius: var(--radius-sm); background: var(--bg-sunken); }
 
 /* ── Watch (TV): the channels, the picture with its controls and the programme, the signal.
    One column on a narrow or short screen. On a wider one the page fills the screen: the channels
@@ -668,7 +748,6 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
   .call-tg { font-size: 1.8em; }
   .log-line { grid-template-columns: 8.2em minmax(0, 1fr); }
   .log-line .c { display: none; }
-  .spectrum { height: 200px; }
   .tv-program { grid-template-columns: max-content minmax(0, 1fr); }
   .tv-program .r { grid-column: 2; text-align: left; }
 }

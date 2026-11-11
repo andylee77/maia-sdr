@@ -1,7 +1,9 @@
 # UI brief: the replacement UI
 
 The scanner's web UI is replaced from scratch. This brief holds Andy's requirements (2026-10-01)
-and the decisions taken with him. The current pages stay only until the new ones replace them.
+and the decisions taken with him. Every page there is has the new layout (changes 090 to 094).
+Not built: the first-load welcome and the Aliases page; what the other sections ask for and no
+page has yet is marked "Still to come" in them.
 
 - `doc/API_INVENTORY.md` lists each route: what it carries, what it lacks, and who uses it.
 - `doc/API_FIELDS.md` gives every field of every response with its meaning.
@@ -165,9 +167,14 @@ Per system, SDRTrunk's alias list as a table:
 - **Activity:** the history views. Done in change 093, filling the screen: who talks (the
   talkgroups or the radios, one picked narrowing the page to it), the totals with the airtime
   chart, the calls, the alerts or the packet data, and the picked call with its recording.
-- **Diagnostics:** the receivers, the event log and the spectrum. Eye and IQ plots come later
-  for every received signal.
-- **Settings:** the radio settings, and the configuration (export, import, factory reset).
+- **Diagnostics:** the receivers, the event log and the spectrum. Done in change 094, filling
+  the screen: the spectrum, the event log (with the carriers heard and the API's routes behind
+  the same tabs), and the control channel, the receive window, the tuning and the board beside
+  them. Still to come: eye and IQ plots for every received signal.
+- **Settings:** the radio settings, and the configuration (export, import, factory reset). Done
+  in change 094 as two columns of cards, a setting a row.
+
+TV's Channels page (the TV scan's table with the picked channel beside it) is in change 094 too.
 
 ### Later: a system notebook
 

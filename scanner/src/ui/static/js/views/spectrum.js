@@ -12,17 +12,18 @@ function cssVar(name) {
 }
 
 export function spectrumCard() {
-  const c = card('Spectrum');
-  const canvas = h('canvas', { style: { width: '100%', height: '200px', display: 'block' }, 'aria-label': 'Spectrum of the receive window' });
-  const note = h('p', { class: 'card-note', text: 'Waiting for a frame (none comes while a scan has the radio).' });
-  c.body.append(canvas, note);
+  const c = card('Spectrum', { class: 'diag-spectrum' });
+  const canvas = h('canvas', { class: 'diag-plot', 'aria-label': 'Spectrum of the receive window' });
+  const note = h('span', { class: 'dim', text: 'Waiting for a frame (none comes while a scan has the radio).' });
+  c.right.append(note);
+  c.body.append(canvas);
   let data = null;
 
   function draw() {
     if (!data || !data.db.length) return;
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth || 600;
-    const ht = canvas.clientHeight || 200;
+    const ht = canvas.clientHeight || 180;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(ht * dpr);
     const g = canvas.getContext('2d');

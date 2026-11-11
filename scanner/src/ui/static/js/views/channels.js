@@ -1,11 +1,12 @@
-// The Channels page (the TV module): the TV channel finder. Pick the bands and settings, then one
-// table of the channels asked for, filled in as /ws/live reports the scan: each channel as its
-// window is read (what it holds: 8-VSB by its pilot, a signal without the 8-VSB pilot, or nothing;
-// its carrier to noise, its pilot and its power), then its station's own names as its channel is
-// decoded. A channel picked in the table shows its spectrum and its station's virtual channels,
-// each with a way to Watch. A scan gives the radio to TV first, when another module has it.
+// The Channels page (the TV module): the TV channel finder, filling the screen. On the left the
+// scan: its bands and settings, then one table of the channels asked for, filled in as the radio
+// reports the scan: each channel as its window is read (what it holds: 8-VSB by its pilot, a
+// signal without the 8-VSB pilot, or nothing; its carrier to noise, its pilot and its power), then
+// its station's own names as its channel is decoded. On the right the channel picked in the
+// table: what was read of it, its spectrum, and its station's virtual channels, each with a way
+// to Watch. A scan gives the radio to TV first, when another module has it.
 
-import { h, card, toast, table, setClass } from '../dom.js';
+import { h, toast, table, setText, setClass } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
 import { api } from '../api.js';
 import { giveRadio } from '../mode.js';
@@ -41,7 +42,6 @@ export function tally(scan) {
     channels: named.reduce((n, x) => n + x.station.channels.filter(c => !c.hidden).length, 0),
   };
 }
-const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many}`;
 
 // A decoded station in a table cell: its main channels (x.1) first, then how many more.
 function stationText(st) {
@@ -57,28 +57,39 @@ function stationText(st) {
   return { text: 'too weak to decode', title: `${st.failed} of ${st.packets} packets failed${st.mer_db == null ? '' : `; MER ${num(st.mer_db, 1)} dB`}` };
 }
 
-// A decoded station on RF channel `rf`: how it decoded, then its virtual channels, each with
-// the way to Watch it.
+const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v) / 1000, 1);
+
+// What a channel holds, as badges: its kind, and an overload.
+function kindBadges(ch) {
+  const k = KIND[ch.kind] || KIND.vacant;
+  const over = ch.clips_ppm != null && ch.clips_ppm >= OVERLOAD_PPM;
+  return [h('span', { class: `badge ${k.cls}`.trim(), text: k.label, title: k.title }),
+    ...(over ? [h('span', { class: 'badge bad', text: 'Overload', title: `${num(ch.clips_ppm)} samples a million at the ADC's full scale: try a lower manual gain` })] : [])];
+}
+
+// A decoded station on RF channel `rf` in the picked channel's panel: how it decoded, then its
+// virtual channels, each with the way to Watch it.
 function stationDetails(st, rf) {
-  if (!st) return [];
+  if (!st) return [h('p', { class: 'dim', text: 'Its station was not decoded: not 8-VSB, or under 15 dB of carrier to noise.' })];
   if (st.error) return [h('p', { class: 'dim', text: `Not decoded: ${st.error}.` })];
-  const clock = st.time_unix ? `; its clock ${new Date(st.time_unix * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` : '';
-  const how = `${st.tsid == null ? 'No transport stream id' : `TSID ${st.tsid}`}; MER ${st.mer_db == null ? DASH : `${num(st.mer_db, 1)} dB`}; `
-    + `${num(st.packets)} packets, ${num(st.failed)} beyond Reed-Solomon${clock}.`;
-  const out = [h('p', { class: 'dim', text: how })];
-  if (st.channels.length) {
-    out.push(table(['Channel', 'Name', 'Long name', 'Program', 'Service', '', ''], st.channels.map(c => h('tr', null,
-      h('td', { class: 'num', text: `${c.major}.${c.minor}` }),
-      h('td', { text: c.short_name }),
-      h('td', { class: 'dim', text: c.long_name || DASH }),
-      h('td', { class: 'num', text: String(c.program) }),
-      h('td', { text: SERVICE[c.service_type] || `type ${c.service_type}` }),
-      h('td', { class: 'dim', text: [c.hidden ? 'hidden' : '', c.access_controlled ? 'scrambled' : ''].filter(Boolean).join(', ') }),
-      h('td', { style: { textAlign: 'right' } }, h('a', { class: 'btn small', href: '#watch', text: 'Watch', onclick: () => pickChannel(channelKey(rf, c)) }))))));
+  const clock = st.time_unix ? `${new Date(st.time_unix * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` : null;
+  const out = [h('dl', { class: 'kv' },
+    h('dt', { text: 'Transport stream' }), h('dd', { text: st.tsid == null ? 'no id read' : `TSID ${st.tsid}` }),
+    h('dt', { text: 'MER' }), h('dd', { text: st.mer_db == null ? DASH : `${num(st.mer_db, 1)} dB` }),
+    h('dt', { text: 'Packets' }), h('dd', { text: `${num(st.packets)}, ${num(st.failed)} beyond Reed-Solomon` }),
+    ...(clock ? [h('dt', { text: 'Its clock' }), h('dd', { text: clock })] : []))];
+  if (!st.channels.length) {
+    out.push(h('p', { class: 'dim', text: st.tsid != null ? 'No virtual channel table in the capture.' : 'Too weak to decode.' }));
+    return out;
   }
+  out.push(h('div', { class: 'chan-vlist' }, ...st.channels.map(c => h('div', { class: 'chan-vrow' },
+    h('span', { class: 'tv-num', text: `${c.major}.${c.minor}` }),
+    h('span', { class: 'tv-text' },
+      h('span', { class: 'tv-name', text: c.short_name }),
+      h('span', { class: 'sub', text: [c.long_name, `program ${c.program}`, SERVICE[c.service_type] || `type ${c.service_type}`, c.hidden ? 'hidden' : '', c.access_controlled ? 'scrambled' : ''].filter(Boolean).join(' · ') })),
+    h('a', { class: 'btn small', href: '#watch', text: 'Watch', onclick: () => pickChannel(channelKey(rf, c)) })))));
   return out;
 }
-const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v) / 1000, 1);
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
@@ -132,9 +143,30 @@ function drawChannel(canvas, sp) {
   }
 }
 
+function metric(label, value, title) {
+  return h('div', { class: 'metric', title: title || '' }, h('span', { class: 'm-label', text: label }), h('span', { class: 'm-value', text: value }));
+}
+
 export function mount(el) {
-  const c = card('TV channels');
-  el.append(h('div', { class: 'stack' }, c.el));
+  // The scan: its state over the table, or its setup.
+  const act = h('div', { class: 'row' });
+  const state = h('div', { class: 'chan-state' });
+  const body = h('div', { class: 'card-body' });
+  const list = h('section', { class: 'card flush chan-list', 'aria-label': 'TV channels' },
+    h('div', { class: 'card-head' }, h('h2', { text: 'TV channels' }), h('div', { class: 'spacer' }), act), state, body);
+  // The picked channel.
+  const kicker = h('div', { class: 'kicker' });
+  const title = h('div', { class: 'detail-title' });
+  const badges = h('div', { class: 'row' });
+  const facts = h('dl', { class: 'kv' });
+  const caption = h('p', { class: 'card-note' });
+  const canvas = h('canvas', { class: 'chan-plot', 'aria-label': "The channel's spectrum", hidden: true });
+  const about = h('div', { class: 'chan-station' });
+  const picked = h('div', { class: 'detail-body', hidden: true }, h('div', null, kicker, title), badges, facts, h('div', null, canvas, caption), about);
+  const none = h('div', { class: 'detail-empty', text: 'Pick a channel in the table to see its spectrum, its station and its channels to watch.' });
+  const detail = h('section', { class: 'card chan-detail empty', 'aria-label': 'The picked channel' }, none, picked);
+  el.append(h('div', { class: 'tvchan' }, list, detail));
+
   let options = null;
   let last = null;
   // What is on screen: the setup (drawn once, so what is typed stays) or a scan's table.
@@ -143,11 +175,17 @@ export function mount(el) {
   let view = null;
   // The scan whose results were put away for a new setup.
   let dismissed = null;
-  // The channel whose spectrum is shown, and its drawing again at a new width.
-  let picked = null;
+  // The picked channel's spectrum, and its drawing again at a new width.
   let redraw = null;
   const onResize = () => redraw && redraw();
   window.addEventListener('resize', onResize);
+
+  function unpick() {
+    redraw = null;
+    picked.hidden = true;
+    none.hidden = false;
+    setClass(detail, 'empty', true);
+  }
 
   function bands() {
     const out = new Map();
@@ -161,8 +199,11 @@ export function mount(el) {
   function setup() {
     shown = 'setup';
     view = null;
+    unpick();
+    act.replaceChildren();
+    state.replaceChildren();
     if (!options) {
-      c.body.replaceChildren(h('p', { class: 'dim', text: 'Reading the channel plan…' }));
+      body.replaceChildren(h('p', { class: 'dim chan-pad', text: 'Reading the channel plan…' }));
       return;
     }
     const d = options.defaults;
@@ -184,21 +225,21 @@ export function mount(el) {
 
     const chosen = () => picks.filter(p => p.tick.checked).flatMap(p => p.b.chans.map(ch => ch.number));
     // Two adjacent channels a window, as the radio reads them.
-    function windows(list) {
+    function windows(chans) {
       let n = 0;
-      for (let i = 0; i < list.length; i++, n++) {
-        const a = options.channels.find(x => x.number === list[i]);
-        const b = options.channels.find(x => x.number === list[i + 1]);
+      for (let i = 0; i < chans.length; i++, n++) {
+        const a = options.channels.find(x => x.number === chans[i]);
+        const b = options.channels.find(x => x.number === chans[i + 1]);
         if (a && b && b.low_hz === a.low_hz + 6e6) i++;
       }
       return n;
     }
     function sum() {
-      const list = chosen();
-      const w = windows(list);
-      note.textContent = `${list.length} channels in ${w} window${w === 1 ? '' : 's'} of ${num(options.window_hz / 1e6)} MHz, two channels a window. `
+      const chans = chosen();
+      const w = windows(chans);
+      note.textContent = `${chans.length} channels in ${w} window${w === 1 ? '' : 's'} of ${num(options.window_hz / 1e6)} MHz, two channels a window. `
         + 'Each channel shows its pilot (8-VSB), its carrier to noise and its power.';
-      go.disabled = !list.length;
+      go.disabled = !chans.length;
     }
     go.addEventListener('click', async () => {
       try {
@@ -219,7 +260,7 @@ export function mount(el) {
       }
     });
     sum();
-    c.body.replaceChildren(h('div', { class: 'stack' },
+    body.replaceChildren(h('div', { class: 'stack chan-pad' },
       h('div', { class: 'chips' }, ...picks.map(p => p.el)),
       h('div', { class: 'scan-settings' },
         h('span', null, 'Read ', frames, ' spectrum frames a window'),
@@ -233,10 +274,6 @@ export function mount(el) {
 
   // A channel read: what it holds and how well; its station, or "naming" while it is decoded.
   function row(ch, naming) {
-    const k = KIND[ch.kind] || KIND.vacant;
-    const over = ch.clips_ppm != null && ch.clips_ppm >= OVERLOAD_PPM;
-    const what = h('td', null, h('span', { class: `badge ${k.cls}`.trim(), text: k.label, title: k.title }),
-      over ? h('span', { class: 'badge bad', text: 'Overload', title: `${num(ch.clips_ppm)} samples a million at the ADC's full scale: try a lower manual gain` }) : null);
     const vacant = ch.kind === 'vacant';
     const st = stationText(ch.station);
     const station = naming
@@ -245,7 +282,7 @@ export function mount(el) {
     return h('tr', { class: vacant ? 'faint' : null },
       h('td', null, h('strong', { text: String(ch.number) })),
       h('td', { class: 'num', text: mhz(ch.center_hz, 0) }),
-      what,
+      h('td', null, ...kindBadges(ch)),
       station,
       h('td', { class: 'num', text: db(ch.level_db), title: 'Carrier to noise: the plateau over the noise floor at the channel edges' }),
       h('td', { class: 'num', text: db(ch.pilot_db), title: 'The pilot over the plateau: 20.1 dB for a clean signal' }),
@@ -273,76 +310,99 @@ export function mount(el) {
     return !!p && Math.abs(p.low_hz + 3e6 - lo) < options.window_hz / 2;
   }
 
-  // Above the table: where the scan is, with Cancel; once over, its tally, with New scan.
+  // Over the table: where the scan is, with Cancel; once over, its counts, with New scan.
   function status(s) {
     if (s.state === 'sweeping') {
-      const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
+      const cancel = h('button', { class: 'btn small', type: 'button', text: 'Cancel' });
       cancel.addEventListener('click', () => api.atscCancel().catch(e => toast(e.message, true)));
+      act.replaceChildren(cancel);
       const naming = s.identifying != null;
-      return [
+      state.replaceChildren(
         naming
           ? h('div', null, h('strong', { text: `Naming the stations: RF ${s.identifying}` }), h('span', { class: 'dim', text: ` · ${s.identified + 1} of ${s.to_identify}` }))
           : h('div', null, h('strong', { text: `Window ${s.step} of ${s.steps}` }), s.lo_hz ? h('span', { class: 'dim', text: ` · around ${mhz(s.lo_hz, 1)}` }) : null),
         naming
           ? h('progress', { class: 'scan', max: String(Math.max(s.to_identify, 1)), value: String(s.identified) })
-          : h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
-        h('div', { class: 'row' }, cancel)];
+          : h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }));
+      return;
     }
-    const again = h('button', { class: 'btn', type: 'button', text: 'New scan' });
+    const again = h('button', { class: 'btn small', type: 'button', text: 'New scan' });
     again.addEventListener('click', () => {
       dismissed = s.id;
       setup();
     });
+    act.replaceChildren(again);
     const t = tally(s);
     const head = { done: 'Done', cancelled: 'Cancelled', error: 'Failed' }[s.state] || s.state;
-    const counts = `${plural(t.frequencies, 'frequency', 'frequencies')} with a signal (${num(t.vsb)} 8-VSB, `
-      + `${num(t.noPilot)} without the 8-VSB pilot: ATSC 3.0 or other), ${num(t.vacant)} vacant, of ${num(s.found.length)} read`
-      + `${s.gain_db == null ? ' with the AGC' : ` at ${s.gain_db} dB of gain`}.`
-      + (t.stations ? ` ${plural(t.stations, 'station', 'stations')} named, with ${plural(t.channels, 'channel', 'channels')}.` : '');
-    const summary = s.found.length ? `${head}: ${counts}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
-    return [h('p', { class: 'dim', text: summary }), h('div', { class: 'row' }, again)];
+    const ended = s.error ? `${head}: ${s.error}` : head === 'Done' ? null : head;
+    state.replaceChildren(
+      ...(ended ? [h('div', { class: 'chan-ended', text: ended })] : []),
+      ...(s.found.length ? [h('div', { class: 'metrics' },
+        metric('Read', num(s.found.length), 'RF channels the scan read'),
+        metric('With a signal', num(t.frequencies)),
+        metric('8-VSB', num(t.vsb), 'ATSC 1.0: the pilot is there'),
+        metric('No 8-VSB pilot', num(t.noPilot), 'A signal without the 8-VSB pilot: ATSC 3.0, or something else'),
+        metric('Vacant', num(t.vacant)),
+        metric('Stations named', num(t.stations)),
+        metric('Channels', num(t.channels), 'The virtual channels of the named stations; hidden ones left out'),
+        metric('Gain', s.gain_db == null ? 'AGC' : `${s.gain_db} dB`))] : []));
   }
 
   // One scan's table: a row for each channel asked for, kept and replaced in place as the scan
-  // reports it, so a picked channel and its spectrum stay while the rest fills in. Once the scan
-  // is over, only the channels read are left.
+  // reports it, so the picked channel stays while the rest fills in. Once the scan is over, only
+  // the channels read are left.
   function scanView(first) {
     shown = 'scan';
-    picked = null;
-    redraw = null;
-    const top = h('div', { class: 'stack' });
+    unpick();
     const wrap = table(HEAD, []);
-    const body = wrap.querySelector('tbody');
-    const title = h('div', { class: 'dim' });
-    const canvas = h('canvas', { style: { width: '100%', height: '220px', display: 'block' }, 'aria-label': "The channel's spectrum" });
-    const about = h('div', { class: 'stack' });
-    const plot = h('div', { class: 'stack', hidden: true }, title, canvas, about);
+    wrap.classList.add('chan-table');
+    const rowsBody = wrap.querySelector('tbody');
     const asked = first.channels.length ? first.channels : first.found.map(x => x.number);
     const rows = new Map();
     let now = first;
     let pickedNumber = null;
+    // The spectrum read for the picked channel.
+    let spectrum = null;
+
+    // What was read of channel `ch` beside its spectrum.
+    function showRead(ch) {
+      const st = ch.station;
+      setText(kicker, `RF ${ch.number} · ${mhz(ch.center_hz, 0)} · ${ch.band}`);
+      setText(title, st && st.channels && st.channels.length ? stationText(st).text : (KIND[ch.kind] || KIND.vacant).label);
+      badges.replaceChildren(...kindBadges(ch));
+      facts.replaceChildren(...[
+        ['Carrier to noise', db(ch.level_db)],
+        ['Pilot', ch.pilot_db == null ? DASH : `${db(ch.pilot_db)} over the plateau`],
+        ['Pilot offset', ch.pilot_offset_hz == null ? DASH : `${signed(ch.pilot_offset_hz)} kHz`],
+        ['Power', ch.power_dbm == null ? DASH : `${num(ch.power_dbm, 1)} dBm`],
+        ['Gain', ch.gain_db == null ? DASH : `${num(ch.gain_db)} dB${ch.clips_ppm == null ? '' : `; ${clipText(ch.clips_ppm)}`}`],
+      ].flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
+      about.replaceChildren(h('div', { class: 'kicker', text: 'Station' }), ...stationDetails(st, ch.number));
+    }
 
     async function pick(n) {
       pickedNumber = n;
       for (const [k, r] of rows) setClass(r.tr, 'sel', k === n);
       const ch = now.found.find(x => x.number === n);
-      plot.hidden = false;
-      about.replaceChildren(...stationDetails(ch && ch.station, n));
+      if (!ch) return;
+      picked.hidden = false;
+      none.hidden = true;
+      setClass(detail, 'empty', false);
+      showRead(ch);
       try {
-        picked = await api.atscChannel(n);
+        spectrum = await api.atscChannel(n);
         if (pickedNumber !== n) return;
         canvas.hidden = false;
-        title.textContent = `RF ${n}, ${mhz(picked.low_hz, 0)} to ${mhz(picked.high_hz, 0)} (shaded), as its window read it: `
-          + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
-        drawChannel(canvas, picked);
-        redraw = () => drawChannel(canvas, picked);
+        setText(caption, `${mhz(spectrum.low_hz, 0)} to ${mhz(spectrum.high_hz, 0)} (shaded), as its window read it: dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.`);
+        drawChannel(canvas, spectrum);
+        redraw = () => drawChannel(canvas, spectrum);
       } catch {
         // A scan kept across a restart comes back without its spectra.
         if (pickedNumber !== n) return;
-        picked = null;
+        spectrum = null;
         redraw = null;
         canvas.hidden = true;
-        title.textContent = `RF ${n}: its spectrum is not kept across a restart of the scanner. The next scan reads it again.`;
+        setText(caption, `RF ${n}: its spectrum is not kept across a restart of the scanner. The next scan reads it again.`);
       }
     }
 
@@ -350,16 +410,16 @@ export function mount(el) {
       now = s;
       const running = s.state === 'sweeping';
       const found = new Map(s.found.map(x => [x.number, x]));
-      const list = [...asked, ...s.found.map(x => x.number).filter(n => !asked.includes(n))]
+      const chans = [...asked, ...s.found.map(x => x.number).filter(n => !asked.includes(n))]
         .filter(n => running || found.has(n));
       for (const [n, r] of rows) {
-        if (!list.includes(n)) {
+        if (!chans.includes(n)) {
           r.tr.remove();
           rows.delete(n);
         }
       }
       let after = null;
-      for (const n of list) {
+      for (const n of chans) {
         const ch = found.get(n);
         const naming = running && s.identifying === n;
         const reading = running && !ch && s.lo_hz != null && inWindow(n, s.lo_hz);
@@ -369,24 +429,25 @@ export function mount(el) {
           const tr = ch ? row(ch, naming) : pending(n, reading);
           if (ch) {
             tr.classList.add('pick');
-            tr.title = 'Show its spectrum';
+            tr.title = 'Show its spectrum and its station';
             tr.addEventListener('click', () => pick(n));
           }
           setClass(tr, 'sel', n === pickedNumber);
           if (r) r.tr.replaceWith(tr);
           else if (after) after.after(tr);
-          else body.prepend(tr);
+          else rowsBody.prepend(tr);
           r = { tr, sig };
           rows.set(n, r);
-          if (n === pickedNumber && ch && !plot.hidden) about.replaceChildren(...stationDetails(ch.station, n));
+          // The picked channel learned something (its station's names): its panel follows.
+          if (n === pickedNumber && ch && !picked.hidden) showRead(ch);
         }
         after = r.tr;
       }
-      wrap.hidden = !list.length;
-      top.replaceChildren(...status(s));
+      wrap.hidden = !chans.length;
+      status(s);
     }
 
-    c.body.replaceChildren(h('div', { class: 'stack' }, top, wrap, plot));
+    body.replaceChildren(wrap);
     return { id: first.id, update };
   }
 

@@ -356,7 +356,7 @@ export function mount(host) {
   const plot = chart();
   const sumCard = h('section', { class: 'card act-sum', 'aria-label': 'Summary' },
     h('div', { class: 'card-head' }, sumTitle, h('div', { class: 'spacer' }), grant.btn),
-    h('div', { class: 'act-metrics' }, ...Object.values(m).map(x => x.el)),
+    h('div', { class: 'metrics' }, ...Object.values(m).map(x => x.el)),
     plot.el, grant.note);
 
   // The lists: the calls, the alerts, the packet data.

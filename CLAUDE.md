@@ -25,10 +25,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan
-  kept on the flash (092), and the Scanner's Activity and Systems pages (093,
-  `doc/changes/093_activity_systems.md`). Channels, Diagnostics and Settings keep their old
-  layouts inside the rail. Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`,
-  `scanner_pages.mjs` and `tv_watch.mjs`.
+  kept on the flash (092), the Scanner's Activity and Systems pages (093,
+  `doc/changes/093_activity_systems.md`), and Channels, Diagnostics and Settings (094,
+  `doc/changes/094_channels_diagnostics_settings.md`): every page is in the rail's layout.
+  Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`, `scanner_pages.mjs`,
+  `tool_pages.mjs` and `tv_watch.mjs`.
 
 ## Layout
 

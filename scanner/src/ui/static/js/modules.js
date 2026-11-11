@@ -63,12 +63,12 @@ export const MODULES = [
     icon: 'tv',
     pages: [
       { key: 'watch', label: 'Watch', view: watch, fill: true },
-      { key: 'channels', label: 'Channels', view: channels },
+      { key: 'channels', label: 'Channels', view: channels, fill: true },
     ],
     line: tvLine,
     working: () => true,
     away: 'These pages show what the last TV scan found. A scan or Play takes the radio.',
   },
-  { id: 'diag', label: 'Diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag }] },
+  { id: 'diag', label: 'Diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'settings', label: 'Settings', icon: 'tune', pages: [{ key: 'settings', label: 'Settings', view: settings }] },
 ];
