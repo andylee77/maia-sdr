@@ -2,7 +2,8 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** see the status log.
+**Status:** unit A runs the test build `2026-11-10-tv1` in RAM (it holds 087 to 091). A reboot
+returns it to the SD image `2026-10-06-rec1`.
 
 ## Why
 
@@ -94,3 +95,23 @@ TV's first page, at `#watch`.
 
 ## Status log
 
+- 2026-11-10: committed (4153f02). Host tests 516 pass; the DMR reference keeps 24,984 of 24,996
+  lines; the ARM release build is clean.
+- 2026-11-10: `2026-11-10-tv1` went onto unit A (binary only): live on Clay within 34 s, control
+  decode 100 %. `tv_watch.mjs --unit` with A serving the page, 18 steps, no exceptions:
+  - Scan on Channels took the radio for TV; the scan read 33 channels in 68 s: 26 with a signal,
+    7 stations named with 37 channels (RF 14, 19, 20, 21, 23, 30 and 35);
+  - Watch on RF 19's station in Channels opened Watch on 47.1 WJAXHD; Play gave a live picture
+    (MPEG-2 1920×1080i, AC-3 5.1 at 384 kbit/s); the signal panel showed the receiver (MER
+    25.0 dB, its last 40 fields as bars, 62,681 codewords with 5 corrected and 1,245 beyond
+    Reed-Solomon since it started), and the page made no request for it;
+  - the large view; 47.2, of the same RF channel, played in its place; full screen had nothing
+    over the picture; a double click went on to the small view;
+  - 30.1 WFOXHD on RF 14, picked while playing, played;
+  - Stop left the unit's receiver idle; Return to Scanner brought Clay back live at 100 %.
+- An earlier run that evening named 6 stations with 30 channels. The October scan on the
+  directional antenna named 16 (081). In these scans VHF RF 9, 10 and 13 read 9 to 13 dB of
+  carrier to noise, and eight UHF channels over 15 dB were decoded with every codeword failing,
+  at an MER of 12 to 17 dB. The scan's code did not change in 091; the antenna feed and the
+  evening's reception were not looked into.
+- `scanner/doc/API_FIELDS.md` is regenerated from unit A.
