@@ -162,6 +162,9 @@ h2 { font-size: 0.98rem; font-weight: 650; }
 }
 .tabs a:hover { color: var(--text); }
 .tabs a.active { color: var(--text); background: var(--bg-control); }
+/* The module's own diagnostics and settings, after its pages. */
+.tabs a.tool-first { margin-left: 12px; position: relative; }
+.tabs a.tool-first::before { content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px; border-left: 1px solid var(--line); }
 .topbar-right { margin-left: auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }
 .radio-pill {
   display: inline-flex; align-items: center; gap: 8px; min-width: 0;

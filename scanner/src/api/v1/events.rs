@@ -1,4 +1,4 @@
-//! `GET /api/v1/events`: the event log, for the Diagnostics events box.
+//! `GET /api/v1/events`: the event log, for the Diagnostics pages' events boxes.
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::boot::state::AppState;
-use crate::services::events::Record;
+use crate::services::events::{Part, Record};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +20,8 @@ pub struct Params {
     /// Housekeeping broadcasts too.
     #[serde(default)]
     pub routine: bool,
+    /// One part's lines: `scanner`, `tv` or `radio` (the radio's own). Every part's without it.
+    pub part: Option<Part>,
 }
 
 #[derive(Serialize)]
@@ -28,5 +30,5 @@ pub struct Events {
 }
 
 pub async fn list(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Json<Events> {
-    Json(Events { events: s.log.since(p.after, p.limit.unwrap_or(200).min(2000), p.routine) })
+    Json(Events { events: s.log.since(p.after, p.limit.unwrap_or(200).min(2000), p.routine, p.part) })
 }

@@ -29,7 +29,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/receivers` | The control channel's status, carrier loop and AGC, and both P25 demodulators' (or the DMR decoder's) counters; each lane's channel, call, followed talkgroup, data-channel park, voice frames, decoder counters and carrier loop | Nothing yet (for the diagnostics) | Repeats `status.control`. No modulation override. No reset of the counters |
 | `GET /api/v1/system` | Board load, memory, CPU per core and per scanner thread, AD9361 and Zynq temperatures | Nothing yet | No filesystem space; the card's free space is only in `/recordings` |
 | `GET /api/v1/spectrum` | The receive window's spectrum (`bins`) with the LO, rate, control channel and lanes | Tools (the UI has it pushed on `/ws/live`) | No frame time. A `bins` that doesn't divide 4096 isn't refused |
-| `GET /api/v1/events` | The event log after `after` (`limit`, `routine`) | Tools (the UI's events box has it pushed on `/ws/live`) | Any extra query key is a 400. More than `limit` new events leaves a silent gap. No filter by class, talkgroup or unit |
+| `GET /api/v1/events` | The event log after `after` (`limit`, `routine`; `part`: the lines of `scanner`, `tv` or `radio`, each kept in a ring of its own since 100) | Tools (the UI's events boxes have it pushed on `/ws/live`, a part each) | Any extra query key is a 400. More than `limit` new events leaves a silent gap. No filter by class, talkgroup or unit |
 | `GET /api/v1/survey` | The carriers heard in the live window over ten minutes: duty, peak over the floor, steady or not | Tools (the UI has it pushed on `/ws/live`) | No frame time (079 item 6) |
 | `GET /api/v1/iq/control.wav` | The next seconds of the control channel's IQ, 50 kSPS stereo WAV | Captures for the SDRTrunk references | Control channel only: no lane or wideband IQ (data mode §6) |
 | `WS /ws/events` | `call_opened`, `call_closed`, `recording_saved`, alert tones, `lag` | Nothing in the UI (it uses `/ws/live`) | No notice for a site switch, a scan, a recentre, a clock or crystal step, or a settings change. No site in notices |
@@ -43,9 +43,9 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/talkgroups` | The live site's talkgroups (those heard there in the last week or among the calls listed now; an alias for a talkgroup not heard lists none, 099): each one's name, how it is treated by the follower's rule (followed, its lane, priority, recorded), its calls in the week and when it was last heard; and what decides recording | UI Now (pushed on `/ws/live` as `talkgroups`) | The live site only; the whole list at each change |
 | `GET`/`PUT /api/v1/hold` | The talkgroup the live site is held on, and each traffic lane's own; hold or release either (`lane`) | UI Now: Hold on the tuner's card of the call on the air and in the selected talkgroup's bar, Release there and in the site bar; each tuner's list keeps its lane on one | One route carries two things (the site's hold and a lane's), told apart by `lane` |
 | `WS /ws/audio` | 20 ms frames of 8 kHz audio. With `v=2`: every lane, each frame tagged; text `meta` (lane, talkgroup, radio, call, speaker) and `lag` | UI player; bench `wsaudio.py`, corpus, scoring | Lane is 0-based. Meta has no site or encryption flag, and sends `src` 0 for an unknown radio. The listener count and the audio counters (frames, errors, silent, dropped) are kept but never exposed |
-| `GET /api/v1/recordings` | Recordings newest first (`limit`, `site`) with the listed site's total and the stores' full state | UI Now and Settings; `scanner_live_check.py` | Recordings from earlier runs lack lane, frequency, channel and voice counts, although the history has them. No paging |
+| `GET /api/v1/recordings` | Recordings newest first (`limit`, `site`) with the listed site's total and the stores' full state | UI Now and the Scanner's Settings; `scanner_live_check.py` | Recordings from earlier runs lack lane, frequency, channel and voice counts, although the history has them. No paging |
 | `GET /api/v1/recordings/{id}` | The WAV (byte ranges) | UI Now player | The whole file is read for every range request |
-| `DELETE /api/v1/recordings` | Clear a store (`sd`, `ram`, `all`) | UI Settings | — |
+| `DELETE /api/v1/recordings` | Clear a store (`sd`, `ram`, `all`) | UI the Scanner's Settings | — |
 | `DELETE /api/v1/recordings/{id}` | Delete one | Nothing | — |
 
 ## History
@@ -69,14 +69,14 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET /api/v1/radio` | Presets; the radio configuration; stored state (live site, crystal); hardware; tuning; the radio core's readback (each lane's NCO, packets on or off, tag and counters; the ring; the sample and clip counts) | UI Board card, Settings | — |
-| `PUT /api/v1/radio/gain` | Gain mode and manual gain, applied at once | UI Settings | — |
-| `PUT /api/v1/radio/settings` | Presets allowed, lanes, call timings, history limits | UI Settings | Lanes apply at the next start, not the next activation. Lane count isn't range-checked |
-| `PUT /api/v1/radio/clock` | Clock source | UI Settings | Same as legacy `PUT /api/ui/settings`. `{}` silently sets `site` |
-| `POST /api/v1/clock` | Set the board clock | UI Settings | Sits outside `/radio/`, unlike its sibling |
-| `GET`/`PUT /api/v1/radio/crystal`, `POST …/calibrate` | Crystal correction: applied, tracked, calibrated | UI Settings Crystal card (then pushed on `/ws/live`) | The stored calibration is only in `/radio` `state.crystal` |
-| `PUT /api/v1/radio/recording` | Any of: recording on/off, every call or the marked talkgroups' (`every_call`), store, limits | UI Settings; UI Now's Record (Off, Marked, Every call) | — |
-| `PUT /api/v1/radio/packet_data` | Packet data followed or not (`follow`); the live site follows the change at once | UI Settings | New in 090; see "What a code review may change" |
+| `GET /api/v1/radio` | Presets; the radio configuration; stored state (live site, crystal); hardware; tuning; the radio core's readback (each lane's NCO, packets on or off, tag and counters; the ring; the sample and clip counts) | UI the radio's Board card; the Scanner's and the radio's Settings, read again at each `changed` (`what: radio`) | — |
+| `PUT /api/v1/radio/gain` | Gain mode and manual gain, applied at once | UI the Scanner's Settings | — |
+| `PUT /api/v1/radio/settings` | Any of: presets allowed, lanes, call timings, history limits; what is left out stays (a patch since 100) | UI the Scanner's Settings, a card a part | Lanes apply at the next start, not the next activation. Lane count isn't range-checked |
+| `PUT /api/v1/radio/clock` | Clock source | UI the radio's Settings | Same as legacy `PUT /api/ui/settings`. `{}` silently sets `site` |
+| `POST /api/v1/clock` | Set the board clock | UI the radio's Settings | Sits outside `/radio/`, unlike its sibling |
+| `GET`/`PUT /api/v1/radio/crystal`, `POST …/calibrate` | Crystal correction: applied, tracked, calibrated | UI the radio's Settings, Crystal card (then pushed on `/ws/live`) | The stored calibration is only in `/radio` `state.crystal` |
+| `PUT /api/v1/radio/recording` | Any of: recording on/off, every call or the marked talkgroups' (`every_call`), store, limits | UI the Scanner's Settings and Now's bar: the same choice (Off, Marked, Every call); the Settings card's limits | — |
+| `PUT /api/v1/radio/packet_data` | Packet data followed or not (`follow`); the live site follows the change at once | UI the Scanner's Settings | New in 090; see "What a code review may change" |
 
 ## Systems, sites, aliases, scan
 
@@ -94,7 +94,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/sites` | Every site, flattened, live one marked | Nothing | Repeats `/systems`; no single-site GET |
 | `POST /api/v1/sites/{id}/activate`, `…/stop` | Make a site live; stop it | UI Systems; `scanner_live_check.py` | — |
 | `GET /api/v1/sites/{id}/learned` | Band plan, grants per channel, encrypted talkgroups, neighbours, secondary control channels, data channel | UI Systems | Neighbours keep 4 of the 10 decoded fields (no LRA, service class, conventional, failure, valid, active) |
-| `GET /api/v1/sites/{id}/plan`, `POST …/recentre` | The receive window against the site's channels; move it now | UI Diagnostics' receive window | `{id}` must be the live site |
+| `GET /api/v1/sites/{id}/plan`, `POST …/recentre` | The receive window against the site's channels; move it now | UI the Scanner's Diagnostics, its receive window | `{id}` must be the live site |
 | `GET`/`POST /api/v1/scan`, `…/options`, `…/cancel`, `…/add` | Find systems on the air; add the ticked ones | UI Systems (the scan's state itself is pushed on `/ws/live`) | A DMR site added by a scan has no LCN plan. Results are in memory only |
 
 ## Mode and ATSC
@@ -203,18 +203,18 @@ move, with what would have to follow in the UI.
 
 | Route or field | What may change | What follows in the UI |
 |----------------|-----------------|------------------------|
-| `PUT /api/v1/radio/packet_data` `{follow}`, and `config.packet_data.follow` in `GET /api/v1/radio` | It could fold into `PUT /api/v1/radio/settings` with the call timings, or keep its own route under another name: P25 packet data's read route is still `/api/v1/data`, due to become `/api/v1/packet_data` (`DATA_MODE.md` §8). The setting is P25's but its name is generic | `api.setPacketData`, Settings' Packet data card, and the label in `js/protocols.js` |
+| `PUT /api/v1/radio/packet_data` `{follow}`, and `config.packet_data.follow` in `GET /api/v1/radio` | It could fold into `PUT /api/v1/radio/settings` with the call timings, or keep its own route under another name: P25 packet data's read route is still `/api/v1/data`, due to become `/api/v1/packet_data` (`DATA_MODE.md` §8). The setting is P25's but its name is generic | `api.setPacketData`, the Scanner's Settings' Packet data card, and the label in `js/protocols.js` |
 | `PUT …/talkgroups/{tg}`: a talkgroup with no alias of its own gets one named `TG <n>` | An alias may get to have no name, or the route may say it made one. `DELETE …/talkgroups/{tg}` removes the alias again (096) | The radio's `talkgroups` give no name for `TG <n>`, and `nameOf` in `js/aliases.js` does the same for the calls; an emptied name removes the alias when nothing else is set on it, else is sent as `TG <n>` |
 | `PUT …/talkgroups/{tg}`: `follow` (096) and `do_not_monitor` | `follow` is followed or not, whatever the system asks: where only talkgroups with a priority are followed, it gives one with none the lowest. `do_not_monitor` is still taken, and alone does not do that | The Listen switch and the bar's Skip in `views/talkgroups.js` send `follow` |
 | `PUT …/talkgroups/{tg}`: `color` (097) | The route takes a colour (`#rrggbb`, null for none). Now has no control for it: the Aliases page sets colours and groups | Rows take the alias's colour when it has one, else a colour from the talkgroup's number (`colorOf`) |
 | `GET /api/v1/systems`: each system's `aliases` | Since 096 a talkgroup's treatment comes from the radio (`talkgroups`), and the pages hold no copy of the follower's rule. The calls' rows, on Now and Activity, still find a talkgroup's alias in `systems[].aliases` for its colour, by the index's rule (the alias naming it alone, else the first range holding it) | `aliasOf` in `js/aliases.js` |
 | `/ws/live` `changed` (`what: systems`) after an alias edit | The store reads every system again, and the calls, for one talkgroup's change (the calls carry the names). Now's list itself follows the pushed `talkgroups`. A review may push the changed alias, or the system | `store.js` `readSystems` and `readCalls` |
-| `/ws/live` `changed` (`what: radio`) | The daemon announces every write under `/api/v1/radio` and `/api/v1/clock`, and no page acts on it: a packet data, gain or recording change made in another browser shows in Settings only after a reload. `PUT /api/v1/mode`, `PUT /api/v1/config` and the legacy settings route announce nothing | `js/store.js` acts on `systems` and `recordings` only; Settings reads `GET /api/v1/radio` once when it opens |
+| `/ws/live` `changed` (`what: radio`) | The daemon announces every write under `/api/v1/radio` and `/api/v1/clock`. Since 100 the settings pages act on it: a change made in another browser or by a tool shows at once, and a card with a field typed in and not saved keeps its fields. `PUT /api/v1/mode`, `PUT /api/v1/config` and the legacy settings route announce nothing | `store.radioRev` counts them; `settingsPage` in `views/settings_parts.js` reads `GET /api/v1/radio` again |
 | `/ws/live` `talkgroups` (096) | The live site's talkgroups come whole at each change (6 KB for unit A's 42): the week, which the radio reads from the history at most every 5 minutes and completes from the calls it lists, and nothing else (099). Between pushes the page keeps each one's `last_ms` and what is on the air from the calls it is pushed. A review may push one talkgroup's change alone | `talkgroupsOf` in `views/talkgroups.js` |
 | `status.live.state` `away` | It means another mode has the radio, and also the moment a mode changes. With a third mode (`data`) the shell needs to know which mode has it: `status.mode` says so today | `js/modules.js` (`scannerLine`), the shell's notice in `js/main.js`, Now's site strip |
 | `PUT /api/v1/mode` | It returns once the radio is the new mode's (seconds when a site goes live again). The values are the daemon's (`atsc`), not the UI's (`tv`). `Modes::set` assumes two modes (`DATA_MODE.md` §8) | `giveRadio` in `js/main.js`; a module's `mode` in `js/modules.js` |
 | ATSC routes outside ATSC mode | `POST /api/v1/atsc/scan` and `…/live` are refused with a message when the radio is the scanner's. Since 091 the pages change the mode first (`PUT /api/v1/mode`, after asking), then call them: two requests where a review may want one (a scan or a play that takes the radio) | `giveRadio` in `js/mode.js`, called by Watch's Play and Channels' Scan |
-| `/ws/live` `atsc_live` (091) | Live TV's whole state once a second while it changes (the codeword counts move every second while a channel plays), 40 fields of MER each time. A review may send less, or only what moved | `views/watch.js` (`want({ atsc_live: true })`) |
+| `/ws/live` `atsc_live` (091) | Live TV's whole state once a second while it changes (the codeword counts move every second while a channel plays), 40 fields of MER each time. A review may send less, or only what moved | `views/watch.js` and, since 100, TV's Diagnostics (`views/tv_diag.js`), which shows all of it (`want({ atsc_live: true })`) |
 | `POST /api/v1/atsc/live/stop` and `viewers` | The receiver has one stop for every player. Watch decides from the last pushed `viewers` whether another player is on the stream, up to a second old | `stopLive` in `views/watch.js` |
 | The kept TV scan (092) | The last finished scan comes back after a restart as `state: done` with nothing to tell it from one run since, and without its spectra (`…/scan/channel/{n}` is a 404). A review may mark it (`kept: true`), keep the spectra on the card, or let a scan of some channels add to the kept list where it now replaces it | Channels reads the 404 as "not kept across a restart"; Watch shows the scan's date in the programme's Read row |
 | `PUT /api/v1/hold` with `lane` | The site's hold and a lane's share a route and two status fields (`hold`, `lane_holds`) | Now's traffic cards |
@@ -237,7 +237,7 @@ the code. What it recommends, how large the change is, and the roadmap's step it
 | `color`, `group` | `color` in `PUT …/talkgroups/{tg}`, checked as `#rrggbb` (`group` is taken already) | small | done (097) |
 | The rule in two places | Each talkgroup with its route as the follower reads it, pushed on `/ws/live` for the live site | medium | done (096: `GET /api/v1/talkgroups`, the live site's) |
 | `changed` (`what: systems`) | Push the changed alias or system instead of having every page read all of them | small to medium | 2 |
-| `changed` (`what: radio`) | The pages act on it | small | 4 |
+| `changed` (`what: radio`) | The pages act on it | small | done (100) |
 | The bank's list | Served with the talkgroups' routes (above), not asked of the history | medium | done (096) |
 | `away` | The mode in `away`, or the pages read `status.mode` (they do) | small | 7 |
 | `PUT /mode` | Leave the mode it is in, then enter the new one, for a third mode | medium | 7 |
@@ -254,9 +254,10 @@ the code. What it recommends, how large the change is, and the roadmap's step it
 
 Found by the review and not in the table above:
 
-- **Whole-object writes:** `PUT /radio/settings` carries the scanner's call timings with the
-  history's limits, and the page echoes fields it has no control for (`traffic_chains`,
-  `every_call`). Two pages saving parts of one object overwrite each other.
+- **Whole-object writes (done in 100):** `PUT /radio/settings` carried the scanner's call
+  timings with the history's limits, and the page echoed fields it has no control for
+  (`traffic_chains`, `every_call`), so two pages saving parts of one object overwrote each
+  other. The route takes any of its parts now, and a card sends its own.
 - **`PUT …/talkgroups/{tg}`** on a talkgroup that is one of several IDs of an earlier alias
   answered 200 and changed nothing the follower reads (the index keeps the earlier alias).
   Fixed in 097: the talkgroup leaves that alias and its own takes that place, and a list that

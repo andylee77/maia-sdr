@@ -13,7 +13,7 @@ use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
 use crate::services::config::radio::{
-    Calls, Clock, CrystalTracking, Gain, GainMode, History, PacketDataFollow, RadioConfig, Recording, Storage, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+    Clock, CrystalTracking, Gain, GainMode, PacketDataFollow, RadioConfig, Recording, Storage, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
 };
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
@@ -119,40 +119,78 @@ pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recor
     Ok(Json(RecordingSet { recording: next, deleted }))
 }
 
-/// The radio settings the gain and recording endpoints do not cover.
-#[derive(Deserialize)]
+/// The radio settings the gain and recording endpoints do not cover, to change; one left out
+/// stays as it is, so each part is saved by itself.
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Settings {
+pub struct SettingsEdit {
     /// DDC presets the window planner may choose, narrowest first.
-    pub presets_allowed: Vec<String>,
-    /// Traffic lanes to run; `None` = every lane the radio core has.
-    pub traffic_chains: Option<u8>,
-    pub calls: Calls,
-    pub history: History,
+    pub presets_allowed: Option<Vec<String>>,
+    /// Traffic lanes to run; null: every lane the radio core has.
+    #[serde(default, with = "crate::api::double_option")]
+    pub traffic_chains: Option<Option<u8>>,
+    pub calls: Option<CallsEdit>,
+    pub history: Option<HistoryEdit>,
 }
 
-/// Keep the settings. The history's limits apply at once; the presets and call timings at the
-/// next site activation; the lanes at the next start.
-pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settings>) -> ApiResult<RadioConfig> {
-    if req.presets_allowed.is_empty() {
-        return Err(ApiError::bad_request("at least one preset"));
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CallsEdit {
+    pub hang_ms: Option<u64>,
+    pub end_grace_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEdit {
+    pub retention_days: Option<u32>,
+    pub sd_max_mb: Option<u64>,
+}
+
+impl SettingsEdit {
+    /// The configuration with what is given changed, or why it cannot be.
+    fn onto(self, mut c: RadioConfig) -> Result<RadioConfig, String> {
+        if let Some(presets) = self.presets_allowed {
+            if presets.is_empty() {
+                return Err("at least one preset".into());
+            }
+            for p in &presets {
+                find_preset(p).ok_or_else(|| format!("no preset {p}"))?;
+            }
+            c.presets_allowed = presets;
+        }
+        if let Some(lanes) = self.traffic_chains {
+            c.traffic_chains = lanes;
+        }
+        if let Some(calls) = self.calls {
+            c.calls.hang_ms = calls.hang_ms.unwrap_or(c.calls.hang_ms);
+            c.calls.end_grace_ms = calls.end_grace_ms.unwrap_or(c.calls.end_grace_ms);
+            if !(500..=30_000).contains(&c.calls.hang_ms) || c.calls.end_grace_ms > 10_000 {
+                return Err("hang_ms 500..=30000, end_grace_ms up to 10000".into());
+            }
+        }
+        if let Some(history) = self.history {
+            c.history.retention_days = history.retention_days.unwrap_or(c.history.retention_days);
+            c.history.sd_max_mb = history.sd_max_mb.unwrap_or(c.history.sd_max_mb);
+            if c.history.retention_days == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&c.history.sd_max_mb) {
+                return Err(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB"));
+            }
+        }
+        Ok(c)
     }
-    for p in &req.presets_allowed {
-        find_preset(p).ok_or_else(|| ApiError::bad_request(format!("no preset {p}")))?;
-    }
-    if !(500..=30_000).contains(&req.calls.hang_ms) || req.calls.end_grace_ms > 10_000 {
-        return Err(ApiError::bad_request("hang_ms 500..=30000, end_grace_ms up to 10000"));
-    }
-    if req.history.retention_days == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&req.history.sd_max_mb) {
-        return Err(ApiError::bad_request(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB")));
-    }
+}
+
+/// Keep the settings given. The history's limits apply at once; the presets and call timings at
+/// the next site activation; the lanes at the next start.
+pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<SettingsEdit>) -> ApiResult<RadioConfig> {
     let mut c = s.config.lock().await;
-    c.radio.value.presets_allowed = req.presets_allowed;
-    c.radio.value.traffic_chains = req.traffic_chains;
-    c.radio.value.calls = req.calls;
-    c.radio.value.history = req.history.clone();
+    let next = req.onto(c.radio.value.clone()).map_err(ApiError::bad_request)?;
+    let history = (next.history != c.radio.value.history).then(|| next.history.clone());
+    c.radio.value = next;
     config::save(&s.paths.radio(), &c.radio)?;
-    s.history.set_limits(&req.history);
+    if let Some(limits) = history {
+        s.history.set_limits(&limits);
+    }
     Ok(Json(c.radio.value.clone()))
 }
 
@@ -219,4 +257,34 @@ pub async fn set_time(State(s): State<Arc<AppState>>, Json(req): Json<SetTime>) 
     }
     s.clock.set(req.unix_ms, &s.log).map_err(|e| ApiError::bad_request(format!("the clock was not set: {e}")))?;
     Ok(Json(s.clock.status()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_settings_edit_changes_only_what_it_gives() {
+        let before = RadioConfig::default();
+        let edit = |json: &str| serde_json::from_str::<SettingsEdit>(json).unwrap().onto(before.clone());
+        // Nothing given: nothing changed.
+        assert_eq!(edit("{}"), Ok(before.clone()));
+        // One timing: the other, the history and the presets stay.
+        let got = edit(r#"{"calls": {"hang_ms": 4500}}"#).unwrap();
+        assert_eq!((got.calls.hang_ms, got.calls.end_grace_ms), (4500, before.calls.end_grace_ms));
+        assert_eq!((&got.history, &got.presets_allowed, got.traffic_chains), (&before.history, &before.presets_allowed, before.traffic_chains));
+        // The history's limits by themselves.
+        let got = edit(r#"{"history": {"retention_days": 30}}"#).unwrap();
+        assert_eq!((got.history.retention_days, got.history.sd_max_mb, got.calls.clone()), (30, before.history.sd_max_mb, before.calls.clone()));
+        // The lanes: a number, or null for every lane; left out, as they were.
+        let two = RadioConfig { traffic_chains: Some(2), ..before.clone() };
+        let lanes = |json: &str| serde_json::from_str::<SettingsEdit>(json).unwrap().onto(two.clone()).unwrap().traffic_chains;
+        assert_eq!((lanes(r#"{"traffic_chains": 1}"#), lanes(r#"{"traffic_chains": null}"#), lanes("{}")), (Some(1), None, Some(2)));
+        // What is given is checked against what stays.
+        for bad in [r#"{"presets_allowed": []}"#, r#"{"presets_allowed": ["none such"]}"#, r#"{"calls": {"hang_ms": 100}}"#, r#"{"calls": {"end_grace_ms": 20000}}"#, r#"{"history": {"retention_days": 0}}"#, r#"{"history": {"sd_max_mb": 1}}"#] {
+            assert!(edit(bad).is_err(), "{bad}");
+        }
+        assert!(serde_json::from_str::<SettingsEdit>(r#"{"gain": 3}"#).is_err(), "a field it has not is refused");
+        assert!(serde_json::from_str::<SettingsEdit>(r#"{"calls": {"hang": 3}}"#).is_err());
+    }
 }

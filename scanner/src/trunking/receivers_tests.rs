@@ -165,10 +165,10 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
     let offset = status.carrier_offset_hz.expect("a carrier offset");
     assert!((60.0..=180.0).contains(&offset), "carrier offset {offset} Hz");
     receivers.stop().await;
-    let records = log.since(0, 10, true);
+    let records = log.since(0, 10, true, None);
     assert_eq!(records.len(), 4);
     assert!(records.iter().all(|r| r.text.starts_with("TSBK1 NET_STS_BCAST WACN:BEE00") && r.routine && r.source == "p25"));
-    assert!(log.since(0, 10, false).is_empty(), "housekeeping only");
+    assert!(log.since(0, 10, false, None).is_empty(), "housekeeping only");
     match status.identity {
         Some(SiteIdentity::P25(id)) => assert_eq!((id.nac, id.wacn, id.system), (Some(0x8A1), Some(0xBEE00), Some(0x8A0))),
         other => panic!("{other:?}"),

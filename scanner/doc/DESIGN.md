@@ -899,8 +899,9 @@ generated, so it cannot drift. (p25-httpd's hand-written `/api/endpoints` catalo
 Same stack: plain ES modules embedded by `ui_assets.rs`, no build step, no CDN.
 
 The shell (change 090) is a module rail: a module per unit mode (Scanner, TV) with its pages as
-tabs in the header, and the tools every mode shares (Diagnostics, Settings). `js/modules.js` is
-the one table the rail, the tabs and the router are built from. Viewing a module does not move
+tabs in the header, its own Diagnostics and Settings among them (change 100), and the radio's
+own Diagnostics and Settings, which every mode shares. `js/modules.js` is the one table the
+rail, the tabs and the router are built from. Viewing a module does not move
 the radio: its pages stay readable while another module has it, under a notice that offers the
 switch.
 
@@ -909,8 +910,8 @@ switch.
 | **Now** | The at-a-glance summary, filling the screen (change 090): the talkgroup bank (followed or not, speaker, priority, name), the site strip (system and site lists, whether the control channel decodes), a card per traffic lane with the hold on the call it carries, the site's calls, and the picked call's player and details |
 | **Systems** | The scan (bands and settings, progress, a card per found system to fill in and add), then the configured systems in the same card: name, details and identity, sites with their identity, control channel, alternates and traffic channels (the configured ones and those heard on the air), all edited in place with Save; the site's receiver settings behind a button. First run opens here. |
 | **Activity** | As today, with a system/site picker that includes DMR; packet data is a P25 component |
-| **Settings** | Radio (gain, crystal, presets, clock, storage and recording), the configuration (export, import, factory reset), browser, about |
-| **Diagnostics** | The one **events box** for every protocol (CC messages off by default, calls, traffic lines), receivers (a protocol component), radio window (spectrum, coverage, manual tune), lanes, board, raw JSON |
+| **Settings** | The Scanner's (gain, presets, call timings, the history, recording, packet data) and the radio's own (the clock, the crystal, the configuration: export, import, factory reset); a card saves its own part |
+| **Diagnostics** | The Scanner's (the spectrum, the receive window, the control channel, its **events box**: every protocol's messages, calls, traffic lines), TV's (its events, the 8-VSB receiver) and the radio's own (its events, the API's routes, the board). The event log keeps each part's lines in a ring of its own (`services/events.rs`) |
 
 Protocol-specific parts are small components chosen by the site's protocol:
 

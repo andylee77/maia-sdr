@@ -19,8 +19,8 @@ for and no page has yet is marked "Still to come" in them.
 | The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
-| Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
-| Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header. A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
+| Modes | Each unit mode has its own tabs, its own Diagnostics and Settings among them (change 100), and the radio's own Diagnostics and Settings are shared: scanner (Now, Activity, Systems, Aliases), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
+| Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, the radio's own Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header, its own Diagnostics and Settings after them (Andy, 2026-11-11: "Yes, module tabs"; change 100). A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
 | Hold | Not on every row (Andy, 2026-11-10): Hold is on the tuner's card of the call on the air and in the selected talkgroup's bar, Release there and in the site bar. |
 | Now | Layout A, "tuners first" (Andy, 2026-11-11, from three drawn options; change 096): the site bar, the two tuners, the talkgroups with one selected and its controls in a bar under them, the calls with the picked call's player docked under them. Sound follows the tuner (Traffic 1 left, Traffic 2 right), and what is recorded is Off, Marked or Every call; both as drawn, and Andy's to change. |
 | TV | Watch, then Channels (change 091). Watch cycles three views (Andy, 2026-11-10): small (the channels, the picture, the signal), large (the picture across the page, the channels a strip below) and full screen with nothing over the picture. Play and Scan take the radio themselves, after asking. |
@@ -103,7 +103,7 @@ switch; one is selected, by a click or the arrow keys, and a bar holds its contr
 Record, tuner, priority, Rename), and the calls with the picked call's player docked under them.
 Everything on it is pushed, the talkgroups with how each is treated included. The header keeps
 Listen across reloads, the volume, Left / Right (Traffic 1 on the left speaker, Traffic 2 on the
-right), the leveller and "Alerts only". The control channel's counters are on Diagnostics.
+right), the leveller and "Alerts only". The control channel's counters are on the Scanner's Diagnostics.
 Still to come: an alias's colour and group, range aliases as rows of their own, and the day's
 totals in the calls' heading.
 
@@ -179,12 +179,22 @@ Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the ra
 - **Activity:** the history views. Done in change 093, filling the screen: who talks (the
   talkgroups or the radios, one picked narrowing the page to it), the totals with the airtime
   chart, the calls, the alerts or the packet data, and the picked call with its recording.
-- **Diagnostics:** the receivers, the event log and the spectrum. Done in change 094, filling
-  the screen: the spectrum, the event log (with the carriers heard and the API's routes behind
-  the same tabs), and the control channel, the receive window, the tuning and the board beside
-  them. Still to come: eye and IQ plots for every received signal.
-- **Settings:** the radio settings, and the configuration (export, import, factory reset). Done
-  in change 094 as two columns of cards, a setting a row.
+- **Diagnostics:** the receivers, the event log and the spectrum, filling the screen (change
+  094), and since change 100 a page for each part, each with its own lines of the event log:
+  - **the Scanner's,** among its tabs: the spectrum, its events (with the carriers heard behind
+    the same tabs), and the control channel, the receive window and the tuning beside them;
+  - **TV's,** among its tabs: its events, and the 8-VSB receiver beside them (its state, the
+    block's registers, its loops, what it decoded and lost);
+  - **the radio's own,** in the rail: what the radio did (its start, clock, crystal, each change
+    of mode), the API's routes, the radio and the board.
+
+  Still to come: eye and IQ plots for every received signal.
+- **Settings:** two columns of cards, a setting a row (change 094), and since change 100 a page
+  for each part. A card saves its own part and shows a change made elsewhere at once:
+  - **the Scanner's,** among its tabs: gain, the window presets, the call timings, the history,
+    recording (Off, Marked or Every call, as on Now; where and how long), packet data;
+  - **the radio's own,** in the rail: the clock, the crystal, and the configuration as a file
+    (export, import, factory reset).
 
 TV's Channels page (the TV scan's table with the picked channel beside it) is in change 094 too.
 

@@ -27,12 +27,12 @@ let current = null;
 // Opened with no address: the page moves to the radio's module once the radio says which.
 let landing = !location.hash;
 
-// The rail: the modes' modules at the top, the shared tools at the bottom. Module id -> its
-// link and its "has the radio" dot.
+// The rail: the modes' modules at the top, the radio's own diagnostics and settings at the
+// bottom. Module id -> its link and its "has the radio" dot.
 const rail = new Map();
 for (const m of MODULES) {
   const dot = h('span', { class: 'rail-dot', title: 'Has the radio', hidden: true });
-  const a = h('a', { class: 'rail-item', href: `#${m.pages[0].key}` }, icon(m.icon, 22), h('span', { class: 'rail-label' }, dot, m.label));
+  const a = h('a', { class: 'rail-item', href: `#${m.pages[0].key}`, title: m.title || null }, icon(m.icon, 22), h('span', { class: 'rail-label' }, dot, m.label));
   rail.set(m.id, { a, dot });
   $(m.mode ? 'rail-modules' : 'rail-tools').append(a);
 }
@@ -56,7 +56,8 @@ function route() {
   if (store.status) current.view.update(store);
 }
 
-// The rail's mark, the module's name and its pages' tabs.
+// The rail's mark, the module's name and its pages' tabs: the module's own diagnostics and
+// settings set apart after the rest.
 function nav() {
   const m = current.module;
   for (const [id, r] of rail) {
@@ -64,11 +65,14 @@ function nav() {
     if (id === m.id) r.a.setAttribute('aria-current', 'true');
     else r.a.removeAttribute('aria-current');
   }
-  setText($('module-title'), m.label);
+  setText($('module-title'), m.title || m.label);
   const tabs = $('tabs');
   tabs.hidden = m.pages.length < 2;
+  const firstTool = m.pages.find(p => p.tool);
   tabs.replaceChildren(...(tabs.hidden ? [] : m.pages.map(p => h('a', {
-    href: `#${p.key}`, class: p.key === current.key ? 'active' : null, 'aria-current': p.key === current.key ? 'page' : null, text: p.label,
+    href: `#${p.key}`, 'aria-current': p.key === current.key ? 'page' : null, text: p.label,
+    class: [p.key === current.key ? 'active' : '', p === firstTool ? 'tool-first' : ''].filter(Boolean).join(' ') || null,
+    title: p.tool ? `${m.label}'s own ${p.label.toLowerCase()}` : null,
   }))));
 }
 

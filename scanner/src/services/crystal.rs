@@ -315,7 +315,7 @@ impl<H: RadioHw + 'static> Crystal<H> {
                 if decoded_since.is_some_and(|t| t.elapsed() >= FIRST_CALIBRATION_AFTER) && self.deps.lease.is_normal() {
                     calibrated = true;
                     if let Err(e) = self.calibrate().await {
-                        self.deps.log.system("crystal", format!("calibration after start failed: {e:#}"));
+                        self.deps.log.radio("crystal", format!("calibration after start failed: {e:#}"));
                     }
                 }
                 continue;
@@ -368,7 +368,7 @@ impl<H: RadioHw + 'static> Crystal<H> {
                     i.tracker.moved(Instant::now());
                     i.last_decision = Some(text.clone());
                 }
-                self.deps.log.system("crystal", text);
+                self.deps.log.radio("crystal", text);
                 let saved = self.lock().saved_ppm;
                 if saved.is_none_or(|s| (hz_of(ppm, t.lo_hz) - hz_of(s, t.lo_hz)).abs() >= SAVE_STEP_HZ) {
                     self.save(ppm, &now, "tracker").await;

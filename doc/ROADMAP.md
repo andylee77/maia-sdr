@@ -86,12 +86,12 @@ What each goal needs from each layer, and where that layer stands.
 | Capability | State | For |
 |------------|-------|-----|
 | The module rail; a module is an entry in `js/modules.js`; viewing a module does not move the radio | **exists** (090) | all |
-| Scanner: Now, Activity, Systems, Aliases. TV: Watch, Channels. Tools: Diagnostics, Settings | **exists** (090 to 094, 097) | G1, G3 |
+| Scanner: Now, Activity, Systems, Aliases, its own Diagnostics and Settings. TV: Watch, Channels, its own Diagnostics. The radio's own: Diagnostics, Settings | **exists** (090 to 094, 097, 100) | G1, G3 |
 | Now as a monitoring station's front | **exists** (096: layout A, the tuners first) | G1, G2 |
 | The Aliases tab, with the RadioReference import | **exists** (097) | G1 |
 | The SDRTrunk playlist's export and its import, on Systems | **exists** (098) | G1 |
 | A system or a site added by hand | **decided**, not built | G1 |
-| Settings and Diagnostics split: the whole radio, and a part per module | **decided**; how is **open** (Q5) | G1, G3 |
+| Settings and Diagnostics split: the whole radio, and a part per module | **exists** (100: a module's own are tabs of it, the rail's two are the radio's) | G1, G3 |
 | Files: what is on the card, to download | **decided**, not built (Q6) | G1 |
 | Login, and who is signed in | not built (Q8) | G1 |
 | The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
@@ -237,11 +237,11 @@ are used, not its code.
 
 | Tool | Feature | State |
 |------|---------|-------|
-| **Diagnostics** | The spectrum, the event log, the carriers heard, the API's routes, the control channel, the receive window, the tuning, the board | **exists** (094), as one page for every mode |
-| | Split: the radio's own part (spectrum, board, tuning, the log, the routes), and each module's (the scanner's control channel, window and lanes; TV's receiver; Data's lanes) | **decided**; how is Q5 |
+| **Diagnostics** | The radio's own: its log (its start, clock, crystal, each change of mode, the configuration replaced), the API's routes, the radio and the board | **exists** (100) |
+| | Each module's, among its tabs: the scanner's spectrum, events, carriers, control channel, receive window and tuning; TV's events and its 8-VSB receiver | **exists** (100). Data's lanes come with Data |
 | | Eye and IQ plots; the spectrum, a waterfall and the plots at 20 Hz or more on a socket of their own | **idea** (below) |
-| **Settings** | Receiver, radio, clock, configuration, recording, crystal, packet data | **exists** (094), as one page |
-| | Split: the radio's own part (gain, crystal, clock, storage, network and access, the configuration), and each module's (the scanner's call timings, lanes, packet data, recording and listening defaults; TV's and Data's) | **decided**; how is Q5 |
+| **Settings** | The radio's own: the clock, the crystal, the configuration as a file | **exists** (100). Storage, the network and access come with steps 5 and 6 |
+| | Each module's, among its tabs: the scanner's gain, window presets, call timings, history, recording and packet data. A card saves its own part and follows a change made elsewhere | **exists** (100). TV has no setting yet; Data's come with Data |
 | **Files** (new) | What is on the card, and taking it away | **decided**; Q6 |
 | **Access** (new) | The password, tokens, who is signed in, the certificate | Q7 to Q10 |
 
@@ -263,7 +263,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 1 | **The structure, the code review, its clear defects** (095) | — |
 | 2 | **Now, redone:** done in 096 from layout A; its list is what was heard since 099 (Q4). Left of this step: `/ws/live` sending only what changed, the hold's two routes, older calls on a short list | Andy's use of the page. Q2 and Q3 are built as recommended, and his to change |
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
-| 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
+| 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
 | 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
@@ -325,10 +325,10 @@ Each has a recommendation first. Short answers are enough.
 
 **The tools (steps 4 to 6)**
 
-- **Q5. Where do a module's settings and diagnostics live?** Recommended: among the module's own
-  tabs (Scanner: Now, Activity, Systems, Aliases, then its Diagnostics and Settings), with the
-  rail's two tools becoming the radio's own. The alternative: the two tools stay single pages with
-  a tab per module inside.
+- **Q5. Where do a module's settings and diagnostics live?** Answered 2026-11-11: "Yes, module
+  tabs". Among the module's own tabs (Scanner: Now, Activity, Systems, Aliases, then its
+  Diagnostics and Settings), with the rail's two the radio's own. Built in 100. Not taken: the
+  two tools as single pages with a tab per module inside.
 - **Q6. How should recordings leave the card?** Recommended: from a Files page, one archive (ZIP,
   not compressed) of a date range, a talkgroup, a radio, or the locked ones, plus a command-line
   tool that does the same through the API. Also wanted, or not: a copy to a PC or NAS share on a
@@ -411,10 +411,15 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
   aborted); Systems' own copy of the systems; the scan's cards repeating the daemon's rule for
   "the same site".
 
-**Step 4, the split:** Settings is one read and cards closed over what was loaded, and saves
-whole objects. Each section needs its own read, save and re-read. Diagnostics is the scanner's:
-on TV its spectrum has no frames and three panes say "No site is live", while `atsc_live`
-carries the receiver's state that no page shows.
+**Step 4, the split:**
+
+- **Done (100):** a settings card reads what the radio holds, saves its own part
+  (`PUT /radio/settings` takes any of its parts) and reads again when the radio announces a
+  change; TV's Diagnostics shows the receiver's state `atsc_live` carries; the event log is kept
+  by part, so the radio's own lines outlast a busy control channel.
+- **Left:** lines repeated when Housekeeping is switched on and off quickly (an `events` message
+  does not say which subscription it answers); the notice on TV's pages reads wrong on its
+  Diagnostics; whether the spectrometer gives frames of a TV channel, for a spectrum there.
 
 **Step 5, Files:** a factory reset queues a delete per recording and restarts half a second
 later, so with 101,000 recordings most stay on the card while the answer counts them as removed.
@@ -424,7 +429,8 @@ Deleting by day folder, and waiting for it, belongs with the work on what is on 
 sockets, and not a name re-pointed at the unit. The missing bounds (a recordings list without a
 limit, a stalled CSV reader, sockets without a send timeout or a cap) go with it.
 
-**TV:** a cancelled scan replaces the channel list until a restart; one stream for the receiver's
+**TV:** `POST /atsc/live` answers `available: false` on a unit with the block (found in 100); a
+cancelled scan replaces the channel list until a restart; one stream for the receiver's
 life, so a player can be fed another RF channel's programme; full screen hides every failure;
 Watch between 1000 and 1359 px wide (to render and check).
 

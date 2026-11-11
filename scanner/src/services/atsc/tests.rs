@@ -127,7 +127,7 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
         assert!((c.clips_ppm.unwrap() - want).abs() < 1e-6, "{c:?}");
     }
     assert_eq!(tuner.hw().gains.lock().unwrap().as_slice(), ["slow_attack None"], "the AGC unless a gain is asked");
-    let last = log.since(0, 10, false).last().unwrap().text.clone();
+    let last = log.since(0, 10, false, None).last().unwrap().text.clone();
     assert!(last.contains("done on 6 channels: 4 8-VSB, 1 without an 8-VSB pilot"), "{last}");
     // RF 19's stretch of its window: the channel and 0.5 MHz either side, its pilot the peak.
     let sp = atsc.channel_spectrum(19).unwrap();

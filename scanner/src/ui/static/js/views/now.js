@@ -11,6 +11,7 @@ import { api } from '../api.js';
 import { refresh, boardNow } from '../store.js';
 import { mhz, pct, num, dur, bytes, unitLabel } from '../format.js';
 import { protocol } from '../protocols.js';
+import { RECORD } from '../recording.js';
 import { player } from '../audio/player.js';
 import { getPrefs, setLane, onPrefs } from '../prefs.js';
 import { tgLabel, nameOf } from '../aliases.js';
@@ -27,12 +28,6 @@ const TICK_MS = 250;
 const PHASE = { acquiring: 'Acquiring', voice: 'Voice', hang: 'Hang', ending: 'Ended' };
 // A tuner's last calls offered to play again.
 const REPLAYS = 3;
-// What is recorded, as the bar offers it: [key, on the button, what it means, what is sent].
-const RECORD = [
-  ['off', 'Off', 'No call is recorded', { enabled: false }],
-  ['marked', 'Marked', 'Only the calls of the talkgroups marked Rec are recorded', { enabled: true, every_call: false }],
-  ['every', 'Every call', 'Every followed call is recorded', { enabled: true, every_call: true }],
-];
 
 const known = v => v !== null && v !== undefined;
 const liveOf = s => {

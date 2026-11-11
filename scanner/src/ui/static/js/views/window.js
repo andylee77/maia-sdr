@@ -1,4 +1,4 @@
-// The receive window (Diagnostics): the slice of spectrum the live site is received in, against
+// The receive window (the Scanner's Diagnostics): the slice of spectrum the live site is received in, against
 // the traffic channels it grants and where the planner would put it, as a card; and the carriers
 // heard in it over the last ten minutes, as a list for the page's main pane. The radio pushes
 // both every few seconds while the page is open.

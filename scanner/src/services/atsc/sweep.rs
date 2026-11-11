@@ -86,13 +86,13 @@ impl Atsc {
     async fn keep(&self, scan: AtscScan, log: &EventLog) {
         let Some((path, writable)) = self.keep.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
         if !writable {
-            log.system("atsc", format!("TV scan {} not kept: {} belongs to a newer version", scan.id, path.display()));
+            log.tv("atsc", format!("TV scan {} not kept: {} belongs to a newer version", scan.id, path.display()));
             return;
         }
         let id = scan.id;
         let saved = tokio::task::spawn_blocking(move || kept::save(&path, &scan)).await;
         if let Err(e) = saved.map_err(anyhow::Error::from).and_then(|r| r) {
-            log.system("atsc", format!("TV scan {id} not kept: {e:#}"));
+            log.tv("atsc", format!("TV scan {id} not kept: {e:#}"));
         }
     }
 
@@ -210,7 +210,7 @@ impl Atsc {
         };
         self.spectra().clear();
         let gain = req.gain_db.map_or("the AGC".to_string(), |g| format!("{g} dB of gain"));
-        log.system("atsc", format!("TV scan {id} started over {} channels at {gain}", channels.len()));
+        log.tv("atsc", format!("TV scan {id} started over {} channels at {gain}", channels.len()));
         let me = self.clone();
         tokio::spawn(async move { me.run(id, req, radio, tuner, log).await });
         Ok(id)
@@ -242,7 +242,7 @@ impl Atsc {
             // A scan cut short or failed is not kept: the last one that finished stays.
             (summary, (d.state == "done").then(|| d.clone()))
         };
-        log.system("atsc", summary);
+        log.tv("atsc", summary);
         if let Some(scan) = finished {
             self.keep(scan, &log).await;
         }
@@ -342,7 +342,7 @@ impl Atsc {
                 }
                 Err(e) => Station { error: Some(format!("{e:#}")), ..Default::default() },
             };
-            log.system("atsc", describe(n, &station));
+            log.tv("atsc", describe(n, &station));
             self.update(|d| {
                 if let Some(c) = d.found.iter_mut().find(|c| c.number == n) {
                     c.station = Some(station);

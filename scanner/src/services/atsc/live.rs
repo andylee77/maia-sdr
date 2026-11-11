@@ -202,7 +202,7 @@ impl Live {
             let start = Start { table, step, carrier, packets: tx };
             tokio::spawn(async move { me.control(tuner, start, snaps_rx, stop).await })
         };
-        log.system("atsc", format!("live TV on RF {rf} ({:.3} MHz)", ch.center_hz() as f64 / 1e6));
+        log.tv("atsc", format!("live TV on RF {rf} ({:.3} MHz)", ch.center_hz() as f64 / 1e6));
         *self.running.lock().await = Some(Running { rf, stop, control, thread, _radio: radio });
         Ok(())
     }

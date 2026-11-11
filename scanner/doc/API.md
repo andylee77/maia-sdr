@@ -26,7 +26,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/activity/alerts` | the alert tones heard in followed calls (console warbles and beeps, two-tone pages): grouped by kind and tones, and the newest each with its call (`tg`, `unit`: the sending radio, `limit`) |
 | GET | `/api/v1/survey` | the carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame) |
 | GET | `/api/v1/spectrum` | the receive window from the wideband spectrometer (`bins`), with the control channel and lanes |
-| GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |
+| GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`; `part`: only the lines of `scanner`, `tv` or `radio`, the radio's own) |
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |
 | GET | `/api/v1/iq/control.wav` | the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left |
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
@@ -38,7 +38,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts |
 | GET | `/api/v1/radio` | radio configuration, hardware and tuning |
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
-| PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
+| PUT | `/api/v1/radio/settings` | any of: the presets the planner may use (`presets_allowed`), the traffic lanes (`traffic_chains`, null: all), the call timings (`calls`) and the history's limits (`history`); what is left out stays as it is |
 | PUT | `/api/v1/radio/clock` | where the board clock comes from: site, ntp or manual |
 | PUT | `/api/v1/radio/packet_data` | packet data followed or not (`follow`): followed, the last traffic lane of a site with a data channel waits there between calls; the live site follows the change at once |
 | GET | `/api/v1/radio/crystal` | the crystal correction: applied, calibrated and tracked |

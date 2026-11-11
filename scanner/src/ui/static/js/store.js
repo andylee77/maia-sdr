@@ -28,6 +28,9 @@ export const store = {
   scan: null,
   // ATSC mode's TV scan: its progress and the channels read.
   atsc: null,
+  // Counts the changes to the radio's settings the radio announced (made here or elsewhere): a
+  // page showing them reads them again when it moves.
+  radioRev: 0,
   connected: false,
 };
 
@@ -224,6 +227,9 @@ function receive(m) {
         readCalls();
       } else if (m.what === 'recordings') {
         readRecordings();
+      } else if (m.what === 'radio') {
+        store.radioRev += 1;
+        break;
       }
       return;
     default:

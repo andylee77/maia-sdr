@@ -1,4 +1,4 @@
-// The spectrum card (Diagnostics): the receive window from the wideband spectrometer, with the
+// The spectrum card (the Scanner's Diagnostics): the receive window from the wideband spectrometer, with the
 // control channel and the lanes marked; each frame the radio pushes while the card is open.
 
 import { h, card, setText } from '../dom.js';

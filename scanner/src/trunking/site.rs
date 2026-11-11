@@ -702,7 +702,7 @@ mod tests {
         assert!(matches!(live.state(), LiveState::Live(l) if l.system.label == "Clay County Public Safety"), "a rename shows at once");
         assert_eq!(Config::load(&paths).unwrap().state.value.live_site.as_deref(), Some("clay"));
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
-        assert!(log.since(0, 10, false)[0].text.starts_with("site clay"));
+        assert!(log.since(0, 10, false, None)[0].text.starts_with("site clay"));
         // The radio refuses the next site after the live one has stopped: the live one comes back.
         assert!(live.activate("vhf").await.is_err());
         assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));

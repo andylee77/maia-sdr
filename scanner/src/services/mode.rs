@@ -89,7 +89,7 @@ impl Modes {
                 d.live.resume(back_to).await;
             }
         }
-        d.log.system("mode", format!("{} mode", to.label()));
+        d.log.radio("mode", format!("{} mode", to.label()));
         Ok(())
     }
 }

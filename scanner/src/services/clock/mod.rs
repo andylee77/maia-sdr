@@ -73,7 +73,7 @@ impl Clock {
     }
 
     fn noted(&self, log: &EventLog, text: String) {
-        log.system("clock", text.clone());
+        log.radio("clock", text.clone());
         *lock(&self.last_set) = Some(text);
     }
 
@@ -102,7 +102,7 @@ impl Clock {
             let now_source = config.lock().await.radio.value.clock.source;
             if source != Some(now_source) {
                 if source.is_some() {
-                    log.system("clock", format!("clock source: {}", source_name(now_source)));
+                    log.radio("clock", format!("clock source: {}", source_name(now_source)));
                 }
                 source = Some(now_source);
                 *lock(&self.source) = now_source;

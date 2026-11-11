@@ -67,7 +67,7 @@ pub async fn import(State(s): State<Arc<AppState>>, Json(doc): Json<ConfigDoc>) 
         }
     };
     config::forget_sites(&s.paths, &out.removed_sites);
-    s.log.system("config", format!("configuration imported: {} systems, {} sites, {} aliases; restarting", out.systems, out.sites, out.aliases));
+    s.log.radio("config", format!("configuration imported: {} systems, {} sites, {} aliases; restarting", out.systems, out.sites, out.aliases));
     restart_soon(&s, lease);
     Ok(Json(out))
 }
@@ -96,7 +96,7 @@ pub async fn factory_reset(State(s): State<Arc<AppState>>) -> ApiResult<Reset> {
     };
     config::forget_sites(&s.paths, &gone);
     crate::services::atsc::kept::forget(&s.paths.tv_scan());
-    s.log.system("config", format!("factory reset: {} sites, {recordings} recordings and {calls} calls removed; restarting", gone.len()));
+    s.log.radio("config", format!("factory reset: {} sites, {recordings} recordings and {calls} calls removed; restarting", gone.len()));
     restart_soon(&s, lease);
     Ok(Json(Reset { sites: gone.len(), recordings, calls, restarting: true }))
 }

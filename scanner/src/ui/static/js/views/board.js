@@ -1,4 +1,4 @@
-// The board card (Diagnostics): what the hardware holds now, as the radio reads it back every few
+// The board card (the radio's Diagnostics): what the hardware holds now, as the radio reads it back every few
 // seconds: the AD9361 (LO, gain, RSSI), the radio core's lanes (NCO offset, packets, tag), its
 // lane ring and the packets each lane delivered.
 

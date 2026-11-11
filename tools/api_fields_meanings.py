@@ -656,7 +656,8 @@ ROUTES: dict[str, list] = {
         ("events[]", "object", "One event."),
         ("events[].seq", "number", "Its sequence number (ask for those after it next)."),
         ("events[].unix_ms", "number", "When."),
-        ("events[].source", "string", "`p25`, `dmr` (a message) or `system` (the scanner)."),
+        ("events[].part", "string", "Whose line it is: `scanner`, `tv` or `radio` (the radio's own: its start, clock, crystal, mode, the configuration replaced). `part=` asks for one."),
+        ("events[].source", "string", "`p25`, `dmr` (a control channel message) or `system` (what the radio or a service did)."),
         ("events[].class", "string", "The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...)."),
         ("events[].text", "string", "The event."),
         ("events[].routine", "bool", "Housekeeping (left out unless `routine=true`)."),
@@ -1244,7 +1245,7 @@ NOT_JSON: dict[str, str] = {
         "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
         "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
-        "| `events` | `events` (as `GET /api/v1/events`' `events`) | As the event log grows past `after` (housekeeping too with `routine`). |\n"
+        "| `events` | `events` (as `GET /api/v1/events`' `events`) | As the event log grows past `after` (housekeeping too with `routine`; one part's lines with `part`). |\n"
         "| `radio` | `radio` (as `GET /api/v1/radio`) | Every 3 s. |\n"
         "| `window` | `window`: `plan` (as `GET /api/v1/sites/{id}/plan`, null with no site live) and `survey` (as `GET /api/v1/survey`) | Every 5 s. |\n"
         "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |"

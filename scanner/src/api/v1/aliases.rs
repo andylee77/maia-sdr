@@ -86,10 +86,10 @@ pub struct TalkgroupEdit {
     pub name: Option<String>,
     pub group: Option<String>,
     /// `#rrggbb`; null takes the colour away.
-    #[serde(default, with = "double_option")]
+    #[serde(default, with = "crate::api::double_option")]
     pub color: Option<Option<String>>,
     /// 1 (highest) to 100; null takes the priority away.
-    #[serde(default, with = "double_option")]
+    #[serde(default, with = "crate::api::double_option")]
     pub priority: Option<Option<u8>>,
     pub do_not_monitor: Option<bool>,
     /// Followed or not, whatever the system asks of a followed talkgroup: where only those with
@@ -211,15 +211,6 @@ async fn edit(s: &AppState, id: &str, f: impl FnOnce(&mut System) -> Result<(), 
     };
     s.live.aliases_changed().await;
     Ok(out)
-}
-
-/// `null` and a missing field apart: a missing field is `None`, `null` is `Some(None)`.
-mod double_option {
-    use serde::{Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
-        Option::<T>::deserialize(d).map(Some)
-    }
 }
 
 #[cfg(test)]

@@ -12,9 +12,12 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/096_now_tuners_first.md`). Step 3 is built: the Aliases page with the
   RadioReference import (097, `doc/changes/097_aliases_page.md`) and SDRTrunk's playlist, in and
   out, on Systems (098, `doc/changes/098_sdrtrunk_playlist.md`). Now lists the talkgroups heard
-  in the last week and nothing else (099, Andy's answer to the roadmap's Q4). Step 4 is the
-  Settings and Diagnostics split. 095's review of the UI and its API:
-  `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by step).
+  in the last week and nothing else (099, Andy's answer to the roadmap's Q4). Step 4 is built:
+  Settings and Diagnostics are split into the radio's own (the rail's two) and each module's
+  (tabs of it), with the event log kept by part (100,
+  `doc/changes/100_settings_diagnostics_split.md`). Step 5 is Files (Q6). 095's review of the UI
+  and its API: `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
+  step).
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
   is in; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bake D (change 085,
@@ -38,9 +41,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/093_activity_systems.md`), and Channels, Diagnostics and Settings (094,
   `doc/changes/094_channels_diagnostics_settings.md`): every page is in the rail's layout.
   Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`, `scanner_pages.mjs`,
-  `aliases_page.mjs`, `playlist_page.mjs`, `tool_pages.mjs` and `tv_watch.mjs`. `now_rail.mjs`'s
-  writes need a talkgroup the daemon has heard: run `python runs/ui_check/seed_heard.py` before
-  the PC daemon starts.
+  `aliases_page.mjs`, `playlist_page.mjs`, `tool_pages.mjs` (the modules' and the radio's
+  Diagnostics and Settings, 100) and `tv_watch.mjs`; on a unit, `tv_diag_live.mjs` (it takes the
+  radio for live TV, then gives it back). `now_rail.mjs`'s writes need a talkgroup the daemon
+  has heard: run `python runs/ui_check/seed_heard.py` before the PC daemon starts.
 
 ## Layout
 

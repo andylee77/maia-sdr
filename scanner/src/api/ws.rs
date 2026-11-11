@@ -32,6 +32,7 @@ use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
 use crate::radio::lane::Lane;
 use crate::services::config::aliases::Side;
+use crate::services::events::Part;
 use crate::services::notices::Notice;
 
 /// How often `/ws/live` sends the status (its counters change every second).
@@ -189,6 +190,9 @@ struct EventsWant {
     /// Housekeeping lines too.
     #[serde(default)]
     routine: bool,
+    /// One part's lines (`scanner`, `tv`, `radio`); every part's without it.
+    #[serde(default)]
+    part: Option<Part>,
 }
 
 impl Wants {
@@ -224,7 +228,7 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         }
     }
     if let Some(e) = w.events.as_mut() {
-        let lines = s.log.since(e.after, EVENTS_MAX, e.routine);
+        let lines = s.log.since(e.after, EVENTS_MAX, e.routine, e.part);
         if let Some(last) = lines.last() {
             e.after = last.seq;
             out.push(message("events", "events", lines));

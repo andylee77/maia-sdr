@@ -51,7 +51,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let config = Arc::new(Mutex::new(config));
     let lease = RadioLease::default();
     let log = Arc::new(EventLog::default());
-    log.system("start", format!("scanner {} started", version::BUILD_TAG));
+    log.radio("start", format!("scanner {} started", version::BUILD_TAG));
     let receivers = Arc::new(Receivers::new(log.clone()));
     let clock = Arc::new(Clock::default());
     receivers.set_clock(clock.clone());

@@ -5,6 +5,27 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 100: Settings and Diagnostics, the radio's and each module's
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's step 4. Asked where a module's settings and diagnostics live (Q5), Andy
+  answered "Yes, module tabs". Record: `doc/changes/100_settings_diagnostics_split.md`.
+- **The pages:** the Scanner has its own Diagnostics (the spectrum, its events and the carriers,
+  the control channel, the receive window, the tuning) and Settings (gain, window presets, call
+  timings, the history, recording, packet data) among its tabs; TV has its own Diagnostics (its
+  events, the 8-VSB receiver's state, registers, loops and counts). The rail's two are the
+  radio's own: its log, the API's routes, the radio and the board; the clock, the crystal and
+  the configuration as a file.
+- **A settings card saves its own part** and follows a change made elsewhere:
+  `PUT /api/v1/radio/settings` takes any of its parts and leaves the rest, and the pages read
+  the settings again when the radio announces a change.
+- **The event log is kept by part** (the scanner's, TV's, the radio's own), each in a ring of
+  its own, after unit A's one ring was found to span nine minutes on Clay County. Each line
+  carries `part`; `GET /api/v1/events` and the `events` feed on `/ws/live` take it.
+- **Recording's setting** is the choice Now has (Off, Marked, Every call).
+
 ## [2026-11-11] 099: Now lists what was heard
 
 **Branch:** fishball-p25 (local)

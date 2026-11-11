@@ -102,7 +102,7 @@ export function protocol(name) {
   return REGISTRY[name] || UNKNOWN;
 }
 
-// The packet data setting (Settings): the protocol whose sites announce a data channel.
+// The packet data setting (the Scanner's Settings): the protocol whose sites announce a data channel.
 export const packetDataSetting = {
   label: 'Follow P25 data traffic',
   note: 'At a P25 site with two traffic channels, the second waits on the site\'s data channel between calls, and the packet data it reads there is listed in Activity. Off: it waits for voice only, and no lane goes to the data channel. A change applies at once.',

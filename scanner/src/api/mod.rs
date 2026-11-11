@@ -102,7 +102,7 @@ routes! {
     get "/api/v1/activity/alerts" => v1::activity::alerts, "the alert tones heard in followed calls (console warbles and beeps, two-tone pages): grouped by kind and tones, and the newest each with its call (`tg`, `unit`: the sending radio, `limit`)";
     get "/api/v1/survey" => v1::spectrum::survey, "the carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame)";
     get "/api/v1/spectrum" => v1::spectrum::get, "the receive window from the wideband spectrometer (`bins`), with the control channel and lanes";
-    get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
+    get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`; `part`: only the lines of `scanner`, `tv` or `radio`, the radio's own)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";
     get "/api/v1/iq/control.wav" => v1::iq::control, "the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left";
     get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
@@ -114,7 +114,7 @@ routes! {
     post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
-    put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
+    put "/api/v1/radio/settings" => v1::radio::put_settings, "any of: the presets the planner may use (`presets_allowed`), the traffic lanes (`traffic_chains`, null: all), the call timings (`calls`) and the history's limits (`history`); what is left out stays as it is";
     put "/api/v1/radio/clock" => v1::radio::put_clock, "where the board clock comes from: site, ntp or manual";
     put "/api/v1/radio/packet_data" => v1::radio::put_packet_data, "packet data followed or not (`follow`): followed, the last traffic lane of a site with a data channel waits there between calls; the live site follows the change at once";
     get "/api/v1/radio/crystal" => v1::radio::crystal, "the crystal correction: applied, calibrated and tracked";
@@ -209,6 +209,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), announce_writes))
         .layer(middleware::from_fn(same_origin_writes))
         .with_state(state)
+}
+
+/// For a field of an edit that may be taken away: `null` and a missing field apart. A missing
+/// field is `None` (with `#[serde(default)]`), `null` is `Some(None)`.
+pub(crate) mod double_option {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+        Option::<T>::deserialize(d).map(Some)
+    }
 }
 
 /// The part of the configuration a write to `path` changes, as `/ws/live` names it.
