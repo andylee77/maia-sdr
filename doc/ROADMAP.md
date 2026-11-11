@@ -271,7 +271,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
-| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token. To do: HTTPS as the one way in and its certificate (Q9), `iiod`'s switch (Q10) | tezuka_fw's certificate script; SSH is Andy's to say; the bench reading `/api/v1` so the legacy routes can go |
+| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds. To do: HTTPS as the one way in and its certificate (Q9), `iiod`'s switch (Q10) | Andy's word on what 103 found: a new CA whose key stays on the unit, the tools on HTTPS; `iiod` and the USB gadget, and the bench's use of it. SSH is his to say. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
@@ -349,10 +349,17 @@ Each has a recommendation first. Short answers are enough.
 - **Q9. Does plain HTTP stay?** Answered 2026-11-11 ("Yes, as recommended"): once a password is
   set, port 8080 only sends the browser to HTTPS, and the certificate is remade when the unit's
   address changes. The browser warns once unless the unit's CA is installed on the PC. Not built
-  yet.
+  yet, and a question came of it (103): the firmware deletes its CA's key, so remaking the
+  certificate takes a new CA whose key is kept on the unit (recommended: on the flash, readable
+  by root alone, the CA limited to private addresses and the unit's own names), and the tools
+  and the bench then speak HTTPS and trust that CA.
 - **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Answered 2026-11-11
   ("Yes, as recommended"): off unless a switch in Settings turns it on (SDR++ or SDRTrunk using
-  the board as a tuner need it). Not built yet. **Still open:** SSH, keys only or as it is?
+  the board as a tuner need it). Not built yet, and a question came of it (103): `iiod` is the
+  USB gadget's own daemon and the bench reaches it over the network, so "off" stops IIO over
+  USB too and takes a change to the gadget's script and to the bench (recommended: the gadget
+  built without its IIO function while the switch is off, and the bench switching it on with its
+  token). **Still open:** SSH, keys only or as it is?
 
 **Modes (steps 7 and 8)**
 
@@ -441,10 +448,21 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
   listing reads the whole list of recordings for each answer; a TV recording's file has no byte
   ranges.
 
-**Step 6, Access** (102 closed the sockets to pages of another origin and to a name re-pointed
-at the unit; the bounds are left): the origin check covers writes over HTTP and, since 095, HTTPS; not the three
-sockets, and not a name re-pointed at the unit. The missing bounds (a recordings list without a
-limit, a stalled CSV reader, sockets without a send timeout or a cap) go with it.
+**Step 6, Access:**
+
+- **Done (102):** the sockets are closed to pages of another origin, and the unit to a name
+  re-pointed at it.
+- **Done (103), the bounds:** the recordings' list has a limit; a stalled CSV reader and a
+  stalled download are ended after a minute; a socket whose client takes nothing is closed
+  after ten seconds, and at most 64 are open.
+- **Found (103), for Q9:** the firmware's certificate script deletes its CA's key at first boot,
+  so a certificate cannot be remade from that CA. Remaking it when the address changes takes a
+  new CA whose key stays on the unit; and once port 8080 only redirects, every tool and the
+  bench must speak HTTPS and trust it (they all use `http://<unit>:8080`).
+- **Found (103), for Q10:** `iiod` is the USB gadget's FunctionFS daemon, started in `S23udc`.
+  Stopping it can take the gadget down, the USB network with it (unit B is reached that way);
+  the unit has no firewall and `iiod` no option to serve USB alone; and the bench reaches each
+  unit's `iiod` over the network.
 
 **TV:** `POST /atsc/live` answers `available: false` on a unit with the block (found in 100); a
 cancelled scan replaces the channel list until a restart; one stream for the receiver's

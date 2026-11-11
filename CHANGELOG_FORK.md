@@ -5,6 +5,23 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 103: Bounds on what a stalled or greedy client can hold
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the bounds 095's review listed for step 6, and one 101 added: a download's client
+  that stopped reading held the one download's place for good. Record:
+  `doc/changes/103_bounds.md`.
+- **A download and the history's CSV export end** when their client takes nothing for a minute.
+- **A socket is closed** when its client takes nothing for ten seconds, and at most 64 are open
+  at once.
+- **`GET /api/v1/recordings`** lists 200 recordings when no `limit` is given, 2,000 at most
+  (it listed all 101,667 of unit A's).
+- **Q9 and Q10 wait for Andy:** the firmware deletes its CA's key, so a certificate cannot be
+  remade from it; and `iiod` is the USB gadget's own daemon, which the bench also reaches over
+  the network. The record says what each then takes.
+
 ## [2026-11-11] 102: Access: a password, two levels, tokens, and a guard on every door
 
 **Branch:** fishball-p25 (local)

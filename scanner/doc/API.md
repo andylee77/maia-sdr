@@ -56,7 +56,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/radio/crystal/calibrate` | measure the crystal correction on the live control channel now (about 7 s) |
 | POST | `/api/v1/clock` | set the board clock (`unix_ms`, a browser's time) |
 | PUT | `/api/v1/radio/recording` | any of: recording on/off (`enabled`), every followed call or only those of talkgroups marked record (`every_call`), where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps |
-| GET | `/api/v1/recordings` | recordings newest first (`limit`, `site`), with the stores' state |
+| GET | `/api/v1/recordings` | recordings newest first (`limit`: 200 when not given, 2,000 at most; `site`), with the listed site's total and the stores' state; `/api/v1/files` has them by span of time and as archives |
 | DELETE | `/api/v1/recordings` | delete every recording of `store` (sd, ram or all) |
 | GET | `/api/v1/recordings/{id}` | one recording's WAV (`{id}` or `{id}.wav`; byte ranges) |
 | DELETE | `/api/v1/recordings/{id}` | delete one recording |

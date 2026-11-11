@@ -134,7 +134,7 @@ routes! {
     post "/api/v1/radio/crystal/calibrate" => v1::radio::calibrate_crystal, "measure the crystal correction on the live control channel now (about 7 s)";
     post "/api/v1/clock" => v1::radio::set_time, "set the board clock (`unix_ms`, a browser's time)";
     put "/api/v1/radio/recording" => v1::radio::put_recording, "any of: recording on/off (`enabled`), every followed call or only those of talkgroups marked record (`every_call`), where new recordings go, how long the card keeps them (locked ones longer), its share of the card, files a day folder, the count RAM keeps";
-    get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
+    get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`: 200 when not given, 2,000 at most; `site`), with the listed site's total and the stores' state; `/api/v1/files` has them by span of time and as archives";
     delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";
     get "/api/v1/recordings/{id}" => v1::recordings::file, "one recording's WAV (`{id}` or `{id}.wav`; byte ranges)";
     delete "/api/v1/recordings/{id}" => v1::recordings::delete, "delete one recording";

@@ -20,8 +20,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/101_files.md`; `tools/scanner_files.py` from the command line). Step 6, Access,
   is begun: a password, an administrator and a listener, tokens, and a guard on every route and
   socket (102, `doc/changes/102_access.md`). A unit is open until its administrator's password
-  is set; unit A's is Andy's to set. Left of step 6: HTTPS as the one way in and its certificate
-  (Q9), `iiod`'s switch (Q10). 095's review of the UI and its API:
+  is set; unit A's is Andy's to set. The bounds on stalled clients are in (103,
+  `doc/changes/103_bounds.md`). Left of step 6, each waiting for Andy's word on what 103 found:
+  HTTPS as the one way in and its certificate (Q9: the firmware deletes its CA's key), `iiod`'s
+  switch (Q10: it is the USB gadget's daemon, and the bench uses it). 095's review of the UI and
+  its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
@@ -54,6 +57,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `access_api.py` and `access_page.mjs` set passwords, so they run against the PC daemon only
   and leave it open; never set a password on a unit. A tool or check reaches a unit that has a
   password with a token in `SCANNER_TOKEN` (`tools/scanner_token.py`, `runs/ui_check/unit.mjs`).
+  The bounds (103): `bounds_api.py` against the PC daemon (`--slow` holds a download a minute).
 
 ## Layout
 

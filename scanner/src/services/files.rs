@@ -4,14 +4,15 @@
 //!
 //! One download runs at a time. It is made on a thread of its own, below the receivers'
 //! priority, and its bytes are handed to the response as the client takes them: a recording is
-//! read when its turn comes, and nothing is kept of an archive but its directory.
+//! read when its turn comes, and nothing is kept of an archive but its directory. A client that
+//! leaves ends it, and so does one that takes nothing for a minute: the next download can start.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -20,6 +21,7 @@ use crate::services::config::aliases::AliasIndex;
 use crate::services::events::EventLog;
 use crate::services::history::store::Store as HistoryStore;
 use crate::services::recordings::{storage, Recording};
+use crate::util::handoff::{hand, STALL};
 use crate::util::time::{iso_utc, unix_ms, utc_date};
 use crate::util::zip::ZipWriter;
 
@@ -251,6 +253,8 @@ pub enum Refused {
 pub struct Files {
     running: Mutex<Option<Arc<Running>>>,
     log: Arc<EventLog>,
+    /// A client that takes nothing for this long has its download ended.
+    stall: Duration,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -276,7 +280,7 @@ impl Drop for Slot {
             if self.run.complete.load(Ordering::Relaxed) {
                 format!("{} sent: {} file(s), {mb:.1} MB in {secs:.0} s{left_out}", d.name, d.files_done)
             } else {
-                format!("{} stopped after {} of {} file(s), {mb:.1} MB in {secs:.0} s: the client left or a read failed{left_out}", d.name, d.files_done, d.files)
+                format!("{} stopped after {} of {} file(s), {mb:.1} MB in {secs:.0} s: the client left or stalled, or a read failed{left_out}", d.name, d.files_done, d.files)
             },
         );
     }
@@ -292,11 +296,11 @@ fn below_the_receivers() {
 }
 
 /// Send `path` as it is. False when it ended short.
-fn send_file(run: &Running, path: &Path, tx: &mpsc::Sender<std::io::Result<Vec<u8>>>) -> bool {
+fn send_file(run: &Running, path: &Path, tx: &mpsc::Sender<std::io::Result<Vec<u8>>>, stall: Duration) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            let _ = tx.blocking_send(Err(e));
+            hand(tx, Err(e), stall);
             return false;
         }
     };
@@ -306,13 +310,13 @@ fn send_file(run: &Running, path: &Path, tx: &mpsc::Sender<std::io::Result<Vec<u
             Ok(0) => return true,
             Ok(n) => {
                 buf.truncate(n);
-                if tx.blocking_send(Ok(buf)).is_err() {
+                if !hand(tx, Ok(buf), stall) {
                     return false;
                 }
                 run.bytes_done.fetch_add(n as u64, Ordering::Relaxed);
             }
             Err(e) => {
-                let _ = tx.blocking_send(Err(e));
+                hand(tx, Err(e), stall);
                 return false;
             }
         }
@@ -321,7 +325,7 @@ fn send_file(run: &Running, path: &Path, tx: &mpsc::Sender<std::io::Result<Vec<u
 
 /// Make and send the archive: each recording under its header, then the table of them, then the
 /// directory. A recording that cannot be read any more is left out of both.
-fn send_archive(run: &Running, picked: &[Picked], names: &Indexes, tx: &mpsc::Sender<std::io::Result<Vec<u8>>>) -> bool {
+fn send_archive(run: &Running, picked: &[Picked], names: &Indexes, tx: &mpsc::Sender<std::io::Result<Vec<u8>>>, stall: Duration) -> bool {
     let mut zip = ZipWriter::new();
     let mut index = String::from(INDEX_HEADER);
     for p in picked {
@@ -336,7 +340,7 @@ fn send_archive(run: &Running, picked: &[Picked], names: &Indexes, tx: &mpsc::Se
         };
         let n = data.len();
         index.push_str(&index_line(p, &entry, n, names));
-        if tx.blocking_send(Ok(head)).is_err() || tx.blocking_send(Ok(data)).is_err() {
+        if !hand(tx, Ok(head), stall) || !hand(tx, Ok(data), stall) {
             return false;
         }
         run.files_done.fetch_add(1, Ordering::Relaxed);
@@ -344,7 +348,7 @@ fn send_archive(run: &Running, picked: &[Picked], names: &Indexes, tx: &mpsc::Se
     }
     let index = index.into_bytes();
     let Some(head) = zip.file(INDEX, unix_ms() / 1000, &index) else { return false };
-    tx.blocking_send(Ok(head)).is_ok() && tx.blocking_send(Ok(index)).is_ok() && tx.blocking_send(Ok(zip.finish())).is_ok()
+    hand(tx, Ok(head), stall) && hand(tx, Ok(index), stall) && hand(tx, Ok(zip.finish()), stall)
 }
 
 /// Where the history's copy is made: beside the database.
@@ -368,7 +372,7 @@ impl Drop for Copy {
 
 impl Files {
     pub fn new(log: Arc<EventLog>) -> Arc<Files> {
-        Arc::new(Files { running: Mutex::new(None), log })
+        Arc::new(Files { running: Mutex::new(None), log, stall: STALL })
     }
 
     /// The download running, if one is.
@@ -414,7 +418,8 @@ impl Files {
     pub fn recordings(self: &Arc<Self>, picked: Vec<Picked>, bytes: u64, names: Indexes, name: String) -> Result<Chunks, Refused> {
         let slot = self.begin("recordings", name, picked.len() as u64, bytes)?;
         let (tx, rx) = mpsc::channel(AHEAD);
-        Self::spawn(slot, move |run| send_archive(run, &picked, &names, &tx))?;
+        let stall = self.stall;
+        Self::spawn(slot, move |run| send_archive(run, &picked, &names, &tx, stall))?;
         Ok(rx)
     }
 
@@ -423,8 +428,9 @@ impl Files {
         let bytes = std::fs::metadata(&path).map_err(|e| Refused::Failed(format!("{name}: {e}")))?.len();
         let slot = self.begin(what, name, 1, bytes)?;
         let (tx, rx) = mpsc::channel(AHEAD);
+        let stall = self.stall;
         Self::spawn(slot, move |run| {
-            let sent = send_file(run, &path, &tx);
+            let sent = send_file(run, &path, &tx, stall);
             run.files_done.fetch_add(u64::from(sent), Ordering::Relaxed);
             sent
         })?;
@@ -445,6 +451,7 @@ impl Files {
         slot.run.copying.store(true, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(AHEAD);
         let (ready, made) = oneshot::channel::<Result<u64, String>>();
+        let stall = self.stall;
         Self::spawn(slot, move |run| {
             let copy = Copy(copy);
             let made = store.copy_to(&copy.0).map_err(|e| format!("copying the history: {e}"));
@@ -457,7 +464,7 @@ impl Files {
             if ready.send(made).is_err() || !ok {
                 return false;
             }
-            let sent = send_file(run, &copy.0, &tx);
+            let sent = send_file(run, &copy.0, &tx, stall);
             run.files_done.fetch_add(u64::from(sent), Ordering::Relaxed);
             sent
         })?;
@@ -563,6 +570,22 @@ mod tests {
     fn service() -> (Arc<Files>, Arc<EventLog>) {
         let log = Arc::new(EventLog::default());
         (Files::new(log.clone()), log)
+    }
+
+    #[tokio::test]
+    async fn a_client_that_stalls_gives_the_place_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rf19.ts");
+        std::fs::write(&path, vec![0u8; 12 * CHUNK]).unwrap();
+        let log = Arc::new(EventLog::default());
+        let files = Arc::new(Files { running: Mutex::new(None), log: log.clone(), stall: Duration::from_millis(100) });
+        // The client holds the download and reads nothing of it.
+        let (_, chunks) = files.file("tv", path.clone(), "rf19.ts".into()).unwrap();
+        ended(&files).await;
+        let line = log.since(0, 10, false, None).pop().unwrap().text;
+        assert!(line.starts_with("rf19.ts stopped after 0 of 1 file(s)") && line.contains("stalled"), "{line}");
+        assert!(files.file("tv", path, "rf19.ts".into()).is_ok(), "the next download starts");
+        drop(chunks);
     }
 
     async fn all(mut chunks: Chunks) -> std::io::Result<Vec<u8>> {

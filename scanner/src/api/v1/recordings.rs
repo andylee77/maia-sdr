@@ -14,8 +14,13 @@ use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::services::recordings::{LockError, Recording, Store, Summary};
 
+/// Recordings listed when no `limit` is given, and the most one answer lists.
+const LIST_DEFAULT: usize = 200;
+const LIST_MAX: usize = 2000;
+
 #[derive(Deserialize)]
 pub struct ListQuery {
+    /// How many, newest first: 200 when none is given, 2,000 at most.
     pub limit: Option<usize>,
     /// One site's recordings ("" = those made before sites were kept); all when absent.
     pub site: Option<String>,
@@ -29,7 +34,7 @@ pub struct List {
 }
 
 pub async fn list(State(s): State<Arc<AppState>>, Query(q): Query<ListQuery>) -> Json<List> {
-    let (items, total) = s.recordings.list(q.site.as_deref(), q.limit.unwrap_or(usize::MAX));
+    let (items, total) = s.recordings.list(q.site.as_deref(), q.limit.unwrap_or(LIST_DEFAULT).min(LIST_MAX));
     Json(List { total, items, storage: s.recordings.summary() })
 }
 

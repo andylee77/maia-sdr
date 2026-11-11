@@ -1,4 +1,5 @@
-//! The WebSockets.
+//! The WebSockets. At most 64 are open at once, and one whose client takes nothing for ten
+//! seconds is closed: a page that hangs holds no task and no place.
 //!
 //! - `/ws/live`: the radio's state as it changes (below).
 //! - `/ws/events`: the notices as they are.
@@ -13,18 +14,20 @@
 //!   that falls behind gets `{"type":"lag","skipped"}` and stays connected.
 
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query, State};
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::api::access::Shown;
+use crate::api::ApiError;
 use crate::api::v1;
 use crate::api::v1::calls::{attach, named_alerts, NamedCall, Names};
 use crate::api::v1::status::status;
@@ -38,6 +41,38 @@ use crate::services::notices::Notice;
 
 /// How often `/ws/live` sends the status (its counters change every second).
 const LIVE_TICK: Duration = Duration::from_secs(1);
+/// A client that takes nothing for this long is gone: its socket is closed.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Sockets open at once (a page holds one, and one more while it listens).
+const MAX_SOCKETS: usize = 64;
+
+static OPEN: AtomicUsize = AtomicUsize::new(0);
+
+/// An open socket's place among the most allowed, given up when its task ends.
+struct Place;
+
+impl Place {
+    fn take() -> Option<Place> {
+        OPEN.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n < MAX_SOCKETS).then_some(n + 1)).ok().map(|_| Place)
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        OPEN.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn too_many() -> Response {
+    ApiError { status: StatusCode::SERVICE_UNAVAILABLE, message: format!("{MAX_SOCKETS} sockets are open, the most at once: close a page") }.into_response()
+}
+
+type Out = futures_util::stream::SplitSink<WebSocket, Message>;
+
+/// Send a frame. False when the client is gone, or took nothing for `SEND_TIMEOUT`.
+async fn send(out: &mut Out, frame: Message) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, out.send(frame)).await, Ok(Ok(())))
+}
 
 #[derive(serde::Deserialize)]
 pub struct AudioParams {
@@ -45,9 +80,13 @@ pub struct AudioParams {
     pub v: Option<u8>,
 }
 
-pub async fn audio(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>, Query(p): Query<AudioParams>) -> impl IntoResponse {
+pub async fn audio(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>, Query(p): Query<AudioParams>) -> Response {
+    let Some(place) = Place::take() else { return too_many() };
     let tagged = p.v == Some(2);
-    ws.on_upgrade(move |socket| stream(socket, s, tagged, shown))
+    ws.on_upgrade(move |socket| async move {
+        let _place = place;
+        stream(socket, s, tagged, shown).await
+    })
 }
 
 struct Listener(Arc<AppState>);
@@ -79,7 +118,7 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool, shown: Shown)
                             "type": "meta", "lane": li, "tg": c.tg, "src": c.source.unwrap_or(0), "call_id": c.call,
                             "speaker": c.speaker,
                         });
-                        if out.send(Message::Text(meta.to_string().into())).await.is_err() {
+                        if !send(&mut out, Message::Text(meta.to_string().into())).await {
                             break;
                         }
                     }
@@ -89,17 +128,19 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool, shown: Shown)
                             "type": "alert", "lane": li, "tg": c.tg, "call_id": c.call, "seq": a.seq, "kind": a.kind,
                             "tones_hz": a.tones_hz, "offset_ms": a.offset_ms,
                         });
-                        if out.send(Message::Text(alert.to_string().into())).await.is_err() {
+                        if !send(&mut out, Message::Text(alert.to_string().into())).await {
                             break;
                         }
                     }
-                    if out.send(Message::Binary(audio_frame(&c, tagged).into())).await.is_err() {
+                    if !send(&mut out, Message::Binary(audio_frame(&c, tagged).into())).await {
                         break;
                     }
                 }
                 Err(RecvError::Lagged(skipped)) => {
                     let lag = serde_json::json!({ "type": "lag", "skipped": skipped });
-                    let _ = out.send(Message::Text(lag.to_string().into())).await;
+                    if !send(&mut out, Message::Text(lag.to_string().into())).await {
+                        break;
+                    }
                 }
                 Err(RecvError::Closed) => break,
             },
@@ -120,8 +161,12 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool, shown: Shown)
 
 /// `/ws/events`: a text frame per notice (`{"type":"call_opened",...}`), for pages to refresh
 /// at once; `{"type":"lag"}` when some were missed.
-pub async fn events(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| notices(socket, s, shown))
+pub async fn events(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
+    let Some(place) = Place::take() else { return too_many() };
+    ws.on_upgrade(move |socket| async move {
+        let _place = place;
+        notices(socket, s, shown).await
+    })
 }
 
 async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
@@ -141,7 +186,7 @@ async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
                     Err(RecvError::Lagged(_)) => r#"{"type":"lag"}"#.to_string(),
                     Err(RecvError::Closed) => break,
                 };
-                if out.send(Message::Text(text.into())).await.is_err() {
+                if !send(&mut out, Message::Text(text.into())).await {
                     break;
                 }
             },
@@ -163,8 +208,12 @@ async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
 /// `window`, `crystal`, `atsc_live` and `files` messages.
-pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| live_feed(socket, s, shown))
+pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
+    let Some(place) = Place::take() else { return too_many() };
+    ws.on_upgrade(move |socket| async move {
+        let _place = place;
+        live_feed(socket, s, shown).await
+    })
 }
 
 /// How often what a page asked for is looked at.
@@ -371,7 +420,7 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
     let (mut out, mut inbound) = socket.split();
     let mut names = Names::load(&s).await;
     let first = v1::talkgroups::view(&s).await;
-    if out.send(Message::Text(snapshot(&s, &names, &first).await.into())).await.is_err() {
+    if !send(&mut out, Message::Text(snapshot(&s, &names, &first).await.into())).await {
         return;
     }
     // What was sent last, to send only what changed.
@@ -488,7 +537,7 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
             }
         }
         for m in msgs {
-            if out.send(Message::Text(m.into())).await.is_err() {
+            if !send(&mut out, Message::Text(m.into())).await {
                 return;
             }
         }

@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use crate::api::v1::calls::{attach, named_alerts, stored_alerts, Dispatch, NamedAlert, NamedCall, Names};
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
+use crate::util::handoff::{hand, STALL};
 use crate::services::config::aliases::AliasIndex;
 use crate::trunking::trunk::view_of_row;
 use crate::services::history::store::{self, AlertRow, Bucket, CallRow, Range, SeriesFilter, SiteStat, Summary, HOUR_MS};
@@ -292,9 +293,10 @@ pub async fn calls(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> R
         let store = s.history.store().clone();
         let q = r.clone();
         tokio::task::spawn_blocking(move || {
-            let sent = store.export_csv(&q, f, limit, |chunk| tx.blocking_send(Ok(chunk)).is_ok());
+            // A reader that takes nothing for a minute ends the export: its thread is not held.
+            let sent = store.export_csv(&q, f, limit, |chunk| hand(&tx, Ok(chunk), STALL));
             if let Err(e) = sent {
-                let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+                hand(&tx, Err(std::io::Error::other(e.to_string())), STALL);
             }
         });
         let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) }));
