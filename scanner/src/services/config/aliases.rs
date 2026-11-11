@@ -50,7 +50,7 @@ pub struct Alias {
     pub icon: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AliasId {
     Talkgroup { value: u32 },
@@ -94,6 +94,9 @@ impl Alias {
         if self.priority.is_some_and(|p| !(1..=LOWEST_PRIORITY).contains(&p)) {
             return Err(format!("alias {}: priority is 1 to {LOWEST_PRIORITY}", self.name));
         }
+        if self.color.as_deref().is_some_and(|c| !is_color(c)) {
+            return Err(format!("alias {}: a colour is #rrggbb", self.name));
+        }
         if self.speaker == Side::Off {
             return Err(format!("alias {}: a speaker is both, left or right (do_not_monitor stops it)", self.name));
         }
@@ -106,6 +109,33 @@ impl Alias {
         }
         Ok(())
     }
+}
+
+/// `#rrggbb`.
+fn is_color(c: &str) -> bool {
+    c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A list as a whole: no talkgroup or radio is named by itself twice. The first alias to name
+/// one is the one read for it, so a second would hold settings nothing uses. (A range may hold
+/// an ID another alias names: the alias naming it is read before the range.)
+pub fn check_list(aliases: &[Alias]) -> Result<(), String> {
+    let mut named: HashMap<AliasId, &str> = HashMap::new();
+    for a in aliases {
+        for id in &a.ids {
+            let what = match id {
+                AliasId::Talkgroup { value } => format!("talkgroup {value}"),
+                AliasId::Radio { value } => format!("radio {value}"),
+                AliasId::TalkgroupRange { .. } | AliasId::RadioRange { .. } => continue,
+            };
+            match named.insert(*id, &a.name) {
+                Some(first) if first == a.name => return Err(format!("alias {first} names {what} twice")),
+                Some(first) => return Err(format!("{what} is named by {first} and by {}: one alias names an ID", a.name)),
+                None => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How a system treats talkgroups with no priority (no alias, or an alias without one), and
@@ -215,7 +245,24 @@ mod tests {
         assert!(Alias { priority: Some(101), ..ok.clone() }.check().is_err());
         assert!(Alias { speaker: Side::Off, ..ok.clone() }.check().is_err());
         assert!(Alias { name: " ".into(), ..ok.clone() }.check().is_err());
+        assert!(Alias { color: Some("#1f9d55".into()), ..ok.clone() }.check().is_ok());
+        for bad in ["red", "#1f9d5", "#1f9d5g", "1f9d55f"] {
+            assert!(Alias { color: Some(bad.into()), ..ok.clone() }.check().is_err(), "{bad}");
+        }
         assert!(Alias { ids: vec![], ..ok.clone() }.check().is_err());
         assert!(Alias { ids: vec![AliasId::TalkgroupRange { min: 5, max: 1 }], ..ok }.check().is_err());
+    }
+
+    #[test]
+    fn a_list_names_a_talkgroup_or_a_radio_by_itself_once() {
+        let range = Alias { ids: vec![AliasId::TalkgroupRange { min: 300, max: 399 }], ..Alias::talkgroup(0, "Fire, all") };
+        // A talkgroup and a radio of the same number are apart, and a range may hold a named one.
+        let ok = [Alias::talkgroup(300, "Fire"), Alias::radio(300, "Engine 3"), range.clone(), range];
+        assert_eq!(check_list(&ok), Ok(()));
+        let twice = [Alias::talkgroup(300, "Fire"), Alias::talkgroup(301, "Rescue"), Alias::talkgroup(300, "Dispatch")];
+        assert_eq!(check_list(&twice).unwrap_err(), "talkgroup 300 is named by Fire and by Dispatch: one alias names an ID");
+        let mut fire = Alias::radio(1014, "Engine 14");
+        fire.ids.push(AliasId::Radio { value: 1014 });
+        assert_eq!(check_list(&[fire]).unwrap_err(), "alias Engine 14 names radio 1014 twice");
     }
 }

@@ -189,6 +189,9 @@ impl Config {
                     problems.push(format!("system {}: {e}", sys.id));
                 }
             }
+            if let Err(e) = aliases::check_list(&sys.aliases) {
+                problems.push(format!("system {}: {e}", sys.id));
+            }
             if let Err(e) = sys.listening.check() {
                 problems.push(format!("system {}: {e}", sys.id));
             }

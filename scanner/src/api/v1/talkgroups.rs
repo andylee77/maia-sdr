@@ -1,5 +1,6 @@
-//! `GET /api/v1/talkgroups`: the live site's talkgroups as the live screen lists them: every one
-//! an alias names, heard at the site in the last week, or among the calls listed now. Each says
+//! `GET /api/v1/talkgroups`: the live site's talkgroups as the live screen lists them: those
+//! heard at the site in the last week or among the calls listed now, and those an alias sets how
+//! to listen to (a name alone lists none: a system's aliases can be hundreds). Each says
 //! how the follower treats it (by the follower's own rule, `trunking::follow::routing`), whether
 //! its calls are recorded, and when it was last heard. `/ws/live` pushes the same view when it
 //! changes.
@@ -114,11 +115,13 @@ struct Heard {
     last_ms: Option<u64>,
 }
 
-/// The talkgroups of a system at one site: those its aliases name, the week's, and those of the
-/// calls listed now (`calls`, counted when granted after the week was read at `read_ms`).
+/// The talkgroups of a system at one site: the week's, those of the calls listed now (`calls`,
+/// counted when granted after the week was read at `read_ms`), and those an alias gives a
+/// priority, a lane or a Record mark. An alias that only names a talkgroup, or switches it off,
+/// lists it once it is heard.
 fn list(aliases: &[Alias], listening: Listening, recording: RecordingPolicy, week: &[TgStat], read_ms: u64, calls: &[&CallView]) -> Vec<Talkgroup> {
     let mut heard: BTreeMap<u32, Heard> = BTreeMap::new();
-    for a in aliases {
+    for a in aliases.iter().filter(|a| a.priority.is_some() || a.record || a.speaker != Side::Both) {
         for id in &a.ids {
             if let AliasId::Talkgroup { value } = id {
                 heard.entry(*value).or_default();
@@ -241,17 +244,28 @@ mod tests {
     const MARKED: RecordingPolicy = RecordingPolicy { enabled: true, every_call: false };
 
     #[test]
-    fn the_list_is_the_aliases_the_week_and_the_calls_listed_now() {
+    fn the_list_is_the_week_the_calls_listed_now_and_the_talkgroups_with_a_setting() {
         let mut named = Alias::talkgroup(300, "Dispatch");
         named.record = true;
         named.speaker = Side::Left;
+        // Switched off: listed when heard (850), not when silent (851).
         let mut off = Alias::talkgroup(850, "TG 850");
         off.do_not_monitor = true;
-        let week = [stat(300, 40, 0, 5_000), stat(402, 9, 9, 4_000)];
+        let mut silent = Alias::talkgroup(851, "TG 851");
+        silent.do_not_monitor = true;
+        let mut prior = Alias::talkgroup(700, "Fire");
+        prior.priority = Some(1);
+        let aliases = [named, off, silent, Alias::talkgroup(900, "Named, never heard"), prior];
+        let week = [stat(300, 40, 0, 5_000), stat(402, 9, 9, 4_000), stat(850, 0, 0, 3_000)];
         let (old, new, private) = (call(300, 4_500, false), call(318, 7_000, false), CallView { private: true, ..call(3_409_922, 8_000, false) });
-        let items = list(&[named, off], Listening::default(), MARKED, &week, 6_000, &[&old, &new, &private]);
-        assert_eq!(items.iter().map(|t| t.tg).collect::<Vec<_>>(), vec![300, 318, 402, 850], "by number; a private call's radio is no talkgroup");
+        let items = list(&aliases, Listening::default(), MARKED, &week, 6_000, &[&old, &new, &private]);
+        assert_eq!(
+            items.iter().map(|t| t.tg).collect::<Vec<_>>(),
+            vec![300, 318, 402, 700, 850],
+            "by number: the heard ones and those with a setting to listen by; not one only named or only switched off, nor a private call's radio"
+        );
         let t = |tg: u32| items.iter().find(|t| t.tg == tg).unwrap();
+        assert_eq!((t(700).calls, t(700).last_ms, t(700).priority), (0, None, Some(1)), "never heard, listed for its priority");
         // The week holds the call granted before it was read; the one granted after is added.
         assert_eq!((t(300).calls, t(300).last_ms), (40, Some(5_000)));
         assert_eq!((t(318).calls, t(318).last_ms, t(318).name.clone()), (1, Some(7_000), None));

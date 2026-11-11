@@ -449,7 +449,7 @@ ROUTES: dict[str, list] = {
         ("recording", "object", "What decides whether a followed call is recorded."),
         ("recording.enabled", "bool", "Recording is on."),
         ("recording.every_call", "bool", "Every followed call is recorded; false: only those of talkgroups marked `record`."),
-        ("items", "array", "The site's talkgroups by number: those an alias names, and those heard in the last week or among the calls listed now."),
+        ("items", "array", "The site's talkgroups by number: those heard in the last week or among the calls listed now, and those an alias gives a priority, a lane or a Record mark. An alias that only names a talkgroup, or switches it off, lists it once it is heard."),
         ("items[]", "object", "One talkgroup."),
         ("items[].tg", "number", "The talkgroup."),
         ("items[].name", "string or null", "Its alias's name; null while that is only its number."),
@@ -1178,6 +1178,7 @@ ROUTES: dict[str, list] = {
         ("@aliases[]", "alias"),
         ("listening", "object", "Talkgroups with no priority, and pre-emption."),
         ("@listening", "listening"),
+        ("rev", "string", "The list's revision: it changes with the list. `PUT …/aliases?rev=` replaces only the list read at that revision (409 when it changed since)."),
     ],
     "/api/system": [
         ("build", "string", "The build tag."),

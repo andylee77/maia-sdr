@@ -1,4 +1,4 @@
-// The /api/v1 calls the pages use. Errors carry the server's message.
+// The /api/v1 calls the pages use. Errors carry the server's message and the HTTP `status`.
 
 // A WebSocket URL on this server.
 export function wsUrl(path) {
@@ -17,9 +17,15 @@ async function request(method, path, body) {
   try {
     data = JSON.parse(text);
   } catch { /* a refusal in plain text, or no body */ }
-  if (!res.ok) throw new Error((data && data.error) || text.trim() || `${method} ${path}: HTTP ${res.status}`);
+  if (!res.ok) {
+    const e = new Error((data && data.error) || text.trim() || `${method} ${path}: HTTP ${res.status}`);
+    e.status = res.status;
+    throw e;
+  }
   return data;
 }
+
+const system = id => `/api/v1/systems/${encodeURIComponent(id)}`;
 
 export const api = {
   status: () => request('GET', '/api/v1/status'),
@@ -42,6 +48,15 @@ export const api = {
   saveRadioSettings: settings => request('PUT', '/api/v1/radio/settings', settings),
   setClockSource: source => request('PUT', '/api/v1/radio/clock', { source }),
   setPacketData: follow => request('PUT', '/api/v1/radio/packet_data', { follow }),
+  // A system's aliases with their revision: { aliases, listening, rev }.
+  aliases: id => request('GET', `${system(id)}/aliases`),
+  // The whole list in place of the one read at `rev`; 409 (`status`) when it changed since.
+  setAliases: (id, aliases, rev) => request('PUT', `${system(id)}/aliases?rev=${rev}`, aliases),
+  // How a system treats talkgroups with no priority, and pre-emption.
+  setListening: (id, listening) => request('PUT', `${system(id)}/listening`, listening),
+  // A RadioReference file (`req`: csv, encrypted_do_not_monitor, sites) imported, or only what
+  // it would change (`preview`).
+  radioReference: (id, req, preview) => request('POST', `${system(id)}/radioreference${preview ? '/preview' : ''}`, req),
   // One talkgroup's controls (`edit`: any of name, priority, follow, record, speaker).
   setTalkgroup: (system, tg, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/talkgroups/${tg}`, edit),
   // Its alias removed: it is a talkgroup with no settings of its own again.

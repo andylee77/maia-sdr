@@ -9,16 +9,8 @@ import { h, toast, setText, setClass, keyedList, icon } from '../dom.js';
 import { api } from '../api.js';
 import { boardNow } from '../store.js';
 import { ago, num } from '../format.js';
-import { colorOf } from '../aliases.js';
+import { colorOf, LOWEST_PRIORITY, TUNERS } from '../aliases.js';
 
-const LOWEST_PRIORITY = 100;
-// A talkgroup's traffic lane as the radio spells it, in the order its chip steps through:
-// [speaker, on the chip, in the bar, said in full].
-const TUNERS = [
-  ['both', 'Any', 'Any tuner', 'either tuner'],
-  ['left', '1', 'Traffic 1', 'Traffic 1 only'],
-  ['right', '2', 'Traffic 2', 'Traffic 2 only'],
-];
 const tunerOf = speaker => TUNERS.find(x => x[0] === speaker) || TUNERS[0];
 
 // The groups of the list, in its order. The first is always open.
@@ -347,7 +339,7 @@ export function talkgroupList({ hold }) {
     }
     groups[0].head.hidden = !all.length;
     setText(count, all.length ? num(all.length) : '');
-    count.title = 'The talkgroups an alias names, and those heard here in the last week';
+    count.title = 'The talkgroups heard here in the last week, and those given a priority, a tuner or a Rec mark. Every alias is on Aliases';
     empty.hidden = shownRows > 0 || (!q && all.length > 0);
     setText(empty, !v || !v.site ? 'No site is live.' : all.length ? 'No talkgroup matches.' : 'No talkgroups heard yet.');
     drawBar(all.find(t => t.tg === selected) || null);

@@ -1,9 +1,9 @@
 # UI brief: the replacement UI
 
 The scanner's web UI is replaced from scratch. This brief holds Andy's requirements (2026-10-01)
-and the decisions taken with him. Every page there is has the new layout (changes 090 to 094).
-Not built: the first-load welcome and the Aliases page; what the other sections ask for and no
-page has yet is marked "Still to come" in them.
+and the decisions taken with him. Every page there is has the new layout (changes 090 to 094),
+and the Aliases page is in (097). Not built: the first-load welcome; what the other sections ask
+for and no page has yet is marked "Still to come" in them.
 
 - `doc/API_INVENTORY.md` lists each route: what it carries, what it lacks, and who uses it.
 - `doc/API_FIELDS.md` gives every field of every response with its meaning.
@@ -136,7 +136,7 @@ totals in the calls' heading.
 
 Done in change 093 as far as the routes go: the scan and the configured systems in a list on the
 left, the picked one on the right (a system edited in place, or the scan). Still to come: adding
-by hand, the SDRTrunk playlist, and a page for the RadioReference import.
+by hand and the SDRTrunk playlist. The RadioReference import is on the Aliases page (097).
 
 - Systems, then their sites:
   - edit;
@@ -158,10 +158,17 @@ by hand, the SDRTrunk playlist, and a page for the RadioReference import.
 
 ### Aliases
 
-Per system, SDRTrunk's alias list as a table:
+Done in change 097 (`doc/changes/097_aliases_page.md`). Still to come: the SDRTrunk playlist.
 
-- columns: name, group, color, IDs and ranges, priority, record, speaker;
-- search and bulk edit.
+Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the radios' apart:
+
+- columns: colour, name, numbers and ranges, group; for a talkgroup its priority, its tuner (the
+  alias's `speaker`), its Rec mark and its Listen switch;
+- each field edited in its row and saved at once; the picked rows changed together;
+- found by name, group or number; sorted by a column; one group shown;
+- what was heard in the last week and has no alias, each named in place;
+- the system's listening settings (talkgroups with no priority, pre-emption);
+- RadioReference's files imported, each after a preview of what it would change.
 
 ### Activity, Diagnostics, Settings
 

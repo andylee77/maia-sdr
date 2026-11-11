@@ -11,6 +11,7 @@ import { mhz } from './format.js';
 import * as now from './views/now.js';
 import * as activity from './views/activity.js';
 import * as systems from './views/systems.js';
+import * as aliases from './views/aliases.js';
 import * as channels from './views/channels.js';
 import * as watch from './views/watch.js';
 import * as diag from './views/diagnostics.js';
@@ -49,6 +50,7 @@ export const MODULES = [
       { key: 'now', label: 'Now', view: now, fill: true },
       { key: 'activity', label: 'Activity', view: activity, fill: true },
       { key: 'systems', label: 'Systems', view: systems, fill: true },
+      { key: 'aliases', label: 'Aliases', view: aliases, fill: true },
     ],
     line: scannerLine,
     // The module is doing its work (the header's dot).

@@ -7,7 +7,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/routes` | this list |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |
-| GET | `/api/v1/talkgroups` | the live site's talkgroups: those its system's aliases name and those heard in the last week, each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording |
+| GET | `/api/v1/talkgroups` | the live site's talkgroups: those heard in the last week and those an alias gives a priority, a traffic lane or a Record mark (a name alone lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording |
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any, and each traffic lane's own |
 | PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before |
 | GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
@@ -52,9 +52,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/systems/{id}` | one system |
 | PUT | `/api/v1/systems/{id}` | edit a system: its name, identity (P25: WACN and system ID; DMR: model and network) and details (location, county, type, voice) |
 | GET | `/api/v1/systems/{id}/aliases` | a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings |
-| PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once) |
+| PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once); with `?rev=` (the `rev` the list was read with) only that list is replaced: 409 when it changed since. No talkgroup or radio may be named by itself in two aliases |
 | PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
-| PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one |
+| PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, color, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one, and leaves an alias that named it among others |
 | DELETE | `/api/v1/systems/{id}/talkgroups/{tg}` | remove the alias that names one talkgroup alone: it is then treated as a talkgroup with none |
 | POST | `/api/v1/systems/{id}/radioreference` | import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack |
 | POST | `/api/v1/systems/{id}/radioreference/preview` | what that import would change; nothing is saved |

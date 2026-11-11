@@ -9,7 +9,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 - **The plan:** `doc/ROADMAP.md` (095): the goals, the capabilities each needs, the features by
   module, the order of work and the questions open for Andy. Step 2, the Now page as a trunked
   monitoring station's front, is built from the layout he picked (096,
-  `doc/changes/096_now_tuners_first.md`); step 3 is Aliases. 095's review of the UI and its API:
+  `doc/changes/096_now_tuners_first.md`). Step 3's Aliases page, with the RadioReference import,
+  is built (097, `doc/changes/097_aliases_page.md`); the SDRTrunk playlist is left of it, and
+  step 4 is the Settings and Diagnostics split. 095's review of the UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by step).
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
@@ -34,7 +36,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/093_activity_systems.md`), and Channels, Diagnostics and Settings (094,
   `doc/changes/094_channels_diagnostics_settings.md`): every page is in the rail's layout.
   Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`, `scanner_pages.mjs`,
-  `tool_pages.mjs` and `tv_watch.mjs`.
+  `aliases_page.mjs`, `tool_pages.mjs` and `tv_watch.mjs`.
 
 ## Layout
 

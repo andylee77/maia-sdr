@@ -548,6 +548,81 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .sys-pick .sub { grid-column: 1 / -1; font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scan-pane h2 { font-size: 1.06em; }
 
+/* ── Aliases: one card. In its head the system and what is shown (the talkgroups' aliases, the
+   radios', or the import); then the system's listening settings and the list's tools in strips,
+   the table, and at its foot a new alias or the picked rows' controls. On a wide screen the card
+   fills the screen and the table scrolls inside it. ── */
+.aliases { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; }
+.als-card .card-head { flex-wrap: wrap; padding-bottom: 10px; margin-bottom: 0; }
+.als-system { max-width: 22em; min-height: 28px; padding: 2px 8px; font-weight: 600; }
+.als-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 16px; border-top: 1px solid var(--line); font-size: 0.94em; }
+.als-strip .spacer, .als-foot .spacer, .imp-out .spacer { flex: 1; }
+.als-strip .input, .als-foot .input { min-height: 28px; padding: 2px 8px; }
+.als-find { width: 12em; }
+.als-group { max-width: 16em; }
+.als-body { max-height: 62vh; overflow: auto; border-top: 1px solid var(--line); }
+.als-table { min-width: 800px; }
+.als-table.radios, .als-table.heard { min-width: 560px; }
+/* A row: its tick, its colour, name, numbers, group; a talkgroup's priority, tuner, Rec mark and
+   Listen switch; the bin. */
+.als-row {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 18px 18px minmax(130px, 1.5fr) minmax(110px, 1fr) minmax(90px, 0.9fr) 64px 44px 28px 38px 28px;
+  min-height: 40px; padding: 3px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.als-table.radios .als-row { grid-template-columns: 18px 18px minmax(130px, 1.5fr) minmax(110px, 1fr) minmax(90px, 0.9fr) 28px; }
+.als-card[data-list="radios"] .als-tg { display: none; }
+/* What was heard and has no alias: the number, its calls, when, and the name to give it. */
+.als-table .als-row.als-heard { grid-template-columns: 120px 170px 110px minmax(150px, 320px) auto; justify-content: start; }
+.als-head {
+  position: sticky; top: 0; z-index: 1; min-height: 30px;
+  background: var(--bg-raised); color: var(--text-faint);
+  font-size: 0.78em; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.als-row .mid { justify-self: center; text-align: center; }
+.als-sort { padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
+.als-sort:hover, .als-sort.on { color: var(--text-dim); }
+.als-sort.on::after { content: " \2191"; }
+.als-sort.on.down::after { content: " \2193"; }
+.als-row:not(.als-head):hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.als-row.sel, .als-row.sel:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.als-row.off .als-name { color: var(--text-dim); }
+.als-row input[type="checkbox"]:not([role="switch"]), .imp input[type="checkbox"]:not([role="switch"]) { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* A row's field reads as text until it is pointed at. */
+.als-in { width: 100%; min-width: 0; min-height: 28px; padding: 2px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; }
+.als-in.mono { font-family: var(--mono); font-size: 0.92em; }
+.als-in:hover { border-color: var(--line-strong); }
+.als-in:focus { border-color: var(--accent); background: var(--bg-sunken); outline: none; }
+.als-name { font-weight: 600; }
+/* An alias's colour; pale while it is only the one its number gives it. Its picker lies over it. */
+.als-swatch { position: relative; display: block; width: 16px; height: 16px; border-radius: 4px; overflow: hidden; cursor: pointer; }
+.als-swatch.auto { opacity: 0.45; }
+.als-swatch input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.als-swatch:focus-within, .als-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.als-row .tgl-chip { width: 44px; }
+.als-row .btn.icon { border-color: transparent; }
+.als-more { display: block; margin: 12px auto; }
+.als-foot { padding: 10px 16px; border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); background: var(--bg-sunken); }
+.als-foot .row { gap: 8px 14px; }
+.als-foot .row .row { gap: 6px; flex-wrap: nowrap; }
+.als-add-name { width: 16em; }
+.als-add-ids { flex: 1 1 14em; max-width: 30em; font-family: var(--mono); font-size: 0.92em; }
+.als-bulk-group { width: 10em; }
+.als-foot .als-swatch { width: 24px; height: 24px; border-radius: 6px; background: conic-gradient(#e5484d, #f5a524, #46a758, #35c8c0, #3e63dd, #8e4ec6, #e5484d); }
+/* The import: what a file would change, then the button that does it. */
+.imp { display: grid; gap: 10px; align-content: start; padding: 14px 16px 18px; border-top: 1px solid var(--line); overflow-y: auto; }
+.imp h3 { margin: 0; font-size: 1.02em; }
+.imp .card-note { margin: 0; max-width: 72em; }
+.imp-out { display: grid; gap: 10px; }
+.imp-out p { margin: 0; }
+.imp-bad { color: var(--danger); }
+@media (min-width: 1000px) and (min-height: 600px) {
+  .aliases { min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  .als-card { min-height: 0; display: flex; flex-direction: column; }
+  .als-body, .imp { flex: 1; min-height: 0; max-height: none; }
+}
+
 /* ── Channels (TV): the scan with its table, and the picked channel beside it. One column on a
    narrow or short screen, the picked channel first once there is one; on a wider one the page
    fills the screen and each side scrolls on its own. ── */

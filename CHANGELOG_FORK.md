@@ -5,6 +5,35 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 097: The Aliases page, with the RadioReference import
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's step 3. Andy asked "to add the additional features like alias mapping
+  and alias tab". Until now a system's aliases could be seen and changed only one talkgroup at a
+  time on Now, or by replacing the list through the API. Record:
+  `doc/changes/097_aliases_page.md`.
+- **The page** (Scanner, Aliases): a system's aliases as a table, the talkgroups' and the
+  radios': colour, name, numbers and ranges, group, and for a talkgroup its priority, tuner, Rec
+  mark and Listen switch. A field is edited in its row and saved at once; the picked rows are
+  changed together; the list is found in, sorted and shown by group.
+- **Heard, not named:** what the history heard at the system in the last week that no alias
+  names, each to be named in place.
+- **A system's listening settings** (talkgroups with no priority followed or not, their tuner,
+  pre-emption) have a page: they had a route and no control.
+- **RadioReference's files** are imported from the page, each after a preview of what it would
+  change. The routes were there, with no page.
+- **The alias list has a revision** (`rev`): `PUT …/aliases?rev=` replaces only the list that was
+  read, and answers 409 when it changed since. A list may not name a talkgroup or a radio by
+  itself twice, and a colour is `#rrggbb`.
+- **`PUT …/talkgroups/{tg}`** takes a colour, and a talkgroup one alias named among others gets
+  its own alias in that alias's place: before, the edit answered 200 and the follower read the
+  old alias.
+- **Now's list is bounded** (the roadmap's Q4): the talkgroups heard in the last week, and those
+  an alias gives a priority, a tuner or a Rec mark. A name alone, or switched off alone, lists
+  none, so an import of hundreds of names does not fill it.
+
 ## [2026-11-11] 096: Now as a monitoring station's front: the tuners first
 
 **Branch:** fishball-p25 (local)

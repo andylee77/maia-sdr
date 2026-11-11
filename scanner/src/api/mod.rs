@@ -83,7 +83,7 @@ routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
-    get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those its system's aliases name and those heard in the last week, each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
+    get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those heard in the last week and those an alias gives a priority, a traffic lane or a Record mark (a name alone lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any, and each traffic lane's own";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
@@ -128,9 +128,9 @@ routes! {
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
     put "/api/v1/systems/{id}" => v1::systems::put_system, "edit a system: its name, identity (P25: WACN and system ID; DMR: model and network) and details (location, county, type, voice)";
     get "/api/v1/systems/{id}/aliases" => v1::aliases::get, "a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings";
-    put "/api/v1/systems/{id}/aliases" => v1::aliases::put, "replace a system's aliases (the live site follows them at once)";
+    put "/api/v1/systems/{id}/aliases" => v1::aliases::put, "replace a system's aliases (the live site follows them at once); with `?rev=` (the `rev` the list was read with) only that list is replaced: 409 when it changed since. No talkgroup or radio may be named by itself in two aliases";
     put "/api/v1/systems/{id}/listening" => v1::aliases::put_listening, "how a system treats talkgroups with no priority, and pre-emption";
-    put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one";
+    put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, color, priority, follow (or do-not-monitor), record, speaker (its traffic lane: left is lane 1, right lane 2, both either); a talkgroup with no alias of its own gets one, and leaves an alias that named it among others";
     delete "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::delete_talkgroup, "remove the alias that names one talkgroup alone: it is then treated as a talkgroup with none";
     post "/api/v1/systems/{id}/radioreference" => v1::systems::import_radioreference, "import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack";
     post "/api/v1/systems/{id}/radioreference/preview" => v1::systems::preview_radioreference, "what that import would change; nothing is saved";
