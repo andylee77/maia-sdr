@@ -84,6 +84,24 @@ impl Alias {
         }
     }
 
+    /// The talkgroup it holds under no name but its number ("TG 300"): what a control on the
+    /// live screen makes of a talkgroup that had no alias.
+    pub fn unnamed_talkgroup(&self) -> Option<u32> {
+        match self.ids.as_slice() {
+            [AliasId::Talkgroup { value }] if self.name == format!("TG {value}") => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Take `from`'s name, and its group, colour and icon where this has none. Its own settings
+    /// (followed or not, priority, record, lane) stay.
+    pub fn take_name(&mut self, from: &Alias) {
+        self.name = from.name.clone();
+        self.group = self.group.take().or_else(|| from.group.clone());
+        self.color = self.color.take().or_else(|| from.color.clone());
+        self.icon = self.icon.take().or_else(|| from.icon.clone());
+    }
+
     pub fn check(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("an alias needs a name".into());
@@ -136,6 +154,63 @@ pub fn check_list(aliases: &[Alias]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// What taking one alias into a list did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Taken {
+    /// It, or what was left of its IDs, is a new alias.
+    pub added: bool,
+    /// Aliases that held one of its talkgroups under no name, which took its name.
+    pub named: usize,
+    /// Its IDs an alias of the list already has: they stay that alias's.
+    pub kept: usize,
+}
+
+/// A list that aliases are taken into, as an import takes them: an ID an alias of the list
+/// already has (a talkgroup, a radio, or the same range) stays that alias's, unless that alias
+/// holds only the talkgroup under its number ("TG 300"), which then takes the incoming name and
+/// keeps its own settings. The IDs left are added as a new alias. So the same file taken twice
+/// adds nothing the second time.
+pub struct Intake<'a> {
+    aliases: &'a mut Vec<Alias>,
+    named_by: HashMap<AliasId, usize>,
+}
+
+impl<'a> Intake<'a> {
+    pub fn new(aliases: &'a mut Vec<Alias>) -> Self {
+        let mut named_by = HashMap::new();
+        for (i, a) in aliases.iter().enumerate() {
+            for id in &a.ids {
+                named_by.entry(*id).or_insert(i);
+            }
+        }
+        Intake { aliases, named_by }
+    }
+
+    pub fn take(&mut self, mut incoming: Alias) -> Taken {
+        let mut out = Taken::default();
+        let mut left: Vec<AliasId> = Vec::new();
+        for id in std::mem::take(&mut incoming.ids) {
+            match self.named_by.get(&id).copied() {
+                Some(i) if self.aliases[i].unnamed_talkgroup().is_some() => {
+                    self.aliases[i].take_name(&incoming);
+                    out.named += 1;
+                }
+                Some(_) => out.kept += 1,
+                None if left.contains(&id) => {}
+                None => left.push(id),
+            }
+        }
+        if !left.is_empty() {
+            for id in &left {
+                self.named_by.insert(*id, self.aliases.len());
+            }
+            self.aliases.push(Alias { ids: left, ..incoming });
+            out.added = true;
+        }
+        out
+    }
 }
 
 /// How a system treats talkgroups with no priority (no alias, or an alias without one), and
@@ -251,6 +326,46 @@ mod tests {
         }
         assert!(Alias { ids: vec![], ..ok.clone() }.check().is_err());
         assert!(Alias { ids: vec![AliasId::TalkgroupRange { min: 5, max: 1 }], ..ok }.check().is_err());
+    }
+
+    #[test]
+    fn an_intake_keeps_what_is_named_and_names_what_is_not() {
+        let mut off = Alias::talkgroup(850, "TG 850");
+        off.do_not_monitor = true;
+        off.record = true;
+        let mut list = vec![Alias::talkgroup(300, "Fire"), off];
+        let mut intake = Intake::new(&mut list);
+        // A talkgroup held under its number takes the name and keeps its settings.
+        let named = intake.take(Alias { group: Some("Sheriff".into()), color: Some("#00ff00".into()), ..Alias::talkgroup(850, "CCSO Main") });
+        assert_eq!(named, Taken { added: false, named: 1, kept: 0 });
+        // Named now: a second name for it is not taken.
+        assert_eq!(intake.take(Alias::talkgroup(850, "Other")), Taken { added: false, named: 0, kept: 1 });
+        // One of its IDs is another alias's, one is twice in it, a range comes as it is.
+        let mut tac = Alias::talkgroup(300, "Fire TAC");
+        tac.ids.extend([AliasId::Talkgroup { value: 301 }, AliasId::Talkgroup { value: 301 }, AliasId::TalkgroupRange { min: 300, max: 316 }]);
+        assert_eq!(intake.take(tac.clone()), Taken { added: true, named: 0, kept: 1 });
+        // What was just added is named for the next one, the same range too; another range is not.
+        assert_eq!(intake.take(Alias::talkgroup(301, "Again")), Taken { added: false, named: 0, kept: 1 });
+        assert_eq!(intake.take(tac), Taken { added: false, named: 0, kept: 4 }, "each of its four IDs, the repeated one twice");
+        let wider = Alias { ids: vec![AliasId::TalkgroupRange { min: 300, max: 399 }], ..Alias::talkgroup(0, "Fire, all") };
+        assert_eq!(intake.take(wider), Taken { added: true, named: 0, kept: 0 });
+        assert_eq!(intake.take(Alias::radio(301, "A radio of that number")), Taken { added: true, named: 0, kept: 0 });
+        let got: Vec<(&str, usize, bool, bool, Option<&str>)> = list.iter().map(|a| (a.name.as_str(), a.ids.len(), a.do_not_monitor, a.record, a.group.as_deref())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Fire", 1, false, false, None),
+                ("CCSO Main", 1, true, true, Some("Sheriff")),
+                ("Fire TAC", 2, false, false, None),
+                ("Fire, all", 1, false, false, None),
+                ("A radio of that number", 1, false, false, None)
+            ]
+        );
+        assert_eq!(list[1].color.as_deref(), Some("#00ff00"));
+        assert_eq!(check_list(&list), Ok(()));
+        // A name that is not the talkgroup's number is a name.
+        assert_eq!(Alias::talkgroup(300, "TG 301").unnamed_talkgroup(), None);
+        assert_eq!(Alias::radio(300, "TG 300").unnamed_talkgroup(), None);
     }
 
     #[test]

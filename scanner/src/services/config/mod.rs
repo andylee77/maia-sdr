@@ -15,6 +15,7 @@ pub mod aliases;
 pub mod ids;
 pub mod radio;
 pub mod radioreference;
+pub mod sdrtrunk;
 pub mod state;
 pub mod systems;
 

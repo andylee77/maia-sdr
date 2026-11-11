@@ -97,6 +97,23 @@ fn talkgroups_an_alias_already_covers_are_kept() {
 }
 
 #[test]
+fn a_talkgroup_held_under_its_number_takes_the_file_s_name() {
+    let mut sys = system(Protocol::P25, Vec::new());
+    // Switched off and marked from the live screen, never named; and one that only has a name.
+    let off = Alias { do_not_monitor: true, record: true, ..Alias::talkgroup(101, "TG 101") };
+    sys.aliases = vec![off, Alias::talkgroup(200, "Sheriff, mine")];
+    let out = run(&mut sys, TALKGROUPS, &ImportRequest { encrypted_do_not_monitor: false, ..Default::default() }).unwrap();
+    assert_eq!(out.aliases_named.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Fire TAC 1"]);
+    assert_eq!(out.talkgroups_kept, [200]);
+    assert_eq!(out.aliases_added.len(), 2);
+    let named = &sys.aliases[0];
+    assert_eq!((named.name.as_str(), named.group.as_deref(), named.do_not_monitor, named.record), ("Fire TAC 1", Some("County Fire"), true, true), "its name and group, its own settings");
+    assert_eq!(sys.aliases[1].name, "Sheriff, mine");
+    let again = run(&mut sys, TALKGROUPS, &ImportRequest::default()).unwrap();
+    assert!(again.aliases_named.is_empty() && again.aliases_added.is_empty());
+}
+
+#[test]
 fn p25_sites_start_on_their_first_control_channel() {
     let mut sys = system(Protocol::P25, Vec::new());
     let out = run(&mut sys, P25_SITES, &ImportRequest::default()).unwrap();

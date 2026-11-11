@@ -1,16 +1,19 @@
-// Systems: on the left the scan for systems and the configured systems; on the right the one
-// picked: a system (its name, details and identity, then its sites with their channels, edited
-// in place; a site made live or stopped; a site or the system removed), or the scan (scan.js).
+// Systems: on the left the scan for systems, the SDRTrunk playlist and the configured systems;
+// on the right the one picked: a system (its name, details and identity, then its sites with
+// their channels, edited in place; a site made live or stopped; a site or the system removed),
+// the scan (scan.js), or the playlist's export and import (playlist.js).
 
 import { h, setText, setClass, toast, icon, iconButton } from '../dom.js';
 import { api } from '../api.js';
 import { refresh } from '../store.js';
 import { protocol } from '../protocols.js';
 import { scanPane, scanLine, scanRunning } from './scan.js';
+import { playlistPane } from './playlist.js';
 import { systemHead, siteTable, heardTraffic } from './cards.js';
 
-// The scan's place in the list.
+// The scan's place in the list, and the playlist's.
 const SCAN = 'scan';
+const PLAYLIST = 'playlist';
 
 export function mount(el) {
   const count = h('span', { class: 'dim' });
@@ -21,6 +24,7 @@ export function mount(el) {
   el.append(h('div', { class: 'systems' }, list, pane));
 
   const scan = scanPane(load);
+  const playlist = playlistPane({ systems: () => systems, done: load });
   let liveId = null;
   let systems = null;
   let scanState = null;
@@ -137,6 +141,7 @@ export function mount(el) {
     rows.replaceChildren(
       pickRow(SCAN, h('span', { class: 'name' }, icon('search'), 'Find systems'), scanLine(scanState),
         scanRunning(scanState) ? h('span', { class: 'badge acquiring', text: 'scanning' }) : null),
+      pickRow(PLAYLIST, h('span', { class: 'name' }, icon('download'), 'SDRTrunk playlist'), 'Import one, or export this radio\'s', null),
       ...systems.map(sys => {
         const live = sys.sites.find(site => site.id === liveId);
         const sites = `${sys.sites.length} site${sys.sites.length === 1 ? '' : 's'}`;
@@ -150,14 +155,16 @@ export function mount(el) {
     if (!systems) return;
     const live = systems.find(sys => sys.sites.some(site => site.id === liveId));
     if (!userPicked && live && editing === 0) selected = live.id;
-    if (selected !== SCAN && !systems.some(sys => sys.id === selected)) selected = live ? live.id : systems.length ? systems[0].id : SCAN;
+    const tool = selected === SCAN || selected === PLAYLIST;
+    if (!tool && !systems.some(sys => sys.id === selected)) selected = live ? live.id : systems.length ? systems[0].id : SCAN;
     renderList();
     if (editing > 0) return;
-    // The scan draws itself; a system's card is drawn from what was read and the live site.
-    const from = selected === SCAN ? SCAN : `${selected}|${liveId}|${reads}`;
+    // The scan and the playlist draw themselves; a system's card is drawn from what was read
+    // and the live site.
+    const from = tool ? selected : `${selected}|${liveId}|${reads}`;
     if (from === drawn) return;
     drawn = from;
-    pane.replaceChildren(selected === SCAN ? scan.el : systemCard(systems.find(sys => sys.id === selected)));
+    pane.replaceChildren(selected === SCAN ? scan.el : selected === PLAYLIST ? playlist.el : systemCard(systems.find(sys => sys.id === selected)));
   }
 
   async function load() {

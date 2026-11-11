@@ -66,7 +66,8 @@ In this order; each item is usable through the API on its own.
 
    Recording keeps a "record every followed call" switch beside the per-alias flag. The hold
    stays as it is.
-3. **SDRTrunk playlist import and export:**
+3. **SDRTrunk playlist import and export** (done: `/api/v1/playlist` and its `/preview`,
+   change 098):
    - systems, sites, control channels (SDRTrunk's channels), the alias lists and their IDs;
    - priority, record, group and color.
 
@@ -135,8 +136,9 @@ totals in the calls' heading.
 ### Systems
 
 Done in change 093 as far as the routes go: the scan and the configured systems in a list on the
-left, the picked one on the right (a system edited in place, or the scan). Still to come: adding
-by hand and the SDRTrunk playlist. The RadioReference import is on the Aliases page (097).
+left, the picked one on the right (a system edited in place, or the scan). The SDRTrunk playlist
+is the list's second entry (098), and the RadioReference import is on the Aliases page (097).
+Still to come: adding by hand.
 
 - Systems, then their sites:
   - edit;
@@ -152,13 +154,15 @@ by hand and the SDRTrunk playlist. The RadioReference import is on the Aliases p
 - **Configured systems** in the same card, edited in place with Save; traffic channels show the
   configured ones and those heard on the air.
 - **Add by hand** (decision above).
-- **Import and export** an SDRTrunk playlist.
+- **Import and export** an SDRTrunk playlist (done in 098): the import is shown system by
+  system before it is made, with where each goes, its channels as sites and its names.
 - **Import RadioReference CSVs** into a system: the preview lists what would be added or kept,
   the user ticks the sites, then imports.
 
 ### Aliases
 
-Done in change 097 (`doc/changes/097_aliases_page.md`). Still to come: the SDRTrunk playlist.
+Done in change 097 (`doc/changes/097_aliases_page.md`). A playlist's names come in with its
+systems, on Systems (098).
 
 Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the radios' apart:
 

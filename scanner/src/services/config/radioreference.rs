@@ -4,7 +4,8 @@
 //!
 //! - **Talkgroups:** an alias per talkgroup no alias covers yet, named by the alpha tag and
 //!   grouped by the category, as SDRTrunk's import makes them; fully encrypted talkgroups
-//!   (mode `E`) are never followed unless asked. Talkgroups an alias already covers are kept.
+//!   (mode `E`) are never followed unless asked. Talkgroups an alias already covers are kept,
+//!   but one held only under its number ("TG 300") takes the file's name and group.
 //! - **Sites:** RadioReference marks the control channels with `c`. A new site starts on the
 //!   first of them, with the others as alternates and every other frequency as a known channel.
 //!   A site already configured gains only the channels it lacks; its name and control channel
@@ -84,6 +85,9 @@ pub struct Imported {
     /// `talkgroups` or `sites`.
     pub file: &'static str,
     pub aliases_added: Vec<Alias>,
+    /// Aliases that held a talkgroup under its number and took its name and group, as they are
+    /// after.
+    pub aliases_named: Vec<Alias>,
     /// Talkgroups an alias already covered, left as they were.
     pub talkgroups_kept: Vec<u32>,
     pub sites_added: Vec<ImportedSite>,
@@ -213,17 +217,23 @@ fn talkgroups(sys: &mut System, rows: &[Talkgroup], req: &ImportRequest) -> Resu
     let index = sys.alias_index();
     let mut seen = HashSet::new();
     for tg in rows.iter().filter(|t| seen.insert(t.id)) {
-        if index.talkgroup(tg.id).is_some() {
-            out.talkgroups_kept.push(tg.id);
-            continue;
-        }
         let alias = Alias {
             group: tg.category.clone(),
             do_not_monitor: req.encrypted_do_not_monitor && tg.encrypted,
             ..Alias::talkgroup(tg.id, tg.name.clone())
         };
         alias.check()?;
-        out.aliases_added.push(alias);
+        match index.talkgroup(tg.id) {
+            // Named by its number only: the file's name and group, its own settings.
+            Some(held) if held.unnamed_talkgroup() == Some(tg.id) && alias.unnamed_talkgroup().is_none() => {
+                if let Some(mine) = sys.aliases.iter_mut().find(|a| a.unnamed_talkgroup() == Some(tg.id)) {
+                    mine.take_name(&alias);
+                    out.aliases_named.push(mine.clone());
+                }
+            }
+            Some(_) => out.talkgroups_kept.push(tg.id),
+            None => out.aliases_added.push(alias),
+        }
     }
     sys.aliases.extend(out.aliases_added.iter().cloned());
     Ok(out)

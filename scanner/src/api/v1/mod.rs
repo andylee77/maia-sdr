@@ -11,6 +11,7 @@ pub mod events;
 pub mod hold;
 pub mod iq;
 pub mod mode;
+pub mod playlist;
 pub mod radio;
 pub mod receivers;
 pub mod recordings;

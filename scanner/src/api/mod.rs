@@ -108,6 +108,9 @@ routes! {
     get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
     get "/api/v1/config" => v1::config::export, "the whole configuration as one document: radio settings, systems with their aliases and sites, the live site (`download=true`: as a file)";
     put "/api/v1/config" => v1::config::import, "replace the configuration with an exported document (checked whole first); the scanner restarts";
+    get "/api/v1/playlist" => v1::playlist::export, "every system as an SDRTrunk playlist (XML): a channel for each site on its control channel and those that take over from it, each system's aliases as a list named after it (`download=true`: as a file)";
+    post "/api/v1/playlist" => v1::playlist::put, "import an SDRTrunk playlist (`xml`): each of its systems into the configured system on its channels' frequencies or into a new one, its channels as sites, its alias lists as aliases; `systems` says what to take of each (`name`, `into`, `channels` by number, `aliases`), absent: what the preview suggests";
+    post "/api/v1/playlist/preview" => v1::playlist::preview, "what that import would change; nothing is saved";
     post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
@@ -212,7 +215,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn changed_part(path: &str) -> Option<&'static str> {
     if path.starts_with("/api/v1/radio") || path == "/api/v1/clock" {
         Some("radio")
-    } else if (path.starts_with("/api/v1/systems") && !path.ends_with("/preview")) || path == "/api/v1/scan/add" {
+    } else if (path.starts_with("/api/v1/systems") && !path.ends_with("/preview")) || path == "/api/v1/scan/add" || path == "/api/v1/playlist" {
         Some("systems")
     } else if path == "/api/v1/hold" {
         Some("hold")
@@ -278,6 +281,8 @@ mod tests {
         assert_eq!(changed_part("/api/v1/clock"), Some("radio"));
         assert_eq!(changed_part("/api/v1/systems/clay/sites/clay_1"), Some("systems"));
         assert_eq!(changed_part("/api/v1/scan/add"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/playlist"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/playlist/preview"), None, "a preview changes nothing");
         assert_eq!(changed_part("/api/v1/systems/clay/talkgroups/300"), Some("systems"));
         assert_eq!(changed_part("/api/v1/systems/clay/radioreference"), Some("systems"));
         assert_eq!(changed_part("/api/v1/systems/clay/radioreference/preview"), None, "a preview changes nothing");

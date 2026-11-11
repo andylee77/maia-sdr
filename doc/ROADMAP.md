@@ -72,7 +72,7 @@ What each goal needs from each layer, and where that layer stands.
 | Recording: every followed call, or the calls of talkgroups marked `record`; by day on the card; locks; retention | **exists**; Now's Record sets which (096) | G1 |
 | The history on the card, the activity routes, CSV | **exists** | G1 |
 | RadioReference CSV import (`POST …/radioreference`, `/preview`) | **exists**, on the Aliases page (097) | G1, Aliases |
-| SDRTrunk playlist import and export | **decided** (UI_BRIEF), not built | G1, Aliases |
+| SDRTrunk playlist import and export | **exists** (098: `/api/v1/playlist`), held against SDRTrunk's own reader | G1, Aliases |
 | A system or a site added by hand | **decided** (UI_BRIEF), not built | G1 |
 | Modes: `scanner` and `atsc`. `Modes::set` assumes two, and `status.live.state: away` does not say which mode has the radio | **exists** for two; a third needs both fixed (`DATA_MODE.md` §8) | G3 |
 | What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | not built: one recording at a time, and the history as CSV | G1 |
@@ -89,7 +89,8 @@ What each goal needs from each layer, and where that layer stands.
 | Scanner: Now, Activity, Systems, Aliases. TV: Watch, Channels. Tools: Diagnostics, Settings | **exists** (090 to 094, 097) | G1, G3 |
 | Now as a monitoring station's front | **exists** (096: layout A, the tuners first) | G1, G2 |
 | The Aliases tab, with the RadioReference import | **exists** (097) | G1 |
-| The SDRTrunk playlist's import and export; a system or a site added by hand | **decided**, not built | G1 |
+| The SDRTrunk playlist's export and its import, on Systems | **exists** (098) | G1 |
+| A system or a site added by hand | **decided**, not built | G1 |
 | Settings and Diagnostics split: the whole radio, and a part per module | **decided**; how is **open** (Q5) | G1, G3 |
 | Files: what is on the card, to download | **decided**, not built (Q6) | G1 |
 | Login, and who is signed in | not built (Q8) | G1 |
@@ -170,12 +171,13 @@ What G1 and G2 need (the depth is Q7 to Q10):
 | **Activity** | Who talks, the totals and chart, calls, alerts, packet data, the picked call | **exists** (093) |
 | | Time per speaker in a call (072's open item); packet data kept in the history and its contents decoded (074b, parked) | **idea** |
 | **Systems** | The scan for systems; the systems and their sites edited in place | **exists** (093) |
+| | SDRTrunk's playlist: the export, and an import shown system by system before it is made (where each goes, its channels as sites, its names) | **exists** (098) |
 | | Add a system or a site by hand; the first-load welcome | **decided** |
 | **Aliases** | Per system, the alias list as a table, the talkgroups' and the radios': colour, name, numbers and ranges, group, and for a talkgroup its priority, tuner, Rec mark and Listen switch; each edited in its row, the picked rows together; found by name, group or number, sorted, shown by group | **exists** (097) |
 | | What was heard in the last week and has no alias, named in place | **exists** (097) |
 | | A system's listening settings: talkgroups with no priority followed or not, their tuner, pre-emption | **exists** (097) |
 | | The RadioReference import with its preview | **exists** (097) |
-| | The SDRTrunk playlist import and export | **decided**, not built |
+| | A playlist's names | **exists** (098): they come in with its systems, on Systems |
 | Later | Encrypted calls followed for their details on a free lane (072b); Harris and Motorola vendor grants (SLERS, FPL); Phase 2 TDMA if a nearby system uses it; a notebook per system | **idea** |
 
 #### Now's model
@@ -260,7 +262,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 |---|------|-------------|
 | 1 | **The structure, the code review, its clear defects** (095) | — |
 | 2 | **Now, redone:** done in 096 from layout A. Left of this step: `/ws/live` sending only what changed, the hold's two routes | Andy's use of the page. Q2 to Q4 are built as recommended, and his to change |
-| 3 | **Aliases:** the tab, the alias model's gaps and the RadioReference import's page are done in 097. Left of this step: the SDRTrunk playlist import and export | The playlist's routes, and a playlist of Andy's to read. Q4 is built with one difference from its recommendation, and his to change |
+| 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098 | Andy's own playlist imported on unit A (his to press), and Q4, which 098 found needs another answer |
 | 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
 | 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
 | 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
@@ -319,8 +321,14 @@ Each has a recommendation first. Short answers are enough.
   The alternative: a list picked by hand (a scan list), which needs a new field. **Built in 097
   with one difference:** switched off alone does not list a talkgroup either, because the
   RadioReference import switches off every fully encrypted one. A talkgroup switched off is listed
-  while it is heard (within a week), and is always on Aliases. Say if a switched-off talkgroup
-  should stay on Now however long it is silent.
+  while it is heard (within a week), and is always on Aliases.
+
+  **098 found that not enough.** Andy's own playlist marks 274 aliases Record (60 of Duval's,
+  all 118 of Alachua's, all 73 of FPL's), and each would list its talkgroup on Now whether it is
+  ever heard there or not. Recommended now: the list is what was heard at the site in the last
+  week, and nothing else; every setting is on Aliases, and a talkgroup shows on Now when it
+  speaks. It needs Now's check run against a daemon that has heard something. Not changed yet:
+  his to say.
 
 **The tools (steps 4 to 6)**
 

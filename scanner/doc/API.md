@@ -32,6 +32,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
 | GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with their aliases and sites, the live site (`download=true`: as a file) |
 | PUT | `/api/v1/config` | replace the configuration with an exported document (checked whole first); the scanner restarts |
+| GET | `/api/v1/playlist` | every system as an SDRTrunk playlist (XML): a channel for each site on its control channel and those that take over from it, each system's aliases as a list named after it (`download=true`: as a file) |
+| POST | `/api/v1/playlist` | import an SDRTrunk playlist (`xml`): each of its systems into the configured system on its channels' frequencies or into a new one, its channels as sites, its alias lists as aliases; `systems` says what to take of each (`name`, `into`, `channels` by number, `aliases`), absent: what the preview suggests |
+| POST | `/api/v1/playlist/preview` | what that import would change; nothing is saved |
 | POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts |
 | GET | `/api/v1/radio` | radio configuration, hardware and tuning |
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |

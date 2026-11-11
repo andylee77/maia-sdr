@@ -21,7 +21,8 @@ export function importPane({ system, done }) {
     h('p', { class: 'card-note' },
       'RadioReference offers two files for a trunked system. Its talkgroups file gives an alias to each talkgroup that has none, named and grouped as the file says. Its sites file adds the sites the system lacks, and gives the ones it has the channels they lack. Choose either for ',
       into, ': what it would change is shown first.'),
-    h('div', { class: 'row' }, file), out);
+    h('div', { class: 'row' }, file), out,
+    h('p', { class: 'card-note' }, 'An SDRTrunk playlist\'s alias lists come in with its systems: ', h('a', { href: '#systems', text: 'Systems' }), ', SDRTrunk playlist.'));
   // A newer file, or another system, ends what an older one started.
   let turn = 0;
 
@@ -36,7 +37,7 @@ export function importPane({ system, done }) {
       if (mine !== turn) return;
       reset();
       const said = r.file === 'talkgroups'
-        ? `${plural(r.aliases_added.length, 'alias', 'aliases')} added to ${sys.label}`
+        ? `${plural(r.aliases_added.length, 'alias', 'aliases')} added to ${sys.label}${r.aliases_named.length ? `, ${plural(r.aliases_named.length, 'talkgroup')} named` : ''}`
         : `${sys.label}: ${plural(r.sites_added.length, 'site')} added, ${num(r.sites_updated.length)} given channels`;
       toast(said);
       if (r.file === 'sites') out.replaceChildren(h('p', null, `${said}. They are on `, h('a', { href: '#systems', text: 'Systems' }), '.'));
@@ -50,7 +51,12 @@ export function importPane({ system, done }) {
     const added = p.aliases_added;
     const off = added.filter(a => a.do_not_monitor).length;
     const skip = switchInput(`Never follow the ${plural(off, 'fully encrypted talkgroup')}`, true, () => marks());
-    const go = h('button', { class: 'btn primary', type: 'button', text: `Add ${plural(added.length, 'alias', 'aliases')}`, disabled: !added.length });
+    // Talkgroups an alias holds under their number only ("TG 300"): they take the file's name.
+    const named = p.aliases_named.length;
+    const go = h('button', {
+      class: 'btn primary', type: 'button', disabled: !added.length && !named,
+      text: `Add ${plural(added.length, 'alias', 'aliases')}${named ? `, name ${num(named)}` : ''}`,
+    });
     const rows = added.slice(0, SAMPLE).map(a => {
       const mark = h('td');
       mark._off = a.do_not_monitor;
@@ -66,8 +72,9 @@ export function importPane({ system, done }) {
     });
     const kept = p.talkgroups_kept.length;
     put(
-      h('p', null, h('strong', { text: name }), `: ${plural(added.length + kept, 'talkgroup')}. `,
+      h('p', null, h('strong', { text: name }), `: ${plural(added.length + named + kept, 'talkgroup')}. `,
         `${num(added.length)} would become ${added.length === 1 ? 'an alias' : 'aliases'}; `,
+        named ? `${num(named)} held under ${named === 1 ? 'its number' : 'their numbers'} would take ${named === 1 ? 'its name' : 'their names'}; ` : '',
         kept === 1 ? '1 already has an alias and stays as it is.' : `${num(kept)} already have an alias and stay as they are.`),
       h('div', { class: 'row' }, off ? skip.el : null, h('div', { class: 'spacer' }), go),
       added.length ? table(['Number', 'Name', 'Group', ''], rows) : null,

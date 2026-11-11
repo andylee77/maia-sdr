@@ -5,6 +5,29 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 098: SDRTrunk's playlist, in and out
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the rest of the roadmap's step 3, and the brief's decision that "the scanner and
+  SDRTrunk stay in step". Andy's own playlist holds every name he has given a talkgroup (1,019
+  aliases), and unit A had none of them. Record: `doc/changes/098_sdrtrunk_playlist.md`.
+- **The import** (`POST /api/v1/playlist`, `/preview`): each system of a playlist goes into the
+  configured system on its channels' frequencies or into a new one; each channel is a site it
+  may be (a new site, or a configured one that gains frequencies); its alias lists become
+  aliases. A playlist does not say which channel is a control channel, so the preview shows
+  every choice and the request says what is taken.
+- **The export** (`GET /api/v1/playlist`): a channel for each site and each system's aliases as
+  a list. SDRTrunk's own reader reads it.
+- **The page:** Systems has a second entry, SDRTrunk playlist, with the download and the import
+  shown system by system before it is made.
+- **An import names a talkgroup held only under its number** ("TG 850", what a control on Now
+  makes): it takes the file's name and keeps its settings. The RadioReference import does the
+  same now. The same file taken twice adds nothing.
+- **Held against SDRTrunk itself:** `tools/sdrtrunk_playlist_reference.py` reads a playlist with
+  SDRTrunk's reader and with the scanner's and compares them, line for line.
+
 ## [2026-11-11] 097: The Aliases page, with the RadioReference import
 
 **Branch:** fishball-p25 (local)

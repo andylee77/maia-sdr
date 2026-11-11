@@ -9,9 +9,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 - **The plan:** `doc/ROADMAP.md` (095): the goals, the capabilities each needs, the features by
   module, the order of work and the questions open for Andy. Step 2, the Now page as a trunked
   monitoring station's front, is built from the layout he picked (096,
-  `doc/changes/096_now_tuners_first.md`). Step 3's Aliases page, with the RadioReference import,
-  is built (097, `doc/changes/097_aliases_page.md`); the SDRTrunk playlist is left of it, and
-  step 4 is the Settings and Diagnostics split. 095's review of the UI and its API:
+  `doc/changes/096_now_tuners_first.md`). Step 3 is built: the Aliases page with the
+  RadioReference import (097, `doc/changes/097_aliases_page.md`) and SDRTrunk's playlist, in and
+  out, on Systems (098, `doc/changes/098_sdrtrunk_playlist.md`). Step 4 is the Settings and
+  Diagnostics split. 095's review of the UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by step).
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
@@ -36,7 +37,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/093_activity_systems.md`), and Channels, Diagnostics and Settings (094,
   `doc/changes/094_channels_diagnostics_settings.md`): every page is in the rail's layout.
   Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`, `scanner_pages.mjs`,
-  `aliases_page.mjs`, `tool_pages.mjs` and `tv_watch.mjs`.
+  `aliases_page.mjs`, `playlist_page.mjs`, `tool_pages.mjs` and `tv_watch.mjs`.
 
 ## Layout
 
@@ -91,6 +92,10 @@ Every commit builds and passes these, run from `scanner/`:
 - **Player tests,** when `scanner/player/` changes: `cargo test` from `scanner/player/`, with
   `ATSC_PLAYER_DATA=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/atsc/captures_20261004` for the
   comparisons with FFmpeg.
+- **SDRTrunk playlist reference,** when `scanner/src/services/config/sdrtrunk/` changes:
+  `python tools/sdrtrunk_playlist_reference.py C:/Users/Andy/SDRTrunk/playlist/default.xml C:/Users/Andy/SDRTrunk/playlist/playlist.xml`
+  reads both as SDRTrunk's own reader does (1,088 and 23 lines the same), and with
+  `--unit http://<unit>:8080` holds a unit's exported playlist the same way.
 - **P25 replay corpus:** `python bench/fbench.py run rf.p25_corpus`, with unit B transmitting
   into unit A. Andy wires the bench link when a test needs it; ask first.
 - **Live:** on unit A, Clay County P25 (site `clay_county_public_safety_simulcast`, CC

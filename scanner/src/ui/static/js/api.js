@@ -57,6 +57,9 @@ export const api = {
   // A RadioReference file (`req`: csv, encrypted_do_not_monitor, sites) imported, or only what
   // it would change (`preview`).
   radioReference: (id, req, preview) => request('POST', `${system(id)}/radioreference${preview ? '/preview' : ''}`, req),
+  // An SDRTrunk playlist (`req`: xml, and what to take of each of its systems) imported, or
+  // only what it would change (`preview`).
+  playlist: (req, preview) => request('POST', `/api/v1/playlist${preview ? '/preview' : ''}`, req),
   // One talkgroup's controls (`edit`: any of name, priority, follow, record, speaker).
   setTalkgroup: (system, tg, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/talkgroups/${tg}`, edit),
   // Its alias removed: it is a talkgroup with no settings of its own again.

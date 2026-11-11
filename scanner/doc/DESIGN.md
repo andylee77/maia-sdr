@@ -398,7 +398,9 @@ nothing). The header row says which file it is, and a file is checked whole firs
 
 - **Talkgroups** (`trs_tg_*.csv`: decimal ID, alpha tag, mode, category): an alias for each
   talkgroup no alias covers yet, named by the alpha tag and grouped by the category, as
-  SDRTrunk's import makes them. Talkgroups an alias already covers are kept. Fully encrypted
+  SDRTrunk's import makes them. Talkgroups an alias already covers are kept, but one held only
+  under its number ("TG 300", made by a control on the live screen) takes the file's name and
+  group and keeps its settings. Fully encrypted
   talkgroups (mode `E`; `e` is partly) are never followed unless `encrypted_do_not_monitor` is
   false (SDRTrunk's default too).
 - **Sites** (`trs_sites_*.csv`: RFSS or region, site, NAC, description, then the frequencies,
@@ -414,6 +416,25 @@ nothing). The header row says which file it is, and a file is checked whole firs
 - **Alternate control channels:** RadioReference lists every channel that can carry control,
   and the receiver stays on the site's one control channel. A new site whose first `c` is not
   the one in use needs its control channel set in the site editor.
+
+#### SDRTrunk's playlist
+
+An SDRTrunk playlist imports as a whole (`POST /api/v1/playlist`; `/preview` saves nothing) and
+the configuration exports as one (`GET /api/v1/playlist`); `config::sdrtrunk` reads and writes
+it, and `doc/changes/098_sdrtrunk_playlist.md` has what a playlist is and why the import is
+shaped as it is.
+
+- **A system of the playlist** goes into the configured system that has a site on one of its
+  channels' frequencies, or into a new one.
+- **A channel** is a site it may be: a new site (its first frequency the control channel), or a
+  configured site that gains the frequencies it lacks. A playlist does not say which channel is
+  a control channel, so a lone frequency among several at one site is taken only when asked.
+- **Its alias lists** go into the system as an import takes aliases (`aliases::Intake`): an ID
+  already named stays, a talkgroup held only under its number takes the file's name.
+- **Not in a playlist:** a system's or a site's identity, a talkgroup's lane, what a site
+  learned.
+- `tools/sdrtrunk_playlist_reference.py` holds the reader and the export against SDRTrunk's own
+  reader.
 
 ### 3.5 A new unit
 

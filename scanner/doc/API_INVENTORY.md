@@ -85,8 +85,10 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/systems` | Systems with their sites | UI Systems, Settings | — |
 | `GET /api/v1/systems/{id}` | One system | Nothing | — |
 | `PUT /api/v1/systems/{id}` | Edit a system: name, identity, details | UI Systems | — |
-| `GET`/`PUT /api/v1/systems/{id}/aliases`, `PUT …/listening`, `PUT`/`DELETE …/talkgroups/{tg}` | Aliases (names, priorities, recording, lanes) with the list's revision (`rev`); the list replaced whole, with `?rev=` only the list that was read (409 when it changed since); listening settings; one talkgroup's controls; its alias removed | UI Aliases (the list read and replaced with its `rev`; `…/listening`). UI Now's talkgroups (`…/talkgroups/{tg}`: `follow`, its lane as `speaker`, `record`, priority, name; the alias removed when a name is emptied on a talkgroup with no other setting) | No SDRTrunk playlist import or export (UI_BRIEF). An edit sends the whole list (about 120 bytes an alias). `…/talkgroups/{tg}`: see "What a code review may change" |
-| `POST /api/v1/systems/{id}/radioreference`, `…/preview` | Import a RadioReference CSV of talkgroups or sites | UI Aliases' Import (the preview first, then the import) | — |
+| `GET`/`PUT /api/v1/systems/{id}/aliases`, `PUT …/listening`, `PUT`/`DELETE …/talkgroups/{tg}` | Aliases (names, priorities, recording, lanes) with the list's revision (`rev`); the list replaced whole, with `?rev=` only the list that was read (409 when it changed since); listening settings; one talkgroup's controls; its alias removed | UI Aliases (the list read and replaced with its `rev`; `…/listening`). UI Now's talkgroups (`…/talkgroups/{tg}`: `follow`, its lane as `speaker`, `record`, priority, name; the alias removed when a name is emptied on a talkgroup with no other setting) | An edit sends the whole list (about 120 bytes an alias). `…/talkgroups/{tg}`: see "What a code review may change" |
+| `POST /api/v1/systems/{id}/radioreference`, `…/preview` | Import a RadioReference CSV of talkgroups or sites; a talkgroup an alias holds only under its number takes the file's name (`aliases_named`, 098) | UI Aliases' Import (the preview first, then the import) | — |
+| `GET /api/v1/playlist` | Every system as an SDRTrunk playlist (XML): a channel a site, each system's aliases as a list | UI Systems' SDRTrunk playlist (the download); `tools/sdrtrunk_playlist_reference.py --unit` | A talkgroup's lane, a site's identity and what a site learned have no place in a playlist |
+| `POST /api/v1/playlist`, `…/preview` | Import an SDRTrunk playlist (`xml`): each of its systems into a configured one or a new one, its channels as sites, its alias lists as aliases; `systems` says what to take of each, and the preview what the radio suggests | UI Systems' SDRTrunk playlist (a preview at each change of a tick or a target, then the import) | The file's text is sent with each preview (2 MB at most). A playlist does not say which channel is a control channel, nor a system's identity |
 | `PUT /api/v1/systems/{system}/sites/{site}` | Edit a site; the live one goes live again | UI Systems | The edit is saved before re-activation, so a failed re-activation still keeps it |
 | `DELETE /api/v1/systems/{id}`, `DELETE …/sites/{site}` | Remove a system (with its sites and aliases) or a site; not the live one | UI Systems | No create by hand: sites come only from a scan |
 | `GET /api/v1/sites` | Every site, flattened, live one marked | Nothing | Repeats `/systems`; no single-site GET |
@@ -155,7 +157,7 @@ The UI replacement (`UI_BRIEF.md`) sets the order. Its backend items come first:
 
 - realtime push over one WebSocket (done: `/ws/live`);
 - aliases replacing profiles (done, D15);
-- SDRTrunk playlist import and export;
+- SDRTrunk playlist import and export (done, 098);
 - manual add and rename.
 
 The list below follows them.

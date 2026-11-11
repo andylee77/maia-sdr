@@ -1267,6 +1267,16 @@ NOT_JSON: dict[str, str] = {
         "| `alert` | `lane`, `tg`, `call_id`, `seq`, `kind`, `tones_hz`, `offset_ms` | With `v=2`, before the frame that makes the call's audio an alert tone; it began `offset_ms` into the call's audio. |\n"
         "| `lag` | `skipped` | The listener fell behind; frames were skipped. |"
     ),
+    "/api/v1/playlist": (
+        "An SDRTrunk playlist (`application/xml`; with `download=true` an attachment named "
+        "`scanner-playlist.xml`): `<playlist version=\"4\">` with an `<alias>` for each alias of each "
+        "system (its `list` the system's name; its IDs, a `priority` of -1 when never followed and a "
+        "`record` as `<id>` elements) and a `<channel>` for each site (`system`, `site`, the control "
+        "channel as its tuner frequency, or with the channels that take over from it as the "
+        "frequencies SDRTrunk rotates through; a DMR site's channel numbers as `<timeslot>`). "
+        "SDRTrunk's own reader reads it (`tools/sdrtrunk_playlist_reference.py`). A talkgroup's "
+        "traffic lane, a site's identity and what a site learned are not in it."
+    ),
     "/api/v1/iq/control.wav": (
         "A WAV file (`audio/wav`, an attachment named like `cc_454368750_20261002_002754_60s.wav`): "
         "the control channel's IQ at 50 kSPS, 16-bit stereo, I left and Q right, as the decoder gets "
