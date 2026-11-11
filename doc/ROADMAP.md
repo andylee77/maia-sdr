@@ -262,7 +262,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 |---|------|-------------|
 | 1 | **The structure, the code review, its clear defects** (095) | — |
 | 2 | **Now, redone:** done in 096 from layout A. Left of this step: `/ws/live` sending only what changed, the hold's two routes | Andy's use of the page. Q2 to Q4 are built as recommended, and his to change |
-| 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098 | Andy's own playlist imported on unit A (his to press), and Q4, which 098 found needs another answer |
+| 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | Q4, which 098 found needs another answer |
 | 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
 | 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
 | 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |

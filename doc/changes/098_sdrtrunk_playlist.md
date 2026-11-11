@@ -3,8 +3,8 @@
 **Date:** 2026-11-11. **Branch:** fishball-p25. **Bake required:** NO.
 
 **Status:** committed locally. On unit A as a test build in RAM (`2026-11-11-playlist1`) over the SD
-image `2026-11-10-pages2`, which does not have it. Andy's playlist is not imported on A: the
-preview was run there, and the import is his to press.
+image `2026-11-10-pages2`, which does not have it. Andy's playlist is imported on unit A, at his
+word, since 2026-11-11 (the status log).
 
 ## Why
 
@@ -151,8 +151,6 @@ heard something, which a PC daemon has not.
 
 ## Not in this change
 
-- **The import run on unit A.** It would add systems, sites and over a thousand names to the
-  unit in use (the status log has what its preview says). The import is Andy's to press.
 - A playlist's channel maps, streams and tuner choices; the identities a playlist does not have.
 - P25 Phase 2 channels, and the DMR that is not Tier III: a DMR channel is taken as Tier III.
 - A system or a site added by hand; the first-load welcome.
@@ -215,11 +213,38 @@ See the status log for the counts.
     previewed, its ticks and targets changed, nothing saved), `aliases_page.mjs` reads 9,
     `now_rail.mjs` reads 15;
   - `scanner/doc/API_FIELDS.md` regenerated from A.
+- 2026-11-11: **Andy's playlist imported on unit A,** at his word ("Yes, import it"), as the
+  preview suggested:
+  - **kept first:** A's configuration from before it, on this PC in `runs/unit_a/`:
+    `config_before_playlist_2026-11-11.json` (the document `PUT /api/v1/config` takes back, with
+    a restart) and `systems_before_playlist_2026-11-11.json` (the flash's file);
+  - **checked first:** of the Clay talkgroups heard in the week, his list marks 15 "never
+    followed": 12 are heard only encrypted and 3 were switched off on A already. So nothing A
+    follows changes;
+  - **the import** took 0.51 s: three systems (Alachua County, Putnam County, PSIC), six sites,
+    eight sites given frequencies, 1,179 aliases added and four talkgroups named. A has nine
+    systems and 1,187 aliases. It stayed live on Clay, whose site gained nothing;
+  - `systems.json` is 420 KB, and the flash's use did not grow (288 KB of 896: JFFS2
+    compresses);
+  - **Now** lists 42 talkgroups where it listed 41, and 29 of them have a name where none had.
+    The one more is "Hospital 321", not heard this week and listed for its Rec mark (what
+    "Found, for Andy" above describes). 13 heard talkgroups are not in his list. The calls carry
+    the names, the radios' too ("CCSO 402", from "CCSO Dispatcher");
+  - the 12 encrypted talkgroups read "ignored" in the calls where they read "encrypted": they
+    are switched off now, which is said before the encryption;
+  - a second import would add nothing; **A's export** (239 KB) is read by SDRTrunk as 21
+    channels and 1,187 aliases, 1,208 of 1,208 lines the same;
+  - with A serving the page, reads only: `aliases_page.mjs` 9 steps, `now_rail.mjs` 15,
+    `playlist_page.mjs --preview-only` 13;
+  - the next clear calls after it were followed on Traffic 1 and recorded ("CCFR Primary" from
+    "CCFR Dispatcher", recording 338398), and the log has no error;
+  - the names are on the flash, so they stay across a reboot. A reboot returns the pages to the
+    SD image's, which show the names and have no Aliases page.
 - **Not checked:**
   - the exported playlist opened in SDRTrunk's own window and a channel started from it: its
     reader reads the file, which is what the harness runs; the application was not run;
-  - the import on unit A, and so the live site going live again after it gains a frequency
-    (the route does what the RadioReference import does there);
+  - the live site going live again after an import gives it a frequency: on unit A the live
+    site gained none (the route does what the RadioReference import does there);
   - a playlist from another SDRTrunk version or another person: both files are Andy's, written
     by his build;
   - a playlist with numeric priorities (his has only "do not monitor"): the host tests cover
