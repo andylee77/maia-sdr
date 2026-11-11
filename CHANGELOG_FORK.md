@@ -5,6 +5,22 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 099: Now lists what was heard
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's Q4. 097 listed a talkgroup on Now when it was heard in the week or its
+  alias gave it a priority, a tuner or a Rec mark; 098 found Andy's own playlist marks 274
+  aliases Record, and with it on unit A a talkgroup not heard was listed. Asked whether Now
+  should list only what was heard, he answered "Yes, heard only". Record:
+  `doc/changes/099_now_lists_what_was_heard.md`.
+- **Now's talkgroups** (`talkgroups` on `/ws/live`, `GET /api/v1/talkgroups`) are those heard at
+  the live site in the last week or among the calls listed now. An alias for a talkgroup not
+  heard lists none; every alias is on the Aliases page.
+- **Now's check** writes to a talkgroup the PC daemon has "heard": `runs/ui_check/seed_heard.py`
+  puts it in the daemon's history before the daemon starts.
+
 ## [2026-11-11] 098: SDRTrunk's playlist, in and out
 
 **Branch:** fishball-p25 (local)

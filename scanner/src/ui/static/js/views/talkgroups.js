@@ -339,7 +339,7 @@ export function talkgroupList({ hold }) {
     }
     groups[0].head.hidden = !all.length;
     setText(count, all.length ? num(all.length) : '');
-    count.title = 'The talkgroups heard here in the last week, and those given a priority, a tuner or a Rec mark. Every alias is on Aliases';
+    count.title = 'The talkgroups heard here in the last week. Every alias is on Aliases';
     empty.hidden = shownRows > 0 || (!q && all.length > 0);
     setText(empty, !v || !v.site ? 'No site is live.' : all.length ? 'No talkgroup matches.' : 'No talkgroups heard yet.');
     drawBar(all.find(t => t.tg === selected) || null);

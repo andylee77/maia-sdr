@@ -83,7 +83,7 @@ routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
-    get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those heard in the last week and those an alias gives a priority, a traffic lane or a Record mark (a name alone lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
+    get "/api/v1/talkgroups" => v1::talkgroups::get, "the live site's talkgroups: those heard there in the last week or among the calls listed now (an alias for a talkgroup not heard lists none), each with how it is treated (followed, its traffic lane, priority, recorded) and when it was last heard; and what decides recording";
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any, and each traffic lane's own";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";

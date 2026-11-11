@@ -261,8 +261,8 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | # | Step | Needs first |
 |---|------|-------------|
 | 1 | **The structure, the code review, its clear defects** (095) | — |
-| 2 | **Now, redone:** done in 096 from layout A. Left of this step: `/ws/live` sending only what changed, the hold's two routes | Andy's use of the page. Q2 to Q4 are built as recommended, and his to change |
-| 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | Q4, which 098 found needs another answer |
+| 2 | **Now, redone:** done in 096 from layout A; its list is what was heard since 099 (Q4). Left of this step: `/ws/live` sending only what changed, the hold's two routes, older calls on a short list | Andy's use of the page. Q2 and Q3 are built as recommended, and his to change |
+| 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
 | 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
 | 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
@@ -315,20 +315,13 @@ Each has a recommendation first. Short answers are enough.
   Traffic 2 or either". It is a change in the browser's player only. The alternative: a talkgroup
   set to left or right is panned, and an "either" one plays in both ears, as before 096.
   **Built as recommended in 096,** with Left / Right in the header to turn it off.
-- **Q4. What is in the talkgroup list once an import adds hundreds of names?** Recommended: the
-  talkgroups heard in the last week, plus those with a setting of their own (a priority, a tuner,
-  Record, or switched off); a name alone does not list one, and everything is on the Aliases tab.
-  The alternative: a list picked by hand (a scan list), which needs a new field. **Built in 097
-  with one difference:** switched off alone does not list a talkgroup either, because the
-  RadioReference import switches off every fully encrypted one. A talkgroup switched off is listed
-  while it is heard (within a week), and is always on Aliases.
-
-  **098 found that not enough.** Andy's own playlist marks 274 aliases Record (60 of Duval's,
-  all 118 of Alachua's, all 73 of FPL's), and each would list its talkgroup on Now whether it is
-  ever heard there or not. Recommended now: the list is what was heard at the site in the last
-  week, and nothing else; every setting is on Aliases, and a talkgroup shows on Now when it
-  speaks. It needs Now's check run against a daemon that has heard something. Not changed yet:
-  his to say.
+- **Q4. What is in the talkgroup list once an import adds hundreds of names?** Answered
+  2026-11-11: "Yes, heard only". The list is the talkgroups heard at the site in the last week
+  (or among the calls listed now) and nothing else; every alias and every setting for a silent
+  talkgroup is on Aliases, and a talkgroup shows on Now when it speaks. Built in 099. Before it,
+  097 also listed a talkgroup an alias gave a priority, a tuner or a Rec mark, and 098 found his
+  own playlist marks 274 aliases Record. Not taken: a list picked by hand (a scan list), which
+  needs a new field.
 
 **The tools (steps 4 to 6)**
 
@@ -397,6 +390,10 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
   on the two workers that also run trunking and live audio; a write that meets the flash's
   garbage collection may take longer, which five writes did not show.
 - **Left: the site's hold and a lane's share a route.**
+- **Left: older calls on a short list** (found in 099). The calls' pane reads older calls when
+  its list's end comes into view. On a list too short to fill the pane the end is in view from
+  the start, and a page is read only if the site went live after the page opened; else the
+  button reads it. It matters on a quiet site after a restart.
 - **Left: `/ws/live` sends what changed.** Per client per second it builds and compares the
   status, the scan and the kept TV scan (85 KB), and sends the traffic because one age in it
   moved. The talkgroups come whole at each change (6 KB for unit A's 42).

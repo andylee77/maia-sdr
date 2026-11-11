@@ -449,7 +449,7 @@ ROUTES: dict[str, list] = {
         ("recording", "object", "What decides whether a followed call is recorded."),
         ("recording.enabled", "bool", "Recording is on."),
         ("recording.every_call", "bool", "Every followed call is recorded; false: only those of talkgroups marked `record`."),
-        ("items", "array", "The site's talkgroups by number: those heard in the last week or among the calls listed now, and those an alias gives a priority, a lane or a Record mark. An alias that only names a talkgroup, or switches it off, lists it once it is heard."),
+        ("items", "array", "The site's talkgroups by number: those heard there in the last week or among the calls listed now. An alias for a talkgroup not heard lists none: every alias is in `GET /api/v1/systems/{id}/aliases`."),
         ("items[]", "object", "One talkgroup."),
         ("items[].tg", "number", "The talkgroup."),
         ("items[].name", "string or null", "Its alias's name; null while that is only its number."),
