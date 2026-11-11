@@ -19,8 +19,8 @@ for and no page has yet is marked "Still to come" in them.
 | The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
-| Modes | Each unit mode has its own tabs, its own Diagnostics and Settings among them (change 100), and the radio's own Diagnostics and Settings are shared: scanner (Now, Activity, Systems, Aliases), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
-| Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, the radio's own Diagnostics and Settings at the bottom, the viewed module's pages as tabs in the header, its own Diagnostics and Settings after them (Andy, 2026-11-11: "Yes, module tabs"; change 100). A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
+| Modes | Each unit mode has its own tabs, its own Diagnostics and Settings among them (change 100), and the radio's own Diagnostics, Files (change 101) and Settings are shared: scanner (Now, Activity, Systems, Aliases), ATSC TV (Watch, Channels; changes 080, 081 and 091), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
+| Shell | A module rail on the left (Andy, 2026-11-10, from three drawn options; change 090): Scanner and TV at the top, the radio's own Diagnostics, Files and Settings at the bottom, the viewed module's pages as tabs in the header, its own Diagnostics and Settings after them (Andy, 2026-11-11: "Yes, module tabs"; change 100). A module's pages stay readable while another has the radio; a notice on them offers the switch. A new module is an entry in `js/modules.js`. |
 | Hold | Not on every row (Andy, 2026-11-10): Hold is on the tuner's card of the call on the air and in the selected talkgroup's bar, Release there and in the site bar. |
 | Now | Layout A, "tuners first" (Andy, 2026-11-11, from three drawn options; change 096): the site bar, the two tuners, the talkgroups with one selected and its controls in a bar under them, the calls with the picked call's player docked under them. Sound follows the tuner (Traffic 1 left, Traffic 2 right), and what is recorded is Off, Marked or Every call; both as drawn, and Andy's to change. |
 | TV | Watch, then Channels (change 091). Watch cycles three views (Andy, 2026-11-10): small (the channels, the picture, the signal), large (the picture across the page, the channels a strip below) and full screen with nothing over the picture. Play and Scan take the radio themselves, after asking. |
@@ -195,6 +195,12 @@ Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the ra
     recording (Off, Marked or Every call, as on Now; where and how long), packet data;
   - **the radio's own,** in the rail: the clock, the crystal, and the configuration as a file
     (export, import, factory reset).
+
+- **Files** (change 101, the radio's own, in the rail): what is on the card, to take away. The
+  recordings as one ZIP archive of a selection (dates, a site, a talkgroup, a radio, only the
+  locked ones), shown with what it takes before its download, or of one day from the table; the
+  history's database; each TV recording. One download at a time, shown across the top while it
+  runs.
 
 TV's Channels page (the TV scan's table with the picked channel beside it) is in change 094 too.
 

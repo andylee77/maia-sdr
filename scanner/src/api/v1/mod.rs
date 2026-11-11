@@ -8,6 +8,7 @@ pub mod config;
 pub mod data;
 pub mod diag;
 pub mod events;
+pub mod files;
 pub mod hold;
 pub mod iq;
 pub mod mode;

@@ -45,6 +45,7 @@ const ICONS = {
   tower: [['path', { d: 'M12 13v8M7.5 5.5a6.4 6.4 0 000 9M16.5 5.5a6.4 6.4 0 010 9M4.6 3a10.2 10.2 0 000 14M19.4 3a10.2 10.2 0 010 14' }], ['circle', { cx: '12', cy: '10', r: '2' }]],
   tv: [['rect', { x: '3', y: '6', width: '18', height: '12', rx: '2' }], ['path', { d: 'M8 21h8M9 3l3 3 3-3' }]],
   scope: [['path', { d: 'M4 19V5M4 19h16M8 15l3-4 3 2 4-6' }]],
+  card: [['path', { d: 'M6 3h9l4 4v14H6zM9.5 6.5v3M12.5 6.5v3' }]],
 };
 
 // `size` in px (16 in a line of text).

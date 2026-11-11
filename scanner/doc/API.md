@@ -11,7 +11,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any, and each traffic lane's own |
 | PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before |
 | GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
-| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal) |
+| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal, live TV, the download running) |
 | GET | `/ws/events` | a text frame when a call opens or closes, a recording is saved or a call's alert tones are known |
 | GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged |
 | GET | `/api/v1/data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
@@ -82,6 +82,11 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/atsc/scan/options` | the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once |
 | POST | `/api/v1/atsc/scan` | scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on) |
 | POST | `/api/v1/atsc/scan/cancel` | stop the TV scan |
+| GET | `/api/v1/files` | what is on the card as files to take away: the card's state and space, the recordings by the span of time their calls started in (`span`: 15, 30, 60 or 1440 minutes, default 60; a reader adds them up into its own zone's days), the history's database, the TV recordings, and the download running |
+| GET | `/api/v1/files/recordings` | how many recordings a selection takes and their size (`from`, `to`: unix ms of the call's start; `site`, `tg`, `unit`; `locked=true`: only the locked ones) |
+| GET | `/api/v1/files/recordings.zip` | a selection's recordings as one ZIP archive (not compressed), each in the folder of its call's UTC date, with `recordings.csv` naming them; made as it is sent, one download at a time |
+| GET | `/api/v1/files/history.sqlite` | the history's database (SQLite) as one consistent file: a copy is made on the card first, then sent and removed |
+| GET | `/api/v1/files/tv/{file}` | a TV recording's file, `rf<N>.ts`, as it is on the card |
 | GET | `/api/v1/atsc/recordings` | the TV recordings a player can be served (`tv/rf<N>.ts` on the SD card): each one's RF channel, size and programmes |
 | GET | `/api/v1/atsc/stream/{rf}` | an RF channel's transport stream as it plays, for VLC and other players and the Watch page (`video/mp2t`): live from the radio core's 8-VSB block when it plays that channel, or in ATSC mode when nobody watches another (it tunes it); otherwise its recording at the pace of its clock, from the start again at its end; `program`: that programme alone, under a PAT naming only it |
 | GET | `/api/v1/atsc/live` | live TV: whether the radio core has the 8-VSB block, the channel, the block's state (segments, fields, tracking, taps), the loops at the last field sync (carrier Hz, timing ppm, gain word, sync), the latest fields' MER, codewords clean, corrected and failed, tap solves and their time, PSIP's names, players |

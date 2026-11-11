@@ -38,6 +38,13 @@ pub fn utc_date(ms: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Unix seconds as UTC's (year, month, day, hour, minute, second).
+pub fn utc_fields(unix_s: u64) -> (i64, u32, u32, u32, u32, u32) {
+    let (days, secs) = (unix_s / 86_400, (unix_s % 86_400) as u32);
+    let (year, month, day) = civil_from_days(days as i64);
+    (year, month, day, secs / 3_600, secs % 3_600 / 60, secs % 60)
+}
+
 /// Days since 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;

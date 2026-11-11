@@ -19,6 +19,7 @@ import * as scannerDiag from './views/scanner_diag.js';
 import * as scannerSettings from './views/scanner_settings.js';
 import * as tvDiag from './views/tv_diag.js';
 import * as diag from './views/diagnostics.js';
+import * as files from './views/files.js';
 import * as settings from './views/settings.js';
 
 // The scanner's line in the header: the live site, or what the radio does instead.
@@ -79,5 +80,6 @@ export const MODULES = [
     away: 'These pages show what the last TV scan found. A scan or Play takes the radio.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
+  { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },
   { id: 'settings', label: 'Settings', title: 'Radio settings', icon: 'tune', pages: [{ key: 'settings', label: 'Settings', view: settings }] },
 ];

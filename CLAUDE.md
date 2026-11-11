@@ -15,8 +15,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   in the last week and nothing else (099, Andy's answer to the roadmap's Q4). Step 4 is built:
   Settings and Diagnostics are split into the radio's own (the rail's two) and each module's
   (tabs of it), with the event log kept by part (100,
-  `doc/changes/100_settings_diagnostics_split.md`). Step 5 is Files (Q6). 095's review of the UI
-  and its API: `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
+  `doc/changes/100_settings_diagnostics_split.md`). Step 5 is built: Files, the recordings as a
+  ZIP archive, the history's database and the TV recordings to take away (101,
+  `doc/changes/101_files.md`; `tools/scanner_files.py` from the command line). Step 6 is Access
+  (Q7 to Q10). 095's review of the UI and its API:
+  `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
@@ -41,8 +44,8 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `doc/changes/093_activity_systems.md`), and Channels, Diagnostics and Settings (094,
   `doc/changes/094_channels_diagnostics_settings.md`): every page is in the rail's layout.
   Checks: `runs/ui_check/modules_check.mjs`, `now_rail.mjs`, `scanner_pages.mjs`,
-  `aliases_page.mjs`, `playlist_page.mjs`, `tool_pages.mjs` (the modules' and the radio's
-  Diagnostics and Settings, 100) and `tv_watch.mjs`; on a unit, `tv_diag_live.mjs` (it takes the
+  `aliases_page.mjs`, `playlist_page.mjs`, `files_page.mjs`, `tool_pages.mjs` (the modules' and the
+  radio's Diagnostics and Settings, 100) and `tv_watch.mjs`; on a unit, `tv_diag_live.mjs` (it takes the
   radio for live TV, then gives it back). `now_rail.mjs`'s writes need a talkgroup the daemon
   has heard: run `python runs/ui_check/seed_heard.py` before the PC daemon starts.
 
@@ -56,7 +59,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 | `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.1.0, product "rad1", its 8-VSB block in `vsb/`), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`, the Verilator benches in `test_verilator/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
-| `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks |
+| `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks, `scanner_files.py` (downloads of what is on a unit's card, checked) |
 | `runs/` | Gitignored run output and captures (`runs/dmr/` holds the DMR reference captures) |
 | `doc/` | `ROADMAP.md`, `CLEANUP_INVENTORY.md`; `doc/changes/NNN_*.md`, one per change |
 | `maia-httpd/`, `maia-wasm/`, `maia-kmod/` | Upstream Maia; the unit uses `maia-kmod`'s rxbuffer driver for DMA |

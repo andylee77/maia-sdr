@@ -728,6 +728,29 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .set-foot + .set-foot { border-top: 0; padding-top: 6px; }
 .settings .kv { margin-bottom: 10px; }
 
+/* ── Files: what is on the card. The recordings (the selection, then the days as a table that
+   scrolls) beside the card, the history and TV; the download running across the top. ── */
+.files { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
+.files-where { margin: 0; }
+@media (min-width: 1100px) {
+  .files { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  .files-where, .files-run { grid-column: 1 / -1; }
+}
+.files-run { padding: 12px 16px; display: grid; gap: 8px; }
+.files-run .row { flex-wrap: wrap; gap: 4px 12px; }
+.files-totals { margin: 0 0 12px; }
+.files-pick { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; margin-bottom: 12px; }
+.files-field { display: grid; gap: 3px; font-size: 0.86em; }
+.files-field .input { font-size: 1rem; }
+.files-field .input.num { width: 7.5em; }
+.files-field select.input { max-width: 17em; }
+.files-days { margin-top: 12px; max-height: 56vh; overflow: auto; border-top: 1px solid var(--line); }
+.files-days .table th { position: sticky; top: 0; background: var(--bg-raised); }
+.files-days .dim { margin: 12px 0 0; }
+.files-get { text-align: right; }
+.files-line { margin: 0; flex: 1 1 14em; overflow-wrap: anywhere; }
+a.btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
 .table th { text-align: left; font-weight: 550; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--line); }

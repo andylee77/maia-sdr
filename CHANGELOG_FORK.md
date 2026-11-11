@@ -5,6 +5,26 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 101: Files: what is on the card, to take away
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's step 5. A recording left the card one at a time. Asked whether to build
+  the Files page with recordings downloaded as a ZIP archive (Q6), Andy answered "Yes, Files
+  page". Record: `doc/changes/101_files.md`.
+- **The recordings as one ZIP archive** of a period, a site, a talkgroup, a radio or the locked
+  ones (`GET /api/v1/files/recordings.zip`): stored, made as it is sent, each recording under its
+  name on the card in its UTC day's folder, with `recordings.csv` naming them; ZIP64 when it
+  needs it. **The history's database** as one consistent file (a copy made on the card first),
+  and **a TV recording's file**.
+- **One download at a time,** on a thread below the receivers' priority; measured on unit A
+  against the live site (the record has the numbers).
+- **The Files page,** the radio's own, in the rail: the selection with what it takes before its
+  download, the days as a table each with its archive, the card, the history, the TV
+  recordings, and the download running.
+- **`tools/scanner_files.py`** does the same from the command line and checks what it saved.
+
 ## [2026-11-11] 100: Settings and Diagnostics, the radio's and each module's
 
 **Branch:** fishball-p25 (local)

@@ -9,6 +9,7 @@ use crate::services::burst::BurstCheck;
 use crate::services::clock::Clock;
 use crate::services::crystal::Crystal;
 use crate::services::discovery::sweep::Discovery;
+use crate::services::files::Files;
 use crate::services::history::History;
 use crate::services::mode::Modes;
 use crate::services::notices::Notices;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub audio: Arc<Audio>,
     pub recordings: Arc<Recordings>,
     pub history: Arc<History>,
+    /// The downloads of what is on the card.
+    pub files: Arc<Files>,
     pub discovery: Arc<Discovery>,
     /// The unit's mode, and ATSC mode's channel finder.
     pub modes: Arc<Modes>,

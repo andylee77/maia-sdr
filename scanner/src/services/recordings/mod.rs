@@ -363,6 +363,11 @@ impl Recordings {
         lock(&self.shared.ring).iter().find(|r| r.id == id).cloned()
     }
 
+    /// Read the whole list (oldest first) while it is held still.
+    pub fn read<T>(&self, f: impl FnOnce(&VecDeque<Recording>) -> T) -> T {
+        f(&lock(&self.shared.ring))
+    }
+
     /// The recordings of these call ids (an id may have more than one: ids restart when a boot
     /// finds no recordings).
     pub fn of_calls(&self, ids: &std::collections::HashSet<u64>) -> HashMap<u64, Vec<Recording>> {

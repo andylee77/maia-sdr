@@ -599,6 +599,29 @@ impl Store {
         used_bytes(&lock(&self.read))
     }
 
+    /// Copy the database to `to` as one file, as it stands at one moment, on a connection of the
+    /// copy's own: the writer goes on meanwhile and the other queries are not held up. Returns
+    /// the copy's size. Blocks for as long as the card takes to read and write it.
+    pub fn copy_to(&self, to: &Path) -> rusqlite::Result<u64> {
+        let from = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        from.busy_timeout(READ_BUSY)?;
+        let _ = std::fs::remove_file(to);
+        let mut copy = Connection::open(to)?;
+        // The copy is whole or thrown away: it needs no journal of its own.
+        let _: String = copy.query_row("PRAGMA journal_mode=OFF", [], |r| r.get(0))?;
+        copy.execute_batch("PRAGMA synchronous=OFF;")?;
+        {
+            // Every page in one step, under one read of the source: a step at a time would start
+            // again at each of the writer's commits.
+            let backup = rusqlite::backup::Backup::new(&from, &mut copy)?;
+            if backup.step(-1)? != rusqlite::backup::StepResult::Done {
+                return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), Some("the history is busy".into())));
+            }
+        }
+        drop(copy);
+        std::fs::metadata(to).map(|m| m.len()).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    }
+
     /// Delete the oldest hours (a tenth of the calls at a time) until at most `max_bytes` are in
     /// use. Returns how many calls went.
     pub fn trim_to(&self, max_bytes: u64) -> rusqlite::Result<usize> {

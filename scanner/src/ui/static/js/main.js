@@ -27,8 +27,8 @@ let current = null;
 // Opened with no address: the page moves to the radio's module once the radio says which.
 let landing = !location.hash;
 
-// The rail: the modes' modules at the top, the radio's own diagnostics and settings at the
-// bottom. Module id -> its link and its "has the radio" dot.
+// The rail: the modes' modules at the top, the radio's own diagnostics, files and settings at
+// the bottom. Module id -> its link and its "has the radio" dot.
 const rail = new Map();
 for (const m of MODULES) {
   const dot = h('span', { class: 'rail-dot', title: 'Has the radio', hidden: true });

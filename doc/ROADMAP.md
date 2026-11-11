@@ -75,7 +75,7 @@ What each goal needs from each layer, and where that layer stands.
 | SDRTrunk playlist import and export | **exists** (098: `/api/v1/playlist`), held against SDRTrunk's own reader | G1, Aliases |
 | A system or a site added by hand | **decided** (UI_BRIEF), not built | G1 |
 | Modes: `scanner` and `atsc`. `Modes::set` assumes two, and `status.live.state: away` does not say which mode has the radio | **exists** for two; a third needs both fixed (`DATA_MODE.md` §8) | G3 |
-| What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | not built: one recording at a time, and the history as CSV | G1 |
+| What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | **exists** (101): the recordings as one ZIP archive of a selection, the history's database, a TV recording's file; one download at a time. Captures come with data mode | G1 |
 | Login, tokens, the sockets and the unit's other services | not built (see Security) | G1, G2 |
 | Listening on the unit itself: the two lanes mixed to an output, each lane's volume, the leveller, alerts-only listening | not built: all of it runs in the browser (`js/audio/`) | G2 |
 | The panel's service: the knobs' and buttons' actions as the same operations the API serves | not built (`PANEL_ADDON_BOARD.md` §9.2 was written for p25-httpd) | G2 |
@@ -92,7 +92,7 @@ What each goal needs from each layer, and where that layer stands.
 | The SDRTrunk playlist's export and its import, on Systems | **exists** (098) | G1 |
 | A system or a site added by hand | **decided**, not built | G1 |
 | Settings and Diagnostics split: the whole radio, and a part per module | **exists** (100: a module's own are tabs of it, the rail's two are the radio's) | G1, G3 |
-| Files: what is on the card, to download | **decided**, not built (Q6) | G1 |
+| Files: what is on the card, to download | **exists** (101), the radio's own, in the rail | G1 |
 | Login, and who is signed in | not built (Q8) | G1 |
 | The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
 | Data's module (Scan, Devices, Captures), a waterfall | **decided** (`DATA_MODE.md` §7), not built | G3 |
@@ -113,11 +113,16 @@ On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
 | Left from before the scanner, read by nothing | `p25-history.sqlite*`, `p25_iq_captures/`, `p25_forensics/`, `bench/`, eighteen `boot_*` folders | — |
 
 - **exists:** a recording's WAV by its id (with its alert tones as cue points), the history's
-  calls as CSV, the configuration as one document.
-- **not built:** many recordings as one download; the history's database as a file; a TV
-  recording as a file (its route plays it at the pace of its clock); data mode's captures.
-- A download must not cost the scanner a call: one at a time, at a pace the card and the A9 can
-  give while two lanes decode. To measure when it is built.
+  calls as CSV, the configuration as one document; and since 101 many recordings as one ZIP
+  archive, the history's database as a file, and a TV recording as a file.
+- **not built:** data mode's captures; a copy to a PC or a share on a schedule (Q6's second
+  half, not asked for).
+- **A download must not cost the scanner a call:** one at a time, on a thread below the
+  receivers' priority. Measured on unit A against the live site (101): a day's 2,979 recordings
+  in 41 s, the history's 206 MB in 19 s, and the whole card (101,667 recordings, 5.2 GB) in 26
+  minutes, with no block of control IQ dropped, no lane packet lost and no recording failed. An
+  archive goes at about 3 MB and 64 recordings a second: FAT looks each name up by scanning its
+  directory, and the oldest folders, of 8,000 files, go at a third of that.
 
 ### Security
 
@@ -242,7 +247,7 @@ are used, not its code.
 | | Eye and IQ plots; the spectrum, a waterfall and the plots at 20 Hz or more on a socket of their own | **idea** (below) |
 | **Settings** | The radio's own: the clock, the crystal, the configuration as a file | **exists** (100). Storage, the network and access come with steps 5 and 6 |
 | | Each module's, among its tabs: the scanner's gain, window presets, call timings, history, recording and packet data. A card saves its own part and follows a change made elsewhere | **exists** (100). TV has no setting yet; Data's come with Data |
-| **Files** (new) | What is on the card, and taking it away | **decided**; Q6 |
+| **Files** | What is on the card, and taking it away: the recordings as a ZIP archive of a selection or of a day, the history's database, the TV recordings | **exists** (101) |
 | **Access** (new) | The password, tokens, who is signed in, the certificate | Q7 to Q10 |
 
 ### The handheld
@@ -264,7 +269,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 2 | **Now, redone:** done in 096 from layout A; its list is what was heard since 099 (Q4). Left of this step: `/ws/live` sending only what changed, the hold's two routes, older calls on a short list | Andy's use of the page. Q2 and Q3 are built as recommended, and his to change |
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
-| 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
+| 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
 | 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
@@ -329,10 +334,10 @@ Each has a recommendation first. Short answers are enough.
   tabs". Among the module's own tabs (Scanner: Now, Activity, Systems, Aliases, then its
   Diagnostics and Settings), with the rail's two the radio's own. Built in 100. Not taken: the
   two tools as single pages with a tab per module inside.
-- **Q6. How should recordings leave the card?** Recommended: from a Files page, one archive (ZIP,
-  not compressed) of a date range, a talkgroup, a radio, or the locked ones, plus a command-line
-  tool that does the same through the API. Also wanted, or not: a copy to a PC or NAS share on a
-  schedule?
+- **Q6. How should recordings leave the card?** Answered 2026-11-11: "Yes, Files page". From a
+  Files page, one archive (ZIP, not compressed) of a date range, a site, a talkgroup, a radio,
+  or the locked ones, plus a command-line tool that does the same through the API. Built in 101.
+  Still open: is a copy to a PC or NAS share on a schedule wanted?
 - **Q7. Who must be kept out?** Recommended: the unit is a LAN appliance (other people and
   devices on the network, and web pages in a browser, are kept out; reaching it from outside is
   through a VPN of yours). The alternative, a unit that can face the Internet, asks much more.
@@ -421,9 +426,16 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
   does not say which subscription it answers); the notice on TV's pages reads wrong on its
   Diagnostics; whether the spectrometer gives frames of a TV channel, for a spectrum there.
 
-**Step 5, Files:** a factory reset queues a delete per recording and restarts half a second
-later, so with 101,000 recordings most stay on the card while the answer counts them as removed.
-Deleting by day folder, and waiting for it, belongs with the work on what is on the card.
+**Step 5, Files:**
+
+- **Done (101):** what is on the card can be taken away; see the step.
+- **Left: a factory reset** queues a delete per recording and restarts half a second later, so
+  with 101,000 recordings most stay on the card while the answer counts them as removed.
+  Deleting by day folder, and waiting for it, was not part of 101: its page takes away and does
+  not remove.
+- **Left:** an archive has no length before it ends, so a broken download starts again; the
+  listing reads the whole list of recordings for each answer; a TV recording's file has no byte
+  ranges.
 
 **Step 6, Access:** the origin check covers writes over HTTP and, since 095, HTTPS; not the three
 sockets, and not a name re-pointed at the unit. The missing bounds (a recordings list without a

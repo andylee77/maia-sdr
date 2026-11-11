@@ -69,6 +69,11 @@ impl Names {
         Names(by_site)
     }
 
+    /// Each site's system's aliases, by the site's id.
+    pub fn into_indexes(self) -> HashMap<String, Arc<AliasIndex>> {
+        self.0
+    }
+
     pub fn call(&self, call: CallView) -> NamedCall {
         let ix = self.0.get(&call.site);
         // A unit-to-unit call's `tg` is the called radio.

@@ -656,7 +656,7 @@ ROUTES: dict[str, list] = {
         ("events[]", "object", "One event."),
         ("events[].seq", "number", "Its sequence number (ask for those after it next)."),
         ("events[].unix_ms", "number", "When."),
-        ("events[].part", "string", "Whose line it is: `scanner`, `tv` or `radio` (the radio's own: its start, clock, crystal, mode, the configuration replaced). `part=` asks for one."),
+        ("events[].part", "string", "Whose line it is: `scanner`, `tv` or `radio` (the radio's own: its start, clock, crystal, mode, the configuration replaced, a download of what is on the card). `part=` asks for one."),
         ("events[].source", "string", "`p25`, `dmr` (a control channel message) or `system` (what the radio or a service did)."),
         ("events[].class", "string", "The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...)."),
         ("events[].text", "string", "The event."),
@@ -1080,6 +1080,53 @@ ROUTES: dict[str, list] = {
         ("timing.capture_overflow", "bool", "The capture lost words."),
         ("error", "string or null", "Why it failed."),
     ],
+    "/api/v1/files": [
+        ("card", "object", "The SD card."),
+        ("card.state", "string", "`ok`, `absent` (not mounted), `read_only`, `full`, `error`, `failing` (the last write failed) or `unknown` (not probed yet)."),
+        ("card.detail", "string or null", "What is wrong with it."),
+        ("card.total_bytes", "number or null", "Its size (null where the daemon cannot ask: a PC)."),
+        ("card.free_bytes", "number or null", "Free space."),
+        ("recordings", "object", "The call recordings."),
+        ("recordings.sd", "object", "Those on the card."),
+        ("recordings.sd.count", "number", "Recordings."),
+        ("recordings.sd.bytes", "number", "Their size."),
+        ("recordings.locked", "object", "The card's locked ones (in `sd` too)."),
+        ("recordings.locked.count", "number", "Recordings."),
+        ("recordings.locked.bytes", "number", "Their size."),
+        ("recordings.ram", "object", "Those in RAM."),
+        ("recordings.ram.count", "number", "Recordings."),
+        ("recordings.ram.bytes", "number", "Their size."),
+        ("recordings.span_ms", "number", "How long each span below is (`span` minutes)."),
+        ("recordings.spans", "array", "The recordings by the span of time their calls started in, the newest first; a span with none is left out. A reader adds them up into its own zone's days."),
+        ("recordings.spans[]", "object", "One span."),
+        ("recordings.spans[].from_ms", "number", "Where it starts (unix ms; spans are counted from 1970 UTC). `from` of a selection that takes it, with `to` = `from_ms + span_ms`."),
+        ("recordings.spans[].count", "number", "Recordings."),
+        ("recordings.spans[].bytes", "number", "Their size."),
+        ("recordings.spans[].locked", "number", "How many of them are locked."),
+        ("history", "object", "The history's database."),
+        ("history.name", "string", "The file a download of it is saved as."),
+        ("history.bytes", "number", "Its size on disk, with its write-ahead log."),
+        ("history.on_sd", "bool", "On the card (false: in RAM, with no card)."),
+        ("tv", "array", "The TV recordings (as `GET /api/v1/atsc/recordings`)."),
+        ("tv[]", "object", "One recording, `tv/rf<N>.ts`."),
+        ("tv[].rf", "number", "Its RF channel."),
+        ("tv[].bytes", "number", "Its size."),
+        ("tv[].programs", "array of numbers", "The programme numbers its first PAT lists."),
+        ("download", "object or null", "The download running (one at a time); null when none is."),
+        ("download.what", "string", "`recordings`, `history` or `tv`."),
+        ("download.name", "string", "The file as the client saves it."),
+        ("download.started_unix_ms", "number", "When it was asked for."),
+        ("download.copying", "bool", "The history's copy is being made on the card; nothing is sent yet."),
+        ("download.files", "number", "Files it sends (an archive's recordings; 1 otherwise)."),
+        ("download.files_done", "number", "Files sent."),
+        ("download.bytes", "number", "Bytes it sends (an archive's recordings, without its headers)."),
+        ("download.bytes_done", "number", "Bytes handed to the client."),
+        ("download.skipped", "number", "Recordings left out of an archive: gone from the card since they were listed, or unreadable."),
+    ],
+    "/api/v1/files/recordings": [
+        ("count", "number", "Recordings the selection takes."),
+        ("bytes", "number", "Their size (the archive adds about 150 bytes a recording and its table)."),
+    ],
     "/api/v1/atsc/recordings": [
         ("[]", "object", "One TV recording (`tv/rf<N>.ts` on the SD card), for `/api/v1/atsc/stream/{rf}`."),
         ("[].rf", "number", "Its RF channel."),
@@ -1241,14 +1288,16 @@ NOT_JSON: dict[str, str] = {
         "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "
-        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool}, \"radio\": bool, \"window\": bool, \"crystal\": bool}` "
+        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool}` "
         "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
         "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
         "| `events` | `events` (as `GET /api/v1/events`' `events`) | As the event log grows past `after` (housekeeping too with `routine`; one part's lines with `part`). |\n"
         "| `radio` | `radio` (as `GET /api/v1/radio`) | Every 3 s. |\n"
         "| `window` | `window`: `plan` (as `GET /api/v1/sites/{id}/plan`, null with no site live) and `survey` (as `GET /api/v1/survey`) | Every 5 s. |\n"
-        "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |"
+        "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |\n"
+        "| `atsc_live` | `live` (as `GET /api/v1/atsc/live`) | When it changed, each second at most. |\n"
+        "| `files` | `download` (as `GET /api/v1/files`' `download`; null when none runs) | When it changed, each second at most. |"
     ),
     "/ws/events": (
         "A WebSocket of text frames, each a JSON object with `type`:\n\n"
@@ -1267,6 +1316,27 @@ NOT_JSON: dict[str, str] = {
         "| `meta` | `lane` (0 or 1), `tg`, `src` (0: unknown), `call_id`, `speaker` (`both`, `left`, `right`, `off`) | Before a lane's first frame of a new call or talker. |\n"
         "| `alert` | `lane`, `tg`, `call_id`, `seq`, `kind`, `tones_hz`, `offset_ms` | With `v=2`, before the frame that makes the call's audio an alert tone; it began `offset_ms` into the call's audio. |\n"
         "| `lag` | `skipped` | The listener fell behind; frames were skipped. |"
+    ),
+    "/api/v1/files/recordings.zip": (
+        "A ZIP archive (`application/zip`, an attachment named for its days and what narrowed it: "
+        "`recordings_2026-11-10_2026-11-11_tg300.zip`), stored, not compressed. Each recording the "
+        "selection takes (`from`, `to`, `site`, `tg`, `unit`, `locked`; none: every recording) is a "
+        "file `<UTC date of its call>/<its name on the card>`, timed at its call's start; the last "
+        "file, `recordings.csv`, is the table of them: `file, started_utc, site, talkgroup, "
+        "talkgroup_name, radio, radio_name, duration_s, bytes, locked, call`. A recording that cannot "
+        "be read any more is left out of both. The archive is made as it is sent (no "
+        "`Content-Length`), with ZIP64 records when it has 65,535 files or more or passes 4 GiB. "
+        "404 when the selection takes nothing; 409 while another download runs."
+    ),
+    "/api/v1/files/history.sqlite": (
+        "The history's SQLite database (`application/vnd.sqlite3`, an attachment named "
+        "`scanner-history.sqlite`, with `Content-Length`): a copy of it as it stood at one moment, "
+        "made beside it on the card first, so the answer starts when the copy is done. 409 while "
+        "another download runs; 503 when the card has no room for the copy."
+    ),
+    "/api/v1/files/tv/{file}": (
+        "A TV recording's transport stream as it is on the card (`video/mp2t`, an attachment, with "
+        "`Content-Length`); `{file}` is `rf<N>.ts`. 404 without one; 409 while another download runs."
     ),
     "/api/v1/playlist": (
         "An SDRTrunk playlist (`application/xml`; with `download=true` an attachment named "

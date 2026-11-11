@@ -19,8 +19,8 @@ const OTHER: usize = 500;
 /// Everything, housekeeping included (about 12 s of a P25 control channel).
 const ALL: usize = 500;
 
-/// Whose a line is: a module's, or the radio's own (its start, clock, crystal, mode and the
-/// configuration as a whole).
+/// Whose a line is: a module's, or the radio's own (its start, clock, crystal, mode, the
+/// configuration as a whole and what is taken off the card).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Part {
@@ -144,7 +144,7 @@ impl EventLog {
     }
 
     /// Something the radio did of its own: its start, its clock, its crystal, a change of mode,
-    /// the configuration replaced.
+    /// the configuration replaced, a download of what is on the card.
     pub fn radio(&self, class: &'static str, text: impl Into<String>) {
         self.did(Part::Radio, class, text.into());
     }

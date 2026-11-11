@@ -148,7 +148,7 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
-/// `window`, `crystal` and `atsc_live` messages.
+/// `window`, `crystal`, `atsc_live` and `files` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| live_feed(socket, s))
 }
@@ -159,6 +159,7 @@ const RADIO_EVERY: Duration = Duration::from_secs(3);
 const WINDOW_EVERY: Duration = Duration::from_secs(5);
 const CRYSTAL_EVERY: Duration = Duration::from_secs(1);
 const ATSC_LIVE_EVERY: Duration = Duration::from_secs(1);
+const FILES_EVERY: Duration = Duration::from_secs(1);
 /// Event log lines sent at most at once.
 const EVENTS_MAX: usize = 500;
 
@@ -181,6 +182,9 @@ struct Wants {
     /// `atsc_live`: live TV's state (`live`, as `GET /api/v1/atsc/live`) when it changed, looked
     /// at each second.
     atsc_live: bool,
+    /// `files`: the download running (`download`, as in `GET /api/v1/files`; null when none is)
+    /// when it changed, looked at each second.
+    files: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -197,7 +201,7 @@ struct EventsWant {
 
 impl Wants {
     fn any(&self) -> bool {
-        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files
     }
 }
 
@@ -211,6 +215,8 @@ struct Sent {
     crystal_text: String,
     atsc_live: Option<Instant>,
     atsc_live_text: String,
+    files: Option<Instant>,
+    files_text: String,
 }
 
 fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
@@ -256,6 +262,14 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         let text = message("atsc_live", "live", v1::atsc::live_stats(s).await);
         if text != sent.atsc_live_text {
             sent.atsc_live_text = text.clone();
+            out.push(text);
+        }
+    }
+    if w.files && due(sent.files, FILES_EVERY, now) {
+        sent.files = Some(now);
+        let text = message("files", "download", s.files.download());
+        if text != sent.files_text {
+            sent.files_text = text.clone();
             out.push(text);
         }
     }

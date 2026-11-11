@@ -1,8 +1,8 @@
 // The radio's own diagnostics (the rail's Diagnostics), filling the screen: what the radio did of
-// its own (its start, clock, crystal, each change of mode, the configuration replaced), with the
-// API's routes behind the same tabs; and down the right the radio itself and the hardware as it
-// reads it back. What one module receives is among that module's tabs: the scanner's control
-// channel, spectrum and events, TV's receiver.
+// its own (its start, clock, crystal, each change of mode, the configuration replaced, each
+// download of what is on the card), with the API's routes behind the same tabs; and down the
+// right the radio itself and the hardware as it reads it back. What one module receives is among
+// that module's tabs: the scanner's control channel, spectrum and events, TV's receiver.
 
 import { h, table, toast } from '../dom.js';
 import { mhz, uptime } from '../format.js';

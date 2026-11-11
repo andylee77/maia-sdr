@@ -523,7 +523,7 @@ fn mount_state(mount: &Path) -> Option<bool> {
 }
 
 /// (total, free) bytes of the filesystem holding `path`.
-fn fs_space(path: &Path) -> (Option<u64>, Option<u64>) {
+pub fn fs_space(path: &Path) -> (Option<u64>, Option<u64>) {
     #[cfg(target_os = "linux")]
     {
         let Some(cpath) = path.to_str().and_then(|p| std::ffi::CString::new(p).ok()) else { return (None, None) };

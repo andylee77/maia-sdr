@@ -134,6 +134,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         audio,
         recordings,
         history,
+        files: crate::services::files::Files::new(log.clone()),
         discovery,
         modes,
         atsc,
@@ -192,6 +193,7 @@ async fn start_storage(
         })
     };
     let history = opened.await??;
+    crate::services::files::remove_stale_copy(&history.store().path);
     let listing = {
         let cfg = cfg.clone();
         tokio::task::spawn_blocking(move || storage::index(&cfg))

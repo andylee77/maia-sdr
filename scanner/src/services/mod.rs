@@ -10,6 +10,7 @@ pub mod config;
 pub mod crystal;
 pub mod discovery;
 pub mod events;
+pub mod files;
 pub mod history;
 pub mod iq;
 pub mod mode;

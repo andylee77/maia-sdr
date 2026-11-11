@@ -7,7 +7,8 @@
 // place, so a page can tell what changed by comparing it with what it drew.
 //
 // What only some pages show (the spectrum, the event log, the radio's readback, the receive
-// window, the crystal, live TV's state) comes over the same socket while a page wants it (`want`).
+// window, the crystal, live TV's state, the download running) comes over the same socket while a
+// page wants it (`want`).
 
 import { api, wsUrl } from './api.js';
 
@@ -115,7 +116,7 @@ function setTraffic(traffic) {
 const wanting = new Map();
 let nextWant = 1;
 let socket = null;
-const FEEDS = ['spectrum', 'events', 'radio', 'window', 'crystal', 'atsc_live'];
+const FEEDS = ['spectrum', 'events', 'radio', 'window', 'crystal', 'atsc_live', 'files'];
 
 export function want(wants, onMessage) {
   const id = nextWant++;
@@ -135,7 +136,7 @@ function sendWants() {
   for (const { wants } of wanting.values()) {
     if (wants.spectrum) out.spectrum = Math.max(out.spectrum || 0, wants.spectrum);
     if (wants.events && !out.events) out.events = wants.events;
-    for (const k of ['radio', 'window', 'crystal', 'atsc_live']) if (wants[k]) out[k] = true;
+    for (const k of ['radio', 'window', 'crystal', 'atsc_live', 'files']) if (wants[k]) out[k] = true;
   }
   socket.send(JSON.stringify(out));
 }

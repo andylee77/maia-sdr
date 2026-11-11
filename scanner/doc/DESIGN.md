@@ -900,7 +900,7 @@ Same stack: plain ES modules embedded by `ui_assets.rs`, no build step, no CDN.
 
 The shell (change 090) is a module rail: a module per unit mode (Scanner, TV) with its pages as
 tabs in the header, its own Diagnostics and Settings among them (change 100), and the radio's
-own Diagnostics and Settings, which every mode shares. `js/modules.js` is the one table the
+own Diagnostics, Files (change 101) and Settings, which every mode shares. `js/modules.js` is the one table the
 rail, the tabs and the router are built from. Viewing a module does not move
 the radio: its pages stay readable while another module has it, under a notice that offers the
 switch.
@@ -911,6 +911,7 @@ switch.
 | **Systems** | The scan (bands and settings, progress, a card per found system to fill in and add), then the configured systems in the same card: name, details and identity, sites with their identity, control channel, alternates and traffic channels (the configured ones and those heard on the air), all edited in place with Save; the site's receiver settings behind a button. First run opens here. |
 | **Activity** | As today, with a system/site picker that includes DMR; packet data is a P25 component |
 | **Settings** | The Scanner's (gain, presets, call timings, the history, recording, packet data) and the radio's own (the clock, the crystal, the configuration: export, import, factory reset); a card saves its own part |
+| **Files** | What is on the card, to take away: the recordings as one ZIP archive of a selection or of a day, the history's database, the TV recordings. The archive is made as it is sent, one download at a time, on a thread below the receivers' priority (`services/files.rs`, `util/zip.rs`) |
 | **Diagnostics** | The Scanner's (the spectrum, the receive window, the control channel, its **events box**: every protocol's messages, calls, traffic lines), TV's (its events, the 8-VSB receiver) and the radio's own (its events, the API's routes, the board). The event log keeps each part's lines in a ring of its own (`services/events.rs`) |
 
 Protocol-specific parts are small components chosen by the site's protocol:
