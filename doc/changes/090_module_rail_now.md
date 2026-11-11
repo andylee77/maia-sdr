@@ -76,6 +76,10 @@ Now fills the screen from 1000 px wide; each pane scrolls on its own.
   stops the first.
 - A talkgroup's colour is its alias's, else one from its number, so a talkgroup keeps its colour
   down the list.
+- The week's talkgroups are asked of the history once as the page loads, then at most every
+  5 minutes. The old page asked about a dozen times at each load: it noted the site only when the
+  answer came, so every draw before then asked again. Measured on unit A: one
+  `/api/v1/activity/talkgroups` request at load.
 
 ### P25 data traffic
 
