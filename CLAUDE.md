@@ -6,6 +6,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 
 ## Current work
 
+- **The plan:** `doc/ROADMAP.md` (095): the goals, the capabilities each needs, the features by
+  module, the order of work and the questions open for Andy. Next is the Now page, redone as a
+  trunked monitoring station's front, from the layout he picks. 095's review of the UI and its
+  API: `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by step).
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
   is in; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bake D (change 085,

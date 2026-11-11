@@ -1,314 +1,506 @@
-# Fishball Scanner — Roadmap and Working Notes
+# Fishball scanner: goals, capabilities, features and the order of work
 
-This is where ideas get written down before they become numbered changes. Each numbered change
-gets its CHANGELOG entry and a `doc/changes/NNN_*.md`.
+The numbered changes are taken from this plan. Each change gets its `CHANGELOG_FORK.md` entry and
+a `doc/changes/NNN_*.md`, and takes the next free number when it starts.
 
-## Direction
+Andy, 2026-11-11, after the UI's rebuild (090 to 094): "I like the new layout and progress", then
+a list of what comes next, ending "a larger part is organizing and structuring around goals,
+capability, features". This document is that structure (change 095). It is for Andy to correct:
+the questions in "Decisions for Andy" are the parts only he can settle.
 
-Today the board is a P25 and DMR trunking scanner with an ATSC TV mode. It is meant to become a
-full scanner running on the Zynq in two forms:
+How each item is marked:
 
-- a **network edge device**: headless, on Ethernet, with the web UI and API;
-- a **portable handheld** in the 3D-printed case, with its own display, LEDs and controls.
+| Mark | Meaning |
+|------|---------|
+| **exists** | Built and on unit A's image (`2026-11-10-pages2`) |
+| **decided** | Andy has said what he wants; not built |
+| **open** | Needs a decision; the question's number follows (Q1 …) |
+| **idea** | Written down, not scheduled |
 
-Both run the same software. P25 is the first protocol, not the only one, so new work should
-keep the protocol-specific parts (framing, vocoder, trunking messages) apart from what every
-scanner needs:
+## Goals
 
-- sites and systems;
-- channels and the receive window;
-- calls, talkgroups and radios;
-- aliases, history and recordings;
-- the API.
+| # | Goal | Andy's words |
+|---|------|--------------|
+| G1 | **A trunked monitoring station**, now. The radio has a control tuner and two traffic tuners; one screen runs it | "grounded into a trunked monitoring station that has 2 traffic tuners and allows easier control of what to listen, record, etc." |
+| G2 | **A stand-alone handheld**, later. The same radio with its own controls and speaker, no browser | "future builds as a stand alone handheld with a few knobs, buttons and speaker output and 3d printed shell" |
+| G3 | **More modes.** TV is one; data monitoring and ADS-B come next | "add the data monitoring mode, adsb mode, etc." |
 
-## Proposed order
+What holds for every goal:
 
-| # | Item | Status |
-|---|------|--------|
-| 071 | Find local systems: sweep the band, build sites automatically | done (071a fixes, 071b C4FM, 071 finder) |
-| 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | done |
-| 072b | Encrypted calls: follow them for their details (no audio) on a free lane | idea |
-| 074 | Packet data (SNDCP) on the data channel; status-dibit fix for every frame | done |
-| 074b | Packet data: keep it in the history; decode LRRP / ARS / TMS contents | parked (DESIGN D11) |
-| — | Phase 2 TDMA voice | later, if a nearby system uses it (Clay grants none) |
-| 076 | Restructure into a clean multi-band, multi-protocol scanner | done: the scanner, on both units' images since 2026-10-01 (`scanner/doc/DESIGN.md`) |
-| 079 | General radio core: lanes' IQ from the PL, every demodulator in software | steps 1, 3a and 4 done (unit A's image); bake A (082) next; the channelizer (3b) waits for a mode that needs more lanes (`doc/changes/079_general_radio_core.md`) |
-| — | Remote libiio control: detect it and share the radio | idea |
-| — | Agent control: MCP server and prompt structure | idea |
-| 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | done (on fishball-p25) |
-| — | Spectrum survey: identify everything on air | partly done: ATSC (080, 081), the live window's survey; ISM bands in data mode |
-| — | Data mode: ISM devices (315, 345, 433.92, 902-928 MHz) found, decoded, captured and streamed | study, Andy's decisions taken (2026-10-04; `scanner/doc/DATA_MODE.md`) |
-| — | Gateware for every mode: what the next HDL work should add so a new mode needs no bake | studied in `doc/changes/079_general_radio_core.md`, "Every mode's needs": bakes A-D, A approved (Andy, 2026-10-04) |
-| — | Cleanup: retire what the scanner and the radio core replaced | under way (`doc/CLEANUP_INVENTORY.md`) |
-| — | Real-time diagnostics: spectrum, waterfall, constellation and eye at 20+ Hz over WebSockets | idea |
-| — | Handheld page: the radio's face in the browser | idea |
-| — | Transcription (Whisper) and LLM summaries | idea (off-board) |
+1. **A fast UI over one WebSocket.** Everything on a page is pushed as it happens (`/ws/live`); no
+   page polls.
+2. **The radio is fully API controllable.** Every control on a page is an API call, so a script,
+   an agent or the handheld's panel can do what the page does. A page holds no rule the daemon
+   does not serve.
+3. **Access is controlled.** Nothing is today (see Security); "need to add auth/security".
+4. **One radio, one mode at a time.** A mode has the radio to itself; the other modules' pages
+   stay readable meanwhile.
+5. **The core knows no protocol, and the gateware serves every mode,** so a new mode is a
+   software change (079, "Every mode's needs").
+6. **Evidence first.** SDRTrunk is the baseline for P25 and DMR; nothing migrates; a gateware
+   change passes 079's gates.
 
-## 071 — Find local systems
+## Capabilities
 
-Done: 071's finder, then the scanner's systems scan (076). Systems in the SDRTrunk playlist still
-worth confirming:
+What each goal needs from each layer, and where that layer stands.
 
-- Alachua County Public Safety;
-- Florida Power and Light;
-- SLERS (P25);
-- Putnam County Public Safety.
+### Gateware and the radio core
 
-## 072 — Per-site activity history and graphs
+| Capability | State | For |
+|------------|-------|-----|
+| Three DDC lanes at 50 kSPS (the control channel and two traffic channels), the spectrometer, the capture ring (core 2.0.0, bake A) | **exists** | G1 |
+| The 8-VSB receiver (core 2.1.0, bake D) | **exists** | G3, TV |
+| Bake A's burst-timing gate (`tools/burst_timing.py`) | waits for Andy's key fob or the ESP32-DIV | every later bake |
+| Wide lanes, 250 kSPS and 1 MSPS: new filter sets and a bench check, no bake (`DATA_MODE.md` §3) | **decided** | G3, Data |
+| A continuous stream of the window at 2 to 4 MSPS to the PS (the capture ring read without gaps, or a lane with only its first stage) | **open** (Q11): measured first | G3, ADS-B |
+| More than three lanes (bake B) | waits for a mode that needs them | G1 on busier systems, Data |
+| A burst detector in the PL (bake C) | after data mode's scan and captures | G3, Data |
+| I²S audio out to the panel's amplifier (`PANEL_ADDON_BOARD.md` §9.4): a small block and pins on JP5, with 079's gates | **decided** in the panel's design, not built | G2 |
 
-Done: the Activity page and `/api/v1/activity/*`, from the history on the SD card (365 days and
-2 GB, oldest calls first). Still open: a call's time goes to its primary radio; other speakers in
-the same call are counted as taking part, with no time.
+### The daemon and its API
 
-## 072b — Encrypted calls: details without audio
+| Capability | State | For |
+|------------|-------|-----|
+| P25 Phase 1 (LSM and C4FM) and DMR Tier III trunking; one follower with two lanes, priorities, pre-emption, a site hold and a hold per lane | **exists** | G1 |
+| Aliases (SDRTrunk's model, D15): name, group, colour, IDs and ranges, priority, do-not-monitor, record, speaker; a system's listening settings | **exists** in the configuration and the API | G1 |
+| One alias removed or edited by itself, radios' aliases, edits to many at once, a colour or group set from a page | not built: only the whole list can be replaced, and `PUT …/talkgroups/{tg}` never removes what it made | G1, Aliases |
+| How a talkgroup is treated (followed, where, priority), served by the daemon | not built: the pages work it out again in `js/aliases.js` from the follower's rule | G1, G2 |
+| The live site's talkgroups pushed (each with its name, treatment and when it was last heard) | not built: Now asks the history every 5 minutes, and the site's call count every 30 s | G1, G2 |
+| A changed radio setting shown in every browser | half built: the daemon announces it (`changed`, `what: radio`) and no page acts on it | G1 |
+| Recording: every followed call, or the calls of talkgroups marked `record`; by day on the card; locks; retention | **exists**; which of the two is not settable from a page (Q2) | G1 |
+| The history on the card, the activity routes, CSV | **exists** | G1 |
+| RadioReference CSV import (`POST …/radioreference`, `/preview`) | **exists**, with no page | G1, Aliases |
+| SDRTrunk playlist import and export | **decided** (UI_BRIEF), not built | G1, Aliases |
+| A system or a site added by hand | **decided** (UI_BRIEF), not built | G1 |
+| Modes: `scanner` and `atsc`. `Modes::set` assumes two, and `status.live.state: away` does not say which mode has the radio | **exists** for two; a third needs both fixed (`DATA_MODE.md` §8) | G3 |
+| What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | not built: one recording at a time, and the history as CSV | G1 |
+| Login, tokens, the sockets and the unit's other services | not built (see Security) | G1, G2 |
+| Listening on the unit itself: the two lanes mixed to an output, each lane's volume, the leveller, alerts-only listening | not built: all of it runs in the browser (`js/audio/`) | G2 |
+| The panel's service: the knobs' and buttons' actions as the same operations the API serves | not built (`PANEL_ADDON_BOARD.md` §9.2 was written for p25-httpd) | G2 |
+| Agent control (an MCP server over the API) | **idea** | — |
+
+### The UI
+
+| Capability | State | For |
+|------------|-------|-----|
+| The module rail; a module is an entry in `js/modules.js`; viewing a module does not move the radio | **exists** (090) | all |
+| Scanner: Now, Activity, Systems. TV: Watch, Channels. Tools: Diagnostics, Settings | **exists** (090 to 094) | G1, G3 |
+| Now as a monitoring station's front | **open** (Q1): the first thing to build | G1, G2 |
+| An Aliases tab; pages for the RadioReference and SDRTrunk imports; adding by hand | **decided**, not built | G1 |
+| Settings and Diagnostics split: the whole radio, and a part per module | **decided**; how is **open** (Q5) | G1, G3 |
+| Files: what is on the card, to download | **decided**, not built (Q6) | G1 |
+| Login, and who is signed in | not built (Q8) | G1 |
+| The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
+| Data's module (Scan, Devices, Captures), a waterfall | **decided** (`DATA_MODE.md` §7), not built | G3 |
+| ADS-B's module | **open** (Q11) | G3 |
+| The handheld's face as a page: the prototype of the panel, and a remote control | **idea**; it follows Now's model | G2 |
+| A phone layout beyond the rail becoming a bottom bar | later (UI_BRIEF) | — |
+
+### Storage
+
+On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
+
+| What | Where | Size |
+|------|-------|------|
+| Recordings | `p25_recordings/`: 40 UTC day folders, locked ones under `locked/` | 101,485 WAVs, 5.1 GB (3,803 locked) |
+| The history | `scanner-history.sqlite` | 205 MB |
+| TV recordings | `tv/rf<N>.ts` | five channels |
+| The configuration and what the radio learned | the flash, `/mnt/jffs2/scanner/` | 244 KB of 896 KB used |
+| Left from before the scanner, read by nothing | `p25-history.sqlite*`, `p25_iq_captures/`, `p25_forensics/`, `bench/`, eighteen `boot_*` folders | — |
+
+- **exists:** a recording's WAV by its id (with its alert tones as cue points), the history's
+  calls as CSV, the configuration as one document.
+- **not built:** many recordings as one download; the history's database as a file; a TV
+  recording as a file (its route plays it at the pace of its clock); data mode's captures.
+- A download must not cost the scanner a call: one at a time, at a pace the card and the A9 can
+  give while two lanes decode. To measure when it is built.
+
+### Security
+
+What a client on the network can do today, from the code and unit A's open ports:
+
+| Door | Today |
+|------|-------|
+| HTTP on 8080 | Open to anyone who can reach the unit. No login |
+| HTTPS on 8443 | The same API under a self-made certificate, which names 192.168.x.1 and not the unit's Ethernet address, so a browser warns twice |
+| Reads | All open: the live audio, every recording, the history, the whole configuration, the control channel's IQ |
+| Writes | Refused only when a browser says the page came from another host (`Origin` against `Host`, `api/mod.rs`). A client that sends no `Origin` (curl, a script) may write anything, a factory reset included. A page whose name was re-pointed at the unit (DNS rebinding) passes, because `Host` is not checked against the unit's own names |
+| `/ws/live`, `/ws/audio`, `/ws/events` | No check at all. A web page on any site can open them in the user's browser and read the state and the audio |
+| libiio (`iiod`, port 30431) | Open: anyone can retune the AD9361 under the scanner |
+| SSH (dropbear, port 22) | Root, by password or key |
+| The legacy `/api/*` routes for the bench | Open, as the rest |
+
+What G1 and G2 need (the depth is Q7 to Q10):
+
+- a password set at first load, kept as a slow salted hash; a session cookie for the browser; a
+  token for scripts, the bench, agents and the panel;
+- the same check on every route and at each socket's upgrade, with the page's origin checked at
+  the upgrade and `Host` against the unit's own names;
+- a certificate remade when the unit's addresses change, from the unit's own CA
+  (`S50p25-httpd-certificates` in tezuka_fw), so HTTPS can be the one way in. HTTPS also gives
+  the browser the better audio path (the worklet needs a secure page);
+- the unit's other doors settled with it: `iiod`, SSH, the legacy routes;
+- a way back in when the password is lost that needs the unit in hand (the card or the serial
+  console), and what a factory reset does with the password;
+- the tools that drive the API on tokens: `fbench` and the board agent, `tools/*.py`,
+  `runs/ui_check/*.mjs`.
+
+### Hardware controls
+
+- **Today:** none. The unit is run from a browser or the API.
+- **Written down:** `PANEL_ADDON_BOARD.md`, a board on JP5 with a XIAO ESP32-S3, a 1.5" OLED,
+  one encoder, two buttons, two LEDs, and an I²S amplifier and speaker driven from the PL. It was
+  written for p25-httpd (a `/api/panel` route, its own serial messages) and says "not a
+  battery-powered portable (at least not in v1)".
+- **What G2 needs:** Q13 settles the hardware. Whatever it is, its actions are the API's
+  operations (rule 2), and what its knob steps through is Now's talkgroup list (see "Now's model").
+
+## Features by module
+
+### Scanner
+
+| Page | Feature | State |
+|------|---------|-------|
+| **Now** | The talkgroup bank (follow, speaker, priority, name), the site strip, the two traffic cards with a hold per lane, the calls, the picked call with its recording | **exists** (090) |
+| | Redone as a monitoring station's front: clean, with easier control of what is heard and what is recorded | **open** (Q1 to Q4): next |
+| | A Record control per talkgroup | waits for Q2 |
+| | Sound by tuner: Traffic 1 left, Traffic 2 right | **open** (Q3) |
+| **Activity** | Who talks, the totals and chart, calls, alerts, packet data, the picked call | **exists** (093) |
+| | Time per speaker in a call (072's open item); packet data kept in the history and its contents decoded (074b, parked) | **idea** |
+| **Systems** | The scan for systems; the systems and their sites edited in place | **exists** (093) |
+| | Add a system or a site by hand; the first-load welcome | **decided** |
+| **Aliases** (new) | Per system, the alias list as a table: name, group, colour, IDs and ranges, priority, record, where it plays; search and edits to many at once; radios as well as talkgroups | **decided** (UI_BRIEF) |
+| | The RadioReference import with its preview; the SDRTrunk playlist import and export | **decided** |
+| Later | Encrypted calls followed for their details on a free lane (072b); Harris and Motorola vendor grants (SLERS, FPL); Phase 2 TDMA if a nearby system uses it; a notebook per system | **idea** |
+
+#### Now's model
+
+The page and the handheld's panel share one model, so the page's work is not done twice:
+
+- **Two tuners.** Traffic 1 and Traffic 2 each show their call or what they wait for. A tuner can
+  be kept on one talkgroup (`PUT /api/v1/hold` with `lane`).
+- **A list of talkgroups with one selected.** A knob steps through it; on the page a click or the
+  arrow keys do. The selection is the client's own (a browser's, the panel's).
+- **A few actions on the selected talkgroup,** each one API call: follow or skip it
+  (`do_not_monitor`), hold the radio on it (`PUT /api/v1/hold`), record it (`record`), give it a
+  tuner (`speaker`) and a priority, name it. These are the handheld's buttons.
+- **A second knob is the volume.** On the page it is the browser's own; on the handheld it is the
+  unit's listening path.
+- **The site** is picked from a menu (`POST /api/v1/sites/{id}/activate`).
+
+How the follower treats a talkgroup's `speaker` today (`trunking/follow/mod.rs`): `left` goes to
+Traffic 1 only, `right` to Traffic 2 only, `both` to either, and a busy tuner does not borrow the
+other. So the field is the talkgroup's tuner. The browser then pans by the same field, so an
+"either" talkgroup plays in both ears whichever tuner follows it, while the card reads
+"Traffic 2 · Right" (Q3).
+
+Recording today (`services/recordings/mod.rs`): a followed call is recorded when recording is on
+and either `recording.every_call` is on (the default) or its talkgroup's alias says `record`.
+`PUT /api/v1/radio/recording` takes `every_call`, and no page sends it, so the per-talkgroup flag
+never decides anything (Q2).
+
+### TV
+
+| Page | Feature | State |
+|------|---------|-------|
+| **Watch** | Any named channel live, in three views; its stream for VLC | **exists** (085, 091) |
+| **Channels** | The TV scan, kept across restarts; the picked channel | **exists** (092, 094) |
+| Known limits | A channel where every codeword fails holds the live thread at a core (085). The kept scan has no spectra and nothing marks it as kept. The receiver has one stop for every player | in the review's list |
+| Later | Recording a programme to the card; the guide (PSIP's events) | **idea** |
+
+### Data (new module)
+
+Andy's decisions are in `scanner/doc/DATA_MODE.md` §12; its steps and gates in §9.
+
+| Page | Feature | State |
+|------|---------|-------|
+| **Scan** | The band's window live with a waterfall; the emitters heard, named there | **decided** |
+| **Devices** | Every device and frequency heard, each with its data log | **decided** |
+| **Captures** | Bursts and window snapshots kept as files (cs16 and SigMF), to download | **decided** |
+| Outputs | `/ws/live` and REST first; then NDJSON, MQTT, an rtl_tcp server | **decided** |
+| Decoders | In Rust, from the protocols' facts, checked against rtl_433 on the PC | **decided** |
+
+### ADS-B (new module)
+
+Nothing is decided beyond "add it" (Q11). What is known: 1090 MHz, 1 Mbit/s pulse-position
+frames of 56 or 112 µs, so it needs the window's samples at 2 MSPS or more without gaps, which no
+lane gives today. `DATA_MODE.md` §9 step 7 and 079's "Rates by mode" list it as a later use of a
+first-stage-only lane. dump1090 is the reference on the PC and, like rtl_433, is GPL: its facts
+are used, not its code.
+
+### The whole radio's tools
+
+| Tool | Feature | State |
+|------|---------|-------|
+| **Diagnostics** | The spectrum, the event log, the carriers heard, the API's routes, the control channel, the receive window, the tuning, the board | **exists** (094), as one page for every mode |
+| | Split: the radio's own part (spectrum, board, tuning, the log, the routes), and each module's (the scanner's control channel, window and lanes; TV's receiver; Data's lanes) | **decided**; how is Q5 |
+| | Eye and IQ plots; the spectrum, a waterfall and the plots at 20 Hz or more on a socket of their own | **idea** (below) |
+| **Settings** | Receiver, radio, clock, configuration, recording, crystal, packet data | **exists** (094), as one page |
+| | Split: the radio's own part (gain, crystal, clock, storage, network and access, the configuration), and each module's (the scanner's call timings, lanes, packet data, recording and listening defaults; TV's and Data's) | **decided**; how is Q5 |
+| **Files** (new) | What is on the card, and taking it away | **decided**; Q6 |
+| **Access** (new) | The password, tokens, who is signed in, the certificate | Q7 to Q10 |
+
+### The handheld
+
+| Feature | State |
+|---------|-------|
+| The display: the site, each tuner's talkgroup and radio, the selected talkgroup, signal, time | **idea** (`PANEL_ADDON_BOARD.md`; the roadmap's old "Handheld page") |
+| Knobs and buttons: the list, the volume; hold, skip, record, menu | follows Now's model |
+| The speaker: the unit's own listening path | not built (Capabilities) |
+| The shell, the power, the board | Q13 |
+
+## The order of work
+
+Andy's order, with what each step needs first. A step starts when its questions are answered.
+
+| # | Step | Needs first |
+|---|------|-------------|
+| 1 | **The structure, the code review, its clear defects** (095) | — |
+| 2 | **Now, redone.** The page from the layout Andy picks, on Now's model | Q1 to Q4. In the API: the live site's talkgroups pushed with their treatment (no poll, one rule); the recording choice settable; one alias removed again |
+| 3 | **Aliases.** The tab; the alias model's gaps; the RadioReference import's page; the SDRTrunk playlist import and export | Step 2 (the rows and the bank's rule are shared). In the API: one alias by itself, radios' aliases, many at once, the playlist routes |
+| 4 | **Settings and Diagnostics split** into the radio's and each module's | Q5. `js/modules.js` gains a module's settings and diagnostics; each settings section reads and saves its own part, and follows a change made elsewhere. Before steps 7 and 8, so the new modules arrive with their own |
+| 5 | **Files.** Recordings in bulk, the history, TV recordings, later captures | Q6. An archive route that streams; the history copied whole and consistent; the pace measured against two lanes decoding |
+| 6 | **Access.** Login, tokens, both sockets, the certificate, the unit's other doors | Q7 to Q10. The bench reading `/api/v1` so the legacy routes can go; every tool and check on a token; tezuka_fw's certificate script |
+| 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
+| 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
+| 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
+
+Until step 6, what step 5 adds is as open as single recordings are now.
+
+Not tied to a step, waiting on Andy:
+
+- **Pushes.** Nothing since 082 is on GitHub, in maia-sdr or tezuka_fw: this PC holds the only
+  copy of 083 to 095 (Q14).
+- **Bake A's burst-timing gate:** one key-fob or ESP32-DIV burst (`tools/burst_timing.py`).
+- **The P25 replay corpus on the radio core:** needs the bench link wired (B into A).
+- **Unit B** needs the current image before anything runs on it.
+- **Upstream.** Another session is reviewing Maia SDR, Tezuka and the other Zynq P25 and DMR
+  work; its findings (`doc/UPSTREAM_REVIEW.md`, not written yet) join these steps when it
+  reports.
+
+## Decisions for Andy
+
+Each has a recommendation first. Short answers are enough.
+
+**Now (step 2)**
+
+- **Q1. Which layout?** The drawn options, with unit A's data, are shown with this document.
+- **Q2. What decides whether a call is recorded?** Recommended: one setting with three positions,
+  on Now and in Settings: *off*, *marked talkgroups* (a talkgroup's Record mark decides),
+  *every followed call* (the marks are shown lit and locked). It needs no new field. The
+  alternative: keep "every call" and add a per-talkgroup "never record", which SDRTrunk's alias
+  model has no place for.
+- **Q3. Does sound follow the tuner?** Recommended: Traffic 1 always plays left and Traffic 2
+  right, with a switch in the header for both ears; a talkgroup's setting then reads "Traffic 1,
+  Traffic 2 or either". It is a change in the browser's player only. The alternative is today's:
+  a talkgroup set to left or right is panned, and an "either" one plays in both ears.
+- **Q4. What is in the talkgroup list once an import adds hundreds of names?** Recommended: the
+  talkgroups heard in the last week, plus those with a setting of their own (a priority, a tuner,
+  Record, or switched off); a name alone does not list one, and everything is on the Aliases tab.
+  The alternative: a list picked by hand (a scan list), which needs a new field.
+
+**The tools (steps 4 to 6)**
+
+- **Q5. Where do a module's settings and diagnostics live?** Recommended: among the module's own
+  tabs (Scanner: Now, Activity, Systems, Aliases, then its Diagnostics and Settings), with the
+  rail's two tools becoming the radio's own. The alternative: the two tools stay single pages with
+  a tab per module inside.
+- **Q6. How should recordings leave the card?** Recommended: from a Files page, one archive (ZIP,
+  not compressed) of a date range, a talkgroup, a radio, or the locked ones, plus a command-line
+  tool that does the same through the API. Also wanted, or not: a copy to a PC or NAS share on a
+  schedule?
+- **Q7. Who must be kept out?** Recommended: the unit is a LAN appliance (other people and
+  devices on the network, and web pages in a browser, are kept out; reaching it from outside is
+  through a VPN of yours). The alternative, a unit that can face the Internet, asks much more.
+- **Q8. One password, or two levels?** Recommended: an administrator (everything) and a listener
+  (see and hear, change nothing), plus tokens for tools and the panel.
+- **Q9. Does plain HTTP stay?** Recommended: once a password is set, port 8080 only sends the
+  browser to HTTPS, and the certificate is remade when the unit's address changes. The browser
+  warns once unless the unit's CA is installed on the PC.
+- **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Recommended: off
+  unless a switch in Settings turns it on (SDR++ or SDRTrunk using the board as a tuner need it).
+  SSH: keys only, or as it is?
+
+**Modes (steps 7 and 8)**
+
+- **Q11. ADS-B.** Recommended: a module of its own ("Aircraft"): a table of the aircraft heard and
+  a plot with range rings, no map tiles from the Internet; its messages also served in the Beast
+  format on a port, for tar1090 or Virtual Radar on a PC. First a capture at 1090 MHz on unit A.
+  Is there a 1090 MHz antenna for A, or is it the scanner's?
+- **Q12. Which other modes are behind "etc.", and in what order?** Written down so far: NOAA
+  weather radio and other conventional FM channels (Clay Fire's pager channel on 154.205 MHz is
+  one), pagers (POCSAG), APRS, AIS, the 24-hour spectrum survey. Recommended: none before Data
+  and ADS-B run.
+
+**The handheld (step 9)**
+
+- **Q13. Is it the Fishball board with the panel add-on in a printed shell?** If so: battery or
+  wall power; one encoder or two (the list and the volume); which buttons (recommended: Hold,
+  Skip, Menu).
+
+**Housekeeping**
+
+- **Q14. Push now?** `fishball-p25` and tezuka_fw's `fishball-dev`, so 083 to 095 have a second
+  copy.
+
+## From the code review (095)
+
+What the review found that a fix on the spot does not settle, by the step that takes it. The
+defects fixed at once and the whole ranked list are in `doc/changes/095_structure_and_review.md`;
+what it recommends for each API quirk the pages lean on is in `scanner/doc/API_INVENTORY.md`.
+
+**Step 2, Now:**
+
+- **The talkgroups are pushed, with their treatment.** Today the page asks the history every
+  5 minutes and the site's call count every 30 s, and works out each talkgroup's treatment from
+  the follower's rule kept a second time in `js/aliases.js`.
+- **The list of talkgroups is bounded** (Q4). Every aliased talkgroup is a row of six controls
+  today; an import of a large system would make thousands.
+- **The calls are bounded.** The page keeps every closed call it has seen and draws the whole
+  list at each push.
+- **A lost connection shows.** With the socket down the cards keep counting a call that may be
+  over.
+- **One click, one small write.** A configuration write is a write, two syncs and a rename on
+  the flash inside its handler, on a runtime of two workers that also run trunking and live
+  audio. Measure it on unit A before the page makes more of them; write off the workers if it
+  costs.
+- **Writes change one thing.** `PUT /radio/recording` replaces the whole object (a body without
+  `every_call` sets it back to on); a talkgroup's alias, once made, cannot be removed; the
+  site's hold and a lane's share a route.
+- **`/ws/live` sends what changed.** Per client per second it builds and compares the status,
+  the scan and the kept TV scan (85 KB), and sends the traffic because one age in it moved.
+
+**Step 3, Aliases:** the trap where a talkgroup's edit lands on an alias the follower does not
+read; a call by its id; Activity's one loader for every change (five requests a click, none
+aborted); Systems' own copy of the systems; the scan's cards repeating the daemon's rule for
+"the same site".
+
+**Step 4, the split:** Settings is one read and cards closed over what was loaded, and saves
+whole objects. Each section needs its own read, save and re-read. Diagnostics is the scanner's:
+on TV its spectrum has no frames and three panes say "No site is live", while `atsc_live`
+carries the receiver's state that no page shows.
+
+**Step 5, Files:** a factory reset queues a delete per recording and restarts half a second
+later, so with 101,000 recordings most stay on the card while the answer counts them as removed.
+Deleting by day folder, and waiting for it, belongs with the work on what is on the card.
+
+**Step 6, Access:** the origin check covers writes over HTTP and, since 095, HTTPS; not the three
+sockets, and not a name re-pointed at the unit. The missing bounds (a recordings list without a
+limit, a stalled CSV reader, sockets without a send timeout or a cap) go with it.
+
+**TV:** a cancelled scan replaces the channel list until a restart; one stream for the receiver's
+life, so a player can be fed another RF channel's programme; full screen hides every failure;
+Watch between 1000 and 1359 px wide (to render and check).
+
+**With the next page built:** a page has no signal that it was left and no boundary for its
+errors. A per-mount abort signal passed to its requests would replace the "gone" flags three
+pages now carry.
+
+## Ideas written down, not scheduled
+
+### Encrypted calls: details without audio (072b)
 
 Today an encrypted call is never followed, so all that is known of it comes from the control
-channel:
+channel: the radio granted, and the grant time (which includes hang time and any other radio that
+keyed up; on Clay's clear calls decoded voice is about 0.7 of grant time).
 
-- the radio granted;
-- the grant time: from the grant to its last update.
-
-The grant time includes hang time and any other radio that keyed up on the same grant. On
-Clay's followed clear calls, decoded voice is about 0.7 of grant time (the Activity page shows
-this ratio), so grant time overstates airtime by about 40 %.
-
-Idea (from the operator): an option to follow encrypted calls for their details only, with no
-audio and no recording. The voice channel gives:
-
-- every radio that keys up (LDU1 link control), not only the one granted;
-- each transmission's real length (LDUs);
-- the algorithm and key ID (ESS in the HDU and LDU2), per call;
-- the end (TDU / TDULC) rather than the grant-update timeout.
-
-Cost: the lane is busy while it follows an encrypted call, and a clear call that starts
-meanwhile could be missed. That is what the option must not do. The design:
+An option to follow encrypted calls for their details only, with no audio and no recording. The
+voice channel gives every radio that keys up, each transmission's real length, the algorithm and
+key ID, and the end. The design:
 
 - only a free lane follows an encrypted call, and only while another lane is free too;
-- any clear grant pre-empts it at once (the follower already pre-empts, change 066), so a
-  clear call loses only the retune (a few ms), not the call;
-- the IMBE path stays off (no vocoder CPU, no recording);
-- the history then stores measured voice time and every speaker for encrypted calls, marked
-  as such.
+- any clear grant pre-empts it at once, so a clear call loses only the retune;
+- the IMBE path stays off;
+- the history stores measured voice time and every speaker for encrypted calls, marked as such.
 
-Measure first: how many clear calls would have started during an encrypted follow. On Clay, clear
-grants overlapped as two calls 0.6 % of a day and as three 0.008 % (unit A, 2026-10-04).
+Measure first: on Clay, clear grants overlapped as two calls 0.6 % of a day and as three 0.008 %
+(unit A, 2026-10-04).
 
-## 074b — Packet data, next steps (parked, DESIGN D11)
+### Packet data, next steps (074b, parked, DESIGN D11)
 
-074 decodes Clay's packet data (downlink only: radios transmit on the uplink). Next:
+- Keep data records in the history, so Activity shows data per radio, hour and day.
+- Decode the contents: LRRP, ARS, TMS (SDRTrunk has decoders, `module/decode/ip/mototrbo`).
+- Follow data channel grants to other data channels when a site uses more than one.
 
-- Keep data records in the activity history (per radio and site), so Activity can show data
-  per radio, hour and day, like calls.
-- Decode the contents: LRRP (location requests and the reports the server forwards), ARS
-  (registrations), TMS (text). SDRTrunk has decoders for each (`module/decode/ip/mototrbo`).
-- Follow data channel grants (SNDCP data channel grant) to other data channels when Clay uses
-  more than one.
+### Vendor grants
 
-## 079 — General radio core
+Harris (MFID 0xA4) and Motorola (0x90) vendor TSBKs: SLERS and FPL send many Harris ones. Decode
+the voice-grant and patch ones so those systems can be followed.
 
-One bitstream for many radio functions. The PL gives each lane's IQ to the PS, where LSM, C4FM,
-DMR and 8-VSB run in software. Steps 1, 3a and 4 are done: the radio core has three DDC
-lanes in one tagged lane ring, the spectrometer and the capture ring. Bake A (082, core 2.0.0)
-gave every mode its plumbing: a register map that does not move with the lanes, larger rings,
-spectrum frames with a header and a mode each, and a capture with its start index and a trigger.
-Design and steps: `doc/changes/079_general_radio_core.md`, `082_bake_a.md`. It superseded the
-chain-2 IQ tap (077).
+### Remote libiio control (shared use of the board)
 
-## Gateware for every mode
+`iiod` gives network libiio access, so SDR++, GQRX or SDRTrunk can retune the AD9361 under the
+scanner (Q10 decides whether it is on at all).
 
-Andy, 2026-10-04: the gateware should serve every mode (scanner, ATSC TV, data), so that a new
-mode is a software change. 079's "Every mode's needs" studies the eleven items (what changes in
-the HDL and the PS, the cost, the timing risk, the evidence still needed) and groups them into
-bakes:
+- **Detect it:** compare the AD9361's LO, rate and gain each second with what the scanner last
+  set; watch `iiod`'s connections to show who is connected.
+- **React:** if the control channel is still inside the new window at a known preset, keep
+  decoding and mark the radio "shared"; otherwise pause following, say so, and offer "Take back
+  control".
+- **A setting:** yield to remote clients, or keep the radio.
+- The recentre task and the preset handler stay passive while a remote client is connected.
 
-- **A:** the timing fix, a register map that does not move with the lane count, and items 3-7;
-  approved, next.
-- **B:** more lanes, when a mode needs them.
-- **C:** data mode in the PL.
-- **D:** 8-VSB in the PL.
+### Agent control (MCP)
 
-The DDC lanes stay beside a later channelizer.
+- An MCP server in the scanner (Streamable HTTP, for example at `/mcp`), behind step 6's tokens.
+- **Read tools:** status and site health; systems, sites, aliases and the coverage plan; recent
+  calls with their audio and transcripts; history queries; the event log; the spectrum.
+- **Write tools:** switch site; hold a talkgroup or edit its alias; follow or skip one; recentre;
+  tune, preset and gain; find systems.
+- Notifications from the socket: a call on a talkgroup, a site lost, a system found.
+- A document for agents: the radio's concepts, safe defaults (confirm retunes; no site switch
+  while someone listens), the read and write split.
+- The API describes itself (`GET /api/v1/routes`, `scanner/doc/API.md`); the tools wrap it.
 
-## Code review and refactor
+### Transcription and summaries
 
-Done: the 2026-09-28 review led to the fresh `scanner/` crate (076).
+The A9 cannot run Whisper usefully, so this lives off the board:
 
-## Boot and board configuration
+- a LAN service (whisper.cpp or faster-whisper on a PC with a GPU) takes finished recordings,
+  pushed by the radio or pulled over the API, and returns transcripts to the history;
+- summaries, locations and incident grouping are designed in SDRTrunk's
+  `doc/design/006d_whisper_transcription.md` and `006e_llm_and_incidents.md`;
+- signal classification on the FPGA is its own track: `_shared/FPGA_ML_INFERENCE_GUIDE.md`.
 
-- Boot tunes to the live site's control channel and planned window from the scanner's
-  configuration (`/mnt/jffs2/scanner/`); `S60scanner` passes only the listen address and TLS.
-- The scanner writes its learned state (crystal, band plans, grant counts) on a site switch and
-  at shutdown.
-- To check for an edge radio: the HTTPS certificate (`S50p25-httpd-certificates`) covered only
-  192.168.x.1 when last looked at, so the Ethernet address would get a name warning.
-- A binary copied to `/usr/bin` is lost on reboot (RAM rootfs). That is fine for tests; images
-  are the release path.
+### Spectrum survey: identify everything on air
 
-## Remote libiio control (shared use of the board)
+Andy, 2026-10-01: sweep everything the radio can tune and identify what is there. Done so far:
+ATSC (080, 081), the live window's survey; the ISM bands are data mode's.
 
-iiod still gives network libiio access, so a remote program (SDR++, GQRX, SDRTrunk) can
-retune the AD9361 under the scanner. Ideas:
+1. A tool drives the API (tune and `/api/v1/spectrum`) for a 24-hour occupancy map: frequency by
+   time, steady or bursty, bandwidth. No firmware change.
+2. Targeted captures of the interesting carriers, decoded on the PC (dump1090, rtl_433,
+   multimon-ng, SDRTrunk), give an inventory.
+3. The classifiers worth having move on board as probes in the scan.
 
-- **Detect it:** poll the AD9361 LO, sample rate and gain every second and compare them with
-  what the scanner last set. Also watch iiod's client connections (port 30431) to show who is
-  connected.
-- **React:**
-  - If the control channel is still inside the new window at a known preset rate, keep
-    decoding: recompute the NCO offsets and mark the radio "shared".
-  - If it is outside, or the sample rate is not one of our presets, pause following and show
-    "Radio controlled remotely — site unavailable". Offer "Take back control", which
-    re-applies the site plan.
-- **Policy setting:** yield to remote clients, or keep exclusive control (re-apply the plan,
-  or turn iiod off).
-- The recentre task and the preset handler must not fight a remote client: while it is
-  connected, they stay passive.
+Limits: unit A's antenna is not flat across the range; one 16 MHz window at a time; a survey
+takes the radio away from following calls.
 
-## Agent control (MCP) and prompt structure
+### Real-time diagnostics plots (20 Hz or more)
 
-Goal: the radio is fully controllable by LLM agents, the way these sessions drive it now.
+- **`/ws/spectrum`:** every completed spectrometer integration as a binary frame (one byte a bin
+  is 4 KB a frame, about 100 KB/s at 25 Hz), drawn as a spectrum and a waterfall with the window,
+  the channels and the live calls marked. Data mode needs the same socket and the same waterfall:
+  build them once.
+- **Constellation and eye:** a lane's symbols from its software receiver as binary frames, drawn
+  with persistence.
+- **Cost:** stream only while a page subscribes; measure the PS load with the streams on (the
+  scanner uses 15 to 17 % of one A9 core).
 
-- An MCP server in the scanner (Streamable HTTP transport, for example at `/mcp`), so any MCP
-  client on the LAN talks to the radio directly, with a token for access.
-- **Read tools:**
-  - status and site health;
-  - systems, sites, aliases and the coverage plan;
-  - recent calls with their audio and transcripts;
-  - history queries (072);
-  - the event log;
-  - spectrum.
-- **Write tools:**
-  - switch site;
-  - hold a talkgroup, or edit its alias;
-  - follow or ignore a talkgroup;
-  - recentre;
-  - tune, preset and gain;
-  - find systems (071).
-- Notifications: "call on TG n", "site lost", "new system found" (from the events socket).
-- **A prompt/skill document for agents** covering:
-  - the radio's concepts (system, site, aliases, lanes and speakers, the window, the mode);
-  - safe defaults: confirm retunes, do not switch sites while the operator listens unless
-    asked;
-  - the read/write split.
-- The API is already self-describing (`GET /api/v1/routes`, `scanner/doc/API.md`); the MCP tools
-  wrap it rather than duplicating logic.
+### A notebook per system
 
-## Transcription (Whisper) and LLM
+Andy, 2026-10-03: a scratch pad per system in Markdown, kept on the radio with the system's
+configuration: its talkgroups' meanings, 10-codes, station information, procedures, notes
+(UI_BRIEF, "Later: a system notebook").
 
-The Zynq's Cortex-A9 cannot run Whisper usefully, so this lives off the board:
+## Done
 
-- A LAN service (whisper.cpp or faster-whisper on a PC with a GPU) takes finished recordings,
-  pushed by the radio (webhook) or pulled over the API, and returns transcripts to the radio's
-  history (072). Transcripts show in Recent calls and are searchable.
-- LLM summaries, locations and incident grouping are designed in SDRTrunk
-  `doc/design/006d_whisper_transcription.md` and `006e_llm_and_incidents.md`. The per-talkgroup
-  prompt profiles and hallucination filtering there carry over.
-- Signal classification on the FPGA itself is a separate track: `_shared/FPGA_ML_INFERENCE_GUIDE.md`.
-
-## Clay Electric DMR
-
-Change 075, done and merged into fishball-p25: design, measurements and status in
-`doc/changes/075_dmr_clay_electric.md`.
-
-- The system is **DMR Tier III Standard** (Radio Reference sid 11943), not Capacity Plus. It
-  has a real control channel (TSCC) whose grants carry a logical channel number (LCN). The
-  SDRTrunk playlist's `lsn` attribute holds that LCN.
-- Green Cove Springs (Clay) site: control channel 454.36875 MHz (LCN 5, TS1), voice on
-  451.0875 MHz (LCN 6) and on the control repeater's TS2. Talkgroups 87921–87926 (Lake City,
-  Salt Springs, Palatka, Orange Park, Keystone Heights, Gainesville), clear voice.
-- Both GCS channels are received at about +50 dB at the shop (unit A, 2026-09-30). The other
-  sites in the playlist are at the noise floor there.
-- Software receive on the PS (SDRTrunk's DMR decoder ported to `protocol::dmr`); no gateware
-  change. UHF and Clay County P25 (851–861 MHz) cannot share one AD9361 window, so a DMR site
-  is chosen like any other site.
-
-## Spectrum survey: identify everything on air
-
-Andy, 2026-10-01: sweep everything the radio can tune and identify what is there, as a study.
-Targets:
-
-- other DMR systems and other digital voice systems;
-- ATSC TV, ADS-B and NOAA weather radio;
-- ISM sensors: weather stations and TPMS;
-- strong nearby signal activity.
-
-What exists:
-
-- **Sweeping:** the HDL spectrometer sweeps 16 MHz windows: 70 MHz–6 GHz on unit A (AD9361), and
-  325 MHz–3.8 GHz specified on unit B (AD9363).
-- **Decoders on board:** P25 and DMR Tier III.
-- **ATSC TV on board** (changes 080 and 081, ATSC mode): the TV channel finder reads RF 4-36 and
-  says which channels carry 8-VSB (by its pilot), a signal without it (ATSC 3.0) or nothing, with
-  each channel's carrier to noise and spectrum. Each 8-VSB channel strong enough is then decoded
-  from a 0.5 s capture to its station's PSIP: TSID and virtual channels (numbers and names).
-- **Captures:** the radio core's capture ring holds 0.26 s of raw IQ at 16 MSPS. The scanner
-  reads it for ATSC naming; an API route for raw IQ is data mode's (`scanner/doc/DATA_MODE.md`
-  §6). Captures would be decoded on the PC:
-
-  | Signal | Decoded or recognised by |
-  |--------|--------------------------|
-  | ADS-B | dump1090 |
-  | Weather stations and TPMS | rtl_433 |
-  | Pagers | multimon-ng |
-  | DMR Tier II, Capacity Plus, NXDN | SDRTrunk |
-
-Plan:
-
-1. A tool drives the API (tune + `/api/v1/spectrum`) for a 24-hour occupancy map: frequency ×
-   time, steady vs bursty, bandwidth. No firmware change.
-2. Targeted captures of the interesting carriers, decoded on the PC, give an inventory of what is
-   on air.
-3. The classifiers worth having move on board as probes in the scan. 076's discovery has one
-   probe per protocol for this.
-
-Limits:
-
-- Unit A's antenna is not flat across the range.
-- One 16 MHz window at a time, so bursty signals (TPMS, ISM sensors) need long dwells.
-- A survey takes the radio away from following calls. Run it on unit A when it is free.
-
-## Real-time diagnostics plots (20+ Hz)
-
-Goal: the Diagnostics view's spectrum, waterfall, constellation and eye plots update live over
-WebSockets at 20 Hz or more, instead of today's slow polling.
-
-Today:
-
-- **Wideband spectrum:** the radio core's spectrometer (a 4096-bin FFT of the full AD9361 rate,
-  averaged in hardware, read by DMA). `/ws/live` pushes each frame to a page that subscribes.
-- **IQ:** no stream yet. Every demodulator runs on the PS, so any point in a lane's receiver can
-  be tapped.
-
-Plan:
-
-- **`/ws/spectrum`:** push every completed spectrometer integration as a binary frame. One
-  byte per bin in dB is 4 KB per frame, so 25 Hz is ~100 KB/s.
-  - Set `spec_num_integrations` for the rate: each FFT is 4096 / sample rate (0.34 ms at
-    12 MSPS), so about 117 averaged FFTs give 25 Hz.
-  - Draw spectrum and waterfall on a canvas, with the window, channels and live calls marked
-    (from the 070 plan).
-- **Constellation and eye at 20+ Hz:** push a lane's symbols from its software receiver as
-  binary frames, per lane.
-  - Draw with persistence ("phosphor") so the eye opens the way reference analyzers show it.
-- **Cost:** stream only while a page subscribes; binary frames and drawing in the browser keep
-  the PS load low. The scanner uses 15-17 % of one A9 core (079). Measure it with the streams on.
-
-## C4FM voice and vendor grants
-
-- C4FM on traffic channels: done in 079 step 4 (every lane demodulates the site's modulation in
-  software).
-- Harris (MFID 0xA4) and Motorola (0x90) vendor TSBKs: SLERS and FPL send many Harris ones.
-  Decode the voice-grant and patch ones so those systems can be followed.
-- The software C4FM demodulator uses 4.3 % of one A9 core since 079's NEON FIRs.
-
-## Handheld page
-
-A browser view that looks like the future handheld in its 3D-printed case:
-
-- the display (site, talkgroup name, source radio, signal bars, time);
-- LEDs: control-channel lock, call, encrypted, recording;
-- volume, and a channel/profile knob;
-- scan, hold, skip, ignore and menu buttons.
-
-It uses the same API as the other pages, so it doubles as a remote control and as the
-prototype for the physical UI. It needs the case dimensions or renders to match the look. The
-board and case it would mirror: `doc/PANEL_ADDON_BOARD.md`.
+| Change | What |
+|--------|------|
+| 071, 072, 074, 075 | Find local systems; the activity history; P25 packet data; Clay Electric DMR Tier III |
+| 076 | The scanner as a fresh multi-band, multi-protocol crate (`scanner/doc/DESIGN.md`) |
+| 079, 082 | The general radio core: every demodulator in software; bake A (core 2.0.0) |
+| 080, 081, 083 to 085 | ATSC TV: the mode, station names, the 8-VSB model, our own player, bake D (core 2.1.0, live TV) |
+| 086 to 089 | Recordings by date; the live audio's interpolator; one volume; Activity's dates |
+| 090 to 094 | The UI rebuilt in the module rail: Now, Watch, the kept TV scan, Activity and Systems, Channels, Diagnostics and Settings |
+| — | The cleanup of what the scanner and the radio core replaced (`doc/CLEANUP_INVENTORY.md`, every batch) |

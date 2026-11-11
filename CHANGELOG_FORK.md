@@ -5,6 +5,34 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 095: Goals, capabilities and features; a review of the UI and its API
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy asked for the next work organised around goals, capabilities and features, a
+  code review of what 090 to 094 built, and the Now page redone first. Record:
+  `doc/changes/095_structure_and_review.md`.
+- **The roadmap** (`doc/ROADMAP.md`) is reworked: three goals (a trunked monitoring station now,
+  a stand-alone handheld later, more modes), what each needs from the gateware, the daemon and
+  its API, the UI, storage, security and hardware controls, the features by module, the order
+  of work, and fourteen questions for Andy.
+- **The review** read every UI and API file. Fixed in the daemon:
+  - a write from any site's page passed the origin check over HTTPS (HTTP/2 has no `Host`
+    header);
+  - IQ captures could exhaust the memory;
+  - a GET could rename files through an unchecked `site`;
+  - a refused talkgroup edit stayed in memory;
+  - a paused player of a TV recording made the daemon hold what it missed.
+- **Fixed in the pages:** a failing page failed silently; Settings deleted recordings and
+  history on a lowered limit without asking, and read an emptied number as 0; Watch played on
+  after its page was left and froze when live TV stopped elsewhere; Activity's alert picks,
+  its empty unit and its chart's dates across a clock change; the scan's cards after an add;
+  and smaller ones. Unused exports and styles are removed.
+- **Open:** the review's other findings are ranked in the record and placed in the roadmap's
+  steps. No login yet; the sockets and a re-pointed name are not covered by the origin check.
+- Not on a unit: A keeps the SD image `2026-11-10-pages2`.
+
 ## [2026-11-10] 094: The last three pages in the rail's layout: Channels, Diagnostics, Settings
 
 **Branch:** fishball-p25 (local)

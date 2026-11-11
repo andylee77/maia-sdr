@@ -206,7 +206,7 @@ move, with what would have to follow in the UI.
 | `PUT …/talkgroups/{tg}`: no `color`, no `group` shown | An alias's colour can only be set by replacing the whole list | Rows take the alias's colour when it has one, else a colour from the talkgroup's number (`colorOf`) |
 | `GET /api/v1/systems`: each system's `aliases` and `listening` | The pages work out how a talkgroup is treated (followed, speaker, priority) from them, by the follower's rule: the alias naming it alone, else the first range holding it. The rule is in the daemon (`trunking::follow::routing`) and again in `js/aliases.js`. A review may serve each talkgroup's route instead | `aliasOf` and `routeOf` in `js/aliases.js`, used by the bank and the calls' colours |
 | `/ws/live` `changed` (`what: systems`) after an alias edit | The page reads every system again for one talkgroup's change. A review may push the changed alias, or the system | `store.js` `readSystems`; the bank redraws its controls when `store.systems` is replaced |
-| `/ws/live`: no notice for a radio setting | A packet data, gain or recording change made in another browser shows in Settings only after a reload | Settings reads `GET /api/v1/radio` once when it opens |
+| `/ws/live` `changed` (`what: radio`) | The daemon announces every write under `/api/v1/radio` and `/api/v1/clock`, and no page acts on it: a packet data, gain or recording change made in another browser shows in Settings only after a reload. `PUT /api/v1/mode`, `PUT /api/v1/config` and the legacy settings route announce nothing | `js/store.js` acts on `systems` and `recordings` only; Settings reads `GET /api/v1/radio` once when it opens |
 | `GET /api/v1/activity/talkgroups` as the bank's list | The bank's talkgroups are the aliases plus those heard in the last week (`hours=168`, `limit=1000`), asked for at most every 5 minutes, not pushed. A review may give the live site's talkgroups a route of their own, with each one's treatment | `knownTalkgroups` in `views/talkgroups.js` |
 | `status.live.state` `away` | It means another mode has the radio, and also the moment a mode changes. With a third mode (`data`) the shell needs to know which mode has it: `status.mode` says so today | `js/modules.js` (`scannerLine`), the shell's notice in `js/main.js`, Now's site strip |
 | `PUT /api/v1/mode` | It returns once the radio is the new mode's (seconds when a site goes live again). The values are the daemon's (`atsc`), not the UI's (`tv`). `Modes::set` assumes two modes (`DATA_MODE.md` §8) | `giveRadio` in `js/main.js`; a module's `mode` in `js/modules.js` |
@@ -221,11 +221,44 @@ move, with what would have to follow in the UI.
 | `GET /api/v1/activity/talkgroups`, `…/radios` `limit` (093) | Activity lists the 200 busiest and reaches any other by its number (`…/talkgroup/{tg}`, `…/radio/{unit}`), which answer for an id never heard with empty lists rather than a 404. A review may add a search by name or number | `renderWho` in `views/activity.js` |
 | `/ws/live` `scan` and the snapshot's `scan` (093) | The scan for systems comes whole at each change, with every site found so far. The Systems page takes it from the store; it no longer opens a second socket | `store.scan`; `scanPane` in `views/scan.js` |
 
-### For the UI session
+### What the review recommends (095)
 
-These are reads the current pages make that can fail on a null:
+The review of 2026-11-11 (`doc/changes/095_structure_and_review.md`) read each row above against
+the code. What it recommends, how large the change is, and the roadmap's step it belongs to:
 
-- `summary.voice_per_grant` (`.toFixed`);
-- `scan.sites[].modulation` (null for DMR; `.toUpperCase()`).
+| Row | Recommended | Size | Step |
+|-----|-------------|------|------|
+| `PUT /radio/packet_data` | Keep its own route (it applies at once; `/radio/settings` replaces a whole object for the next activation); rename it with `/data` | small | 7 |
+| `TG <n>` aliases | `DELETE …/talkgroups/{tg}` removes the alias the route made; an alias with no name is a larger change | small | 2 |
+| `do_not_monitor` | A `follow` field that also gives the lowest priority where only prioritised talkgroups are followed | small | 2 |
+| `color`, `group` | `color` in `PUT …/talkgroups/{tg}`, checked as `#rrggbb` (`group` is taken already) | small | 3 |
+| The rule in two places | `GET /systems/{id}/talkgroups`: each talkgroup with its route as the follower reads it; pushed on `/ws/live` for the live site | medium | 2 |
+| `changed` (`what: systems`) | Push the changed alias or system instead of having every page read all of them | small to medium | 2 |
+| `changed` (`what: radio`) | The pages act on it | small | 4 |
+| The bank's list | Served with the talkgroups' routes (above), not asked of the history | medium | 2 |
+| `away` | The mode in `away`, or the pages read `status.mode` (they do) | small | 7 |
+| `PUT /mode` | Leave the mode it is in, then enter the new one, for a third mode | medium | 7 |
+| ATSC routes outside ATSC mode | `take_radio: true` on the scan and the play | small to medium | TV |
+| `atsc_live` | The counters apart from the names | small | TV |
+| Stop and `viewers` | The receiver stops with its last viewer, on the daemon's side | medium | TV |
+| The kept TV scan | `kept: true`; a cancelled scan leaves the kept list | small; merging medium | TV |
+| Hold with `lane` | `PUT /lanes/{n}/hold` | small | 2 |
+| `recording.every_call` | `PUT /radio/recording` as a patch: today a body without `every_call` sets it back to on | small | 2 |
+| A call by its id | A `call` filter with its start time; `GET /calls/{id}` gives the newest call with an id, and ids can repeat | small | 3 |
+| Summary filters | `tg` is one more clause; `unit` needs the hourly table by radio | small; medium | 3 |
+| `limit` 200 | A search by name or number (the names are in the configuration, not the history) | medium | 3 |
+| `scan` whole | The progress apart from the sites found | small to medium | 3 |
 
-`systems.js` and `settings.js` age board times against the browser's clock.
+Found by the review and not in the table above:
+
+- **Whole-object writes:** `PUT /radio/settings` carries the scanner's call timings with the
+  history's limits, and the page echoes fields it has no control for (`traffic_chains`,
+  `every_call`). Two pages saving parts of one object overwrite each other.
+- **`PUT …/talkgroups/{tg}`** on a talkgroup that is one of several IDs of an earlier alias
+  answers 200 and changes nothing the follower reads (the index keeps the earlier alias).
+- **Refusals in plain text:** an unknown field, a bad id or an extra query key gets axum's own
+  text with 400, 415 or 422, not `{"ok": false, "error": "..."}`. The pages show that text.
+- **`GET /api/v1/recordings` without `limit`** copies every entry (101,000 on unit A).
+- **`GET /api/v1/iq/control.wav`:** two captures at once at most; a third gets 409.
+- **A change saved, then a failed activation** (`POST /scan/add`, a RadioReference import, a
+  site edit) answers 500 with no `changed` notice.
