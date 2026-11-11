@@ -2,9 +2,8 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** unit A runs the test build `2026-11-10-tv2` in RAM (it holds 087 to 092), with a
-kept scan of 8 stations on its flash. A reboot returns it to the SD image `2026-10-06-rec1`,
-which does not read the kept scan.
+**Status:** done; unit A runs the SD image `2026-11-10-tv2` (it holds 087 to 092), with a kept
+scan of 8 stations on its flash.
 
 ## Why
 
@@ -62,3 +61,18 @@ list to be kept, so Watch is never empty.
   - live TV on RF 19 through the API started from the kept scan's pilot offset (-6 Hz) and was
     playing 8 s later at an MER of 23.1 dB; stopped, and the scanner back live at 100 %.
 - `scanner/doc/API_FIELDS.md` is regenerated from unit A.
+- 2026-11-10: the SD image `2026-11-10-tv2` (fishball-p25 782e3da, tezuka_fw 2827b89, the radio
+  core 2.1.0's fifth build) on unit A, its boot files also in `/mnt/sd/boot_new_tv2` (rec1's in
+  `/mnt/sd/boot_new_rec1`). It is the first image with 087 to 092.
+  - **Checked before installing:** the ramdisk's scanner carries the tag and the changes' code;
+    `BOOT.bin` differs from rec1's in 11 bytes, U-Boot's build date, so the bitstream is the
+    same; the card's copies matched the build's sha256 before the reboot.
+  - **After the reboot:** the scanner started 55 s into the boot and was live on Clay County
+    within 46 s, control decode 100 % at 40 messages a second; 101,552 recordings listed and new
+    ones written to the card in 10 to 12 ms; `packet_data.follow` on; the kept scan there as
+    done (8 stations, 53 channels) with no scan run.
+  - **The pages, A serving them** (headless Chrome): `now_rail.mjs`, read only, passes its 10
+    steps; `tv_watch.mjs --unit --kept` passes 17: Watch lists the 53 channels while the
+    scanner has the radio, RF 19's row on Channels opens without its spectrum, 47.1 WJAXHD plays
+    live with no scan run since the boot (MER 20.3 dB on the radio antenna), the large view,
+    47.2, full screen, 30.1 on RF 14, Stop, and Return to Scanner brought Clay back.

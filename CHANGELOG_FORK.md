@@ -18,6 +18,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   kept; a factory reset forgets it.
 - **Not kept:** the windows' spectra. After a restart a channel on Channels opens with its
   station and Watch buttons, and says its spectrum comes with the next scan.
+- **The SD image `2026-11-10-tv2`** on unit A is the first with 087 to 092 (tezuka_fw 2827b89,
+  the gateware unchanged). After its reboot A was live on Clay County, the kept scan listed 53
+  channels with no scan run, and Watch played live from it.
 
 ## [2026-11-10] 091: TV: the Watch page with three views, and Channels in the rail
 

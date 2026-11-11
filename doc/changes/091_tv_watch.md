@@ -2,8 +2,7 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** unit A runs the test build `2026-11-10-tv1` in RAM (it holds 087 to 091). A reboot
-returns it to the SD image `2026-10-06-rec1`.
+**Status:** on unit A in the SD image `2026-11-10-tv2` (092's status log).
 
 ## Why
 

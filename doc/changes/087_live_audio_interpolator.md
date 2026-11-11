@@ -2,8 +2,7 @@
 
 **Date:** 2026-10-20. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** unit A runs the test build `2026-10-20-audio1` in RAM. A reboot returns it to the SD
-image `2026-10-06-rec1` until an image with this change is built.
+**Status:** on unit A in the SD image `2026-11-10-tv2` (092's status log).
 
 ## Why
 
