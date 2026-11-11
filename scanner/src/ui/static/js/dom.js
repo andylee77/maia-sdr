@@ -86,10 +86,6 @@ export function setClass(el, name, on) {
   if (el) el.classList.toggle(name, !!on);
 }
 
-export function clear(el) {
-  while (el && el.firstChild) el.removeChild(el.firstChild);
-}
-
 // Keyed list update: keeps existing rows (and any <audio> in them)
 // whose key is still present, creates new ones, removes gone ones and
 // re-orders to match `items`. create(item) -> element; update(el, item).

@@ -7,14 +7,14 @@
 
 import { h, toast, setText, setClass, icon } from '../dom.js';
 import { api } from '../api.js';
-import { refresh } from '../store.js';
+import { refresh, boardNow } from '../store.js';
 import { mhz, ago, pct, num, dur, unitLabel, DASH } from '../format.js';
 import { protocol } from '../protocols.js';
 import { player } from '../audio/player.js';
 import { getPrefs, setLane, onPrefs } from '../prefs.js';
 import { tgLabel, nameOf } from '../aliases.js';
 import { talkgroupBank, knownTalkgroups, heardVersion } from './talkgroups.js';
-import { callsPane, boardNow } from './now_calls.js';
+import { callsPane } from './now_calls.js';
 import { alertLabel, channel, SIDE } from './call_rows.js';
 
 // A control channel with no message for this long is shown as silent.
@@ -214,7 +214,7 @@ function idleLine(s, ch) {
   const parts = [];
   if (ch.on_data_channel) parts.push(`Waiting on the data channel, ${mhz(ch.tuned_hz)}.`);
   const last = s.calls && s.calls.recent.find(x => x.lane === ch.lane);
-  if (last) parts.push(`Last: ${tgLabel(last.tg, last.tg_name)} from ${unitLabel(last.source, last.source_name)}, ${ago(boardNow(s) - last.ended_unix_ms)}.`);
+  if (last) parts.push(`Last: ${tgLabel(last.tg, last.tg_name)} from ${unitLabel(last.source, last.source_name)}, ${ago(boardNow() - last.ended_unix_ms)}.`);
   return parts.join(' ') || 'Waiting for a grant.';
 }
 
@@ -255,6 +255,11 @@ function trafficCard(lane) {
   const pick = h('select', { class: 'input lane-hold', 'aria-label': `Keep traffic ${lane} on a talkgroup`, title: 'Follow only this talkgroup on this channel (the other channel follows as before)' });
   pick.addEventListener('change', async () => {
     const tg = pick.value ? Number(pick.value) : null;
+    // Out of the list, so it shows what the radio then holds: the pick, or what was there when
+    // the radio refuses.
+    pick.blur();
+    drawnPick = null;
+    pickSeen = [];
     try {
       await api.setHold(tg, lane);
       toast(tg === null ? `Traffic ${lane} follows every talkgroup` : `Traffic ${lane} follows only TG ${tg}`);
@@ -340,7 +345,7 @@ function trafficCard(lane) {
     }
     setText(tg, tgLabel(call.tg, call.tg_name));
     setText(sub, [nameOf(call.tg, call.tg_name) ? `TG ${call.tg}` : '', `from ${unitLabel(call.source, call.source_name)}`].filter(Boolean).join(' · '));
-    f.air.set(dur(Math.max(0, boardNow(s) - call.started_unix_ms)));
+    f.air.set(dur(Math.max(0, boardNow() - call.started_unix_ms)));
     f.voice.set(call.voice_frames ? dur(call.voice_frames * 20) : 'none yet');
     f.freq.set([mhz(call.freq_hz), channel(call)].filter(Boolean).join(' · '));
     const held = s.status.hold || null;

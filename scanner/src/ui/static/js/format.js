@@ -4,35 +4,12 @@
 
 export const DASH = '—';
 
-// The site time (UTC ms) as HH:MM:SS in this browser's time
-// zone. The offset a site announces is often standard time without
-// daylight saving (Clay County: UTC-5 in May), so it is shown only as
-// information (`utcOffset`), never used to display.
-export function siteClock(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour12: false });
-}
-
-// "UTC-4", "UTC+5:30".
-export function utcOffset(min) {
-  if (min == null) return '';
-  const sign = min < 0 ? '−' : '+';
-  const a = Math.abs(min);
-  return 'UTC' + sign + Math.floor(a / 60) + (a % 60 ? ':' + String(a % 60).padStart(2, '0') : '');
-}
-
-export const CLOCK_SOURCE = { site: 'site time', ntp: 'internet (NTP)', manual: 'set by hand' };
-
 // "770.20625 MHz", "936.2500 MHz": five decimals where the channel needs them, else four.
 export function mhz(hz, digits) {
   if (hz === null || hz === undefined || hz === 0) return DASH;
   if (digits !== undefined) return (hz / 1e6).toFixed(digits) + ' MHz';
   const s = (hz / 1e6).toFixed(5);
   return (s.endsWith('0') ? s.slice(0, -1) : s) + ' MHz';
-}
-
-export function khz(hz, digits = 1) {
-  if (hz === null || hz === undefined) return DASH;
-  return (hz / 1e3).toFixed(digits) + ' kHz';
 }
 
 // 1.4 s, 12 s, 2m 05s, 1h 03m
@@ -113,60 +90,9 @@ export function dayTime(ms) {
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + time;
 }
 
-// "TG 300" / "EMS Dispatch (300)"
-export function tgLabel(tg, alias) {
-  if (!tg) return DASH;
-  return alias ? alias + ' (' + tg + ')' : 'TG ' + tg;
-}
-
 export function unitLabel(id, alias) {
   if (!id) return 'unknown source';
   return alias ? alias + ' (' + id + ')' : String(id);
-}
-
-// `source` is the unit the grant was issued to. Other units
-// in `sources` come from the voice link control, whose IDs were wrong
-// each time they differed on the site (one grant = one transmission), so
-// they are only listed in the call details, never as another talker.
-export function linkControlUnits(call) {
-  return (call.sources || []).filter(s => s !== call.source);
-}
-
-// Talkgroup lists as typed ("301-310, 315") <-> ids.
-// Returns {tgs, bad}: `bad` lists the parts that are not a talkgroup
-// (1..16777215: 24-bit) or a range of them (at most 2000 wide).
-export function parseTgList(text) {
-  const tgs = [];
-  const bad = [];
-  const seen = new Set();
-  const add = t => { if (!seen.has(t)) { seen.add(t); tgs.push(t); } };
-  const ok = n => Number.isInteger(n) && n >= 1 && n <= 16777215;
-  for (const part of String(text).split(/[\s,;]+/).filter(Boolean)) {
-    const m = part.match(/^(\d+)(?:-(\d+))?$/);
-    const a = m ? Number(m[1]) : NaN;
-    const b = m && m[2] ? Number(m[2]) : a;
-    if (!m || !ok(a) || !ok(b) || b < a || b - a >= 2000) { bad.push(part); continue; }
-    for (let t = a; t <= b; t++) add(t);
-  }
-  return { tgs, bad };
-}
-
-export function formatTgList(tgs) {
-  const s = [...new Set(tgs || [])].sort((a, b) => a - b);
-  const out = [];
-  for (let i = 0; i < s.length; i++) {
-    let j = i;
-    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
-    out.push(j - i >= 2 ? s[i] + '-' + s[j] : j > i ? s[i] + ', ' + s[j] : String(s[i]));
-    i = j;
-  }
-  return out.join(', ');
-}
-
-// Q2.13 PLL register -> Hz at 4800 sym/s.
-export function pllHz(q213) {
-  if (q213 === null || q213 === undefined) return DASH;
-  return Math.round(q213 * 4800 / (2 * Math.PI * 8192)) + ' Hz';
 }
 
 export const NOT_FOLLOWED = {
@@ -187,15 +113,4 @@ export const CLOSE_REASON = {
   tg_change: 'next grant',
   timeout: 'no activity',
   site_switch: 'site switched',
-};
-
-export const AUDIO_STATUS = {
-  recorded: '',
-  saving: 'saving…',
-  not_recorded: 'recording off',
-  evicted: 'recording rotated out',
-  no_voice: 'no voice decoded',
-  encrypted: 'encrypted',
-  not_followed: 'not followed',
-  missing: 'no recording',
 };

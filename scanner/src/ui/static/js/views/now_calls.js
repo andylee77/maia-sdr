@@ -4,6 +4,7 @@
 
 import { h, setText, setClass, keyedList } from '../dom.js';
 import { api } from '../api.js';
+import { boardNow } from '../store.js';
 import { num, bytes } from '../format.js';
 import { callKey, recordingOf, alertsOf, detailPanel, createRow, updateRow } from './call_rows.js';
 
@@ -17,7 +18,6 @@ const FILTERS = [['all', 'All', 'Every call'], ['followed', 'Followed', 'Only th
 let filter = 'all';
 
 const known = v => v !== null && v !== undefined;
-export const boardNow = s => s.status.now_unix_ms + (Date.now() - s.statusAt);
 
 function recordingNote(st) {
   if (!st) return '';
@@ -81,7 +81,7 @@ export function callsPane() {
     if (!site || book.loading || book.done) return;
     let oldest = Infinity;
     for (const x of book.closed.values()) oldest = Math.min(oldest, x.started_unix_ms);
-    if (oldest === Infinity) oldest = boardNow(s) + 1;
+    if (oldest === Infinity) oldest = boardNow() + 1;
     book.loading = true;
     book.error = null;
     draw(s, true);
@@ -154,7 +154,7 @@ export function callsPane() {
     count.title = recordingNote(storage);
     const lv = s.status.live;
     const sys = lv && lv.state === 'live' ? (s.systems || []).find(x => x.id === lv.system.id) : null;
-    const ctx = { now: boardNow(s), clockValid: !!(s.status.clock && s.status.clock.valid), recs, site, sys, picked };
+    const ctx = { now: boardNow(), clockValid: !!(s.status.clock && s.status.clock.valid), recs, site, sys, picked };
     keyedList(rows, items, callKey, () => createRow(pick), (el, x) => updateRow(el, x, ctx));
     empty.hidden = items.length > 0;
     setText(empty, !s.calls ? 'Loading…' : q || filter !== 'all' || all.length ? 'No matching calls.' : lv && lv.state === 'live' ? 'No calls yet.' : 'No site is live.');

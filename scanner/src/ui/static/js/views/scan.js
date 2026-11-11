@@ -193,6 +193,17 @@ export function scanPane(onAdded) {
     const p = protocol(g.protocol);
     const known = configuredAs(g);
     const box = h('div', { class: 'sys-card' });
+    const self = { el: box, sites: g.sites };
+    // After an add: the card as the systems now make it, or gone with nothing left to add.
+    const redraw = () => {
+      const i = cards.indexOf(self);
+      if (i < 0 || !g.sites.some(toAdd)) {
+        prune();
+        return;
+      }
+      cards[i] = foundCard(g);
+      box.replaceWith(cards[i].el);
+    };
     const add = h('button', { class: 'btn primary small', type: 'button', text: known ? 'Add sites' : 'Add system' });
     const head = known ? null : systemHead({ protocol: g.protocol, label: g.label, identity: p.heardSystem(g.sites[0].identity), details: {} }, { right: [add] });
     const fresh = g.sites.filter(f => !configuredSite(f));
@@ -225,10 +236,14 @@ export function scanPane(onAdded) {
         const sys = known ? { label: known.label } : head.read();
         add.disabled = true;
         const r = await api.scanAdd({ ...sys, sites });
-        toast(`${sys.label.trim()}: ${r.sites.length} site${r.sites.length === 1 ? '' : 's'} added`);
+        const did = [
+          r.sites.length ? `${r.sites.length} site${r.sites.length === 1 ? '' : 's'} added` : '',
+          r.updated.length ? `${r.updated.length} updated` : '',
+        ].filter(Boolean).join(', ');
+        toast(`${sys.label.trim()}: ${did || 'nothing changed'}`);
         // The systems as they are now, without waiting for the push.
         configured = await api.systems();
-        prune();
+        redraw();
         await refresh();
         onAdded();
       } catch (e) {
@@ -244,7 +259,7 @@ export function scanPane(onAdded) {
       ...moves.map(m => h('label', { class: 'row moved' }, m.tick,
         h('span', null, h('strong', { text: m.c.site.label }), ` is configured on ${mhz(m.c.site.control.freq_hz)} but heard on ${mhz(m.f.freq_hz)} (${reception(m.f)}): `,
           h('span', { class: 'dim', text: 'ticked, it moves there.' })))));
-    return { el: box, sites: g.sites };
+    return self;
   }
 
   function results(s) {
@@ -268,7 +283,8 @@ export function scanPane(onAdded) {
     } else if (s.state === 'idle') {
       if (shown !== 'idle') setup();
       shown = 'idle';
-    } else if (shown !== `${s.id}:${s.state}`) {
+    } else if (seenSystems && shown !== `${s.id}:${s.state}`) {
+      // The finds are told from the configured systems, so they wait for them.
       shown = `${s.id}:${s.state}`;
       results(s);
     }
@@ -277,9 +293,12 @@ export function scanPane(onAdded) {
   function draw() {
     if (!store || !options) return;
     if (store.systems && store.systems !== seenSystems) {
+      const first = seenSystems === null;
       seenSystems = store.systems;
       configured = store.systems;
-      prune();
+      // The first systems: the scan is shown again, now with its finds. Later ones prune them.
+      if (first) seenScan = null;
+      else prune();
     }
     if (store.scan && store.scan !== seenScan) {
       seenScan = store.scan;

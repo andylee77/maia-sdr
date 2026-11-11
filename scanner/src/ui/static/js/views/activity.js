@@ -223,7 +223,8 @@ function chart() {
     g.textBaseline = 'top';
     const every = Math.max(1, Math.ceil(n / 8));
     for (let i = 0; i < n; i += every) {
-      const d = new Date(buckets[i].t);
+      // A day by its midday: a day's bucket starts an hour off midnight across a clock change.
+      const d = new Date(buckets[i].t + (bucketMs >= 86400000 ? bucketMs / 2 : 0));
       const label = bucketMs >= 86400000 ? (d.getMonth() + 1) + '/' + d.getDate()
         : (d.getHours() === 0 ? (d.getMonth() + 1) + '/' + d.getDate() : String(d.getHours()).padStart(2, '0') + ':00');
       g.fillText(label, left + i * bw + bw / 2, top + ph + 5);
@@ -236,7 +237,7 @@ function chart() {
     const i = Math.floor(((e.clientX - r.left - left) / (r.width - left - right)) * data.buckets.length);
     const b = data.buckets[i];
     if (!b) return;
-    const d = new Date(b.t);
+    const d = new Date(b.t + (data.bucketMs >= 86400000 ? data.bucketMs / 2 : 0));
     const at = data.bucketMs >= 86400000 ? d.toLocaleDateString() : d.toLocaleDateString() + ' ' + String(d.getHours()).padStart(2, '0') + ':00';
     setText(readout, at + ': ' + b.calls + ' call' + (b.calls === 1 ? '' : 's') + (b.encrypted ? ' (' + b.encrypted + ' encrypted)' : '')
       + '; voice ' + secs(b.voice_s) + ', clear grant ' + secs(b.clear_grant_s) + ', encrypted grant ' + secs(b.encrypted_grant_s) + '.');
@@ -249,6 +250,9 @@ function chart() {
     destroy() { window.removeEventListener('resize', draw); },
   };
 }
+
+// A summary with no calls.
+const NOTHING = { calls: 0, followed: 0, encrypted: 0, voice_s: 0, clear_grant_s: 0, encrypted_grant_s: 0, voice_per_grant: null, talkgroups: 0, radios: 0 };
 
 // A card's note behind its "i" button.
 function noteToggle(text, label) {
@@ -268,6 +272,10 @@ export function mount(host) {
   let s = null;
   // The picked call: its key, the call, and the alert's row it was picked from.
   let picked = null;
+  // Each pick's number, and the page left: an alert's call read from the history is shown only
+  // while its pick is the newest and the page is there.
+  let picks = 0;
+  let gone = false;
 
   // The bar: the site, the period or the dates, and the export.
   const siteSel = h('select', { class: 'input pick', 'aria-label': 'Site' });
@@ -425,25 +433,30 @@ export function mount(host) {
     detail.show(picked ? picked.x : null, c, play);
   }
   function unpick() {
+    picks += 1;
     picked = null;
     showPicked(false);
   }
   function pickCall(x, play) {
+    picks += 1;
     picked = { key: callKey(x), x, alert: null };
     showPicked(play);
   }
   // An alert's call is read from the history by its grant time.
   async function pickAlert(a, play) {
+    picks += 1;
+    const my = picks;
     const p = alertPlays(a);
     try {
       const q = new URLSearchParams({ site: a.site, tg: String(a.tg), from: String(p.started), to: String(p.started + 1), limit: '8' });
       const r = await api.activity('calls', q.toString());
+      if (my !== picks || gone) return;
       const x = r.items.find(c => c.call === p.call);
       if (!x) throw new Error('its call is no longer in the history');
       picked = { key: callKey(x), x, alert: alertKey(a) };
       showPicked(play && p.rec ? p.at / 1000 : false);
     } catch (e) {
-      toast(`Alert: ${e.message}`, true);
+      if (my === picks && !gone) toast(`Alert: ${e.message}`, true);
     }
   }
 
@@ -634,6 +647,17 @@ export function mount(host) {
       if (my !== seq) return;
       renderSites(sites);
       renderControls();
+      // No site to show (none live, and no history yet): the page is empty, with nothing asked.
+      if (!st.site) {
+        renderSummary(NOTHING, []);
+        plot.update([], 3600000);
+        whoItems = [];
+        renderWho();
+        if (tab === 'calls') renderCalls([], 0);
+        else if (tab === 'alerts') renderAlerts({ groups: [], items: [] });
+        else packets.update({});
+        return;
+      }
       const f = scopeQuery();
       const scope = st.scope;
       const site = st.site && !st.site.startsWith('system:') ? st.site : null;
@@ -688,6 +712,9 @@ export function mount(host) {
       }, Math.max(0, loadedAt + st.period.refresh - Date.now()));
     },
     unmount() {
+      gone = true;
+      // A load still under way draws and reports nothing.
+      seq += 1;
       clearTimeout(later);
       plot.destroy();
       detail.stop();

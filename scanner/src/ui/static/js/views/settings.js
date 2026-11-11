@@ -5,7 +5,7 @@
 
 import { h, card, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
-import { store, subscribe, want } from '../store.js';
+import { store, subscribe, want, boardNow } from '../store.js';
 import { ago, bytes, num } from '../format.js';
 import { crystalSource, packetDataSetting } from '../protocols.js';
 
@@ -20,6 +20,14 @@ function row(label, control, note) {
 
 const unit = text => h('span', { class: 'dim', text });
 const count = (value, min, max, label) => h('input', { class: 'input num', type: 'number', min, max, step: 1, value, 'aria-label': label });
+
+// The number typed in `input`. An empty box or other text is refused, not read as 0.
+function typed(input, what, { whole = true } = {}) {
+  const text = String(input.value).trim();
+  const n = Number(text);
+  if (!text || !Number.isFinite(n) || (whole && !Number.isInteger(n))) throw new Error(`${what}: ${whole ? 'a whole number' : 'a number'}`);
+  return n;
+}
 
 // A card's last line: a note on the left, its buttons on the right.
 function foot(note, ...buttons) {
@@ -37,7 +45,7 @@ function gainCard(radio) {
   sync();
   apply.addEventListener('click', async () => {
     try {
-      await api.setGain(mode.value, mode.value === 'manual' ? Number(db.value) : null);
+      await api.setGain(mode.value, mode.value === 'manual' ? typed(db, 'Manual gain', { whole: false }) : null);
       toast('Gain applied');
     } catch (e) {
       toast(e.message, true);
@@ -62,11 +70,16 @@ function recordingCard(radio, recs) {
   const save = h('button', { class: 'btn primary', type: 'button', text: 'Save' });
   save.addEventListener('click', async () => {
     try {
-      const res = await api.setRecording({
+      const next = {
         enabled: on.input.checked, every_call: r.every_call, storage: where.value,
-        ram_max_count: Number(ramN.value), sd_keep_days: Number(sdDays.value), locked_keep_days: Number(lockedDays.value),
-        sd_max_mb: Number(sdMb.value), folder_max_count: Number(perFolder.value),
-      });
+        ram_max_count: typed(ramN, 'RAM keeps'), sd_keep_days: typed(sdDays, 'The card keeps a recording'), locked_keep_days: typed(lockedDays, 'A locked recording'),
+        sd_max_mb: typed(sdMb, 'The card holds at most'), folder_max_count: typed(perFolder, "A day's folder holds at most"),
+      };
+      // A lowered limit deletes what is past it as it is saved.
+      const lowered = ['ram_max_count', 'sd_keep_days', 'locked_keep_days', 'sd_max_mb'].some(k => next[k] < r[k]);
+      if (lowered && !confirm('A lower limit deletes the recordings past it at once. This cannot be undone. Save?')) return;
+      const res = await api.setRecording(next);
+      Object.assign(r, res.recording);
       toast(res.deleted ? `Saved; ${res.deleted} oldest recording(s) deleted` : 'Saved');
     } catch (e) {
       toast(e.message, true);
@@ -115,12 +128,17 @@ function radioCard(radio) {
   const save = h('button', { class: 'btn primary', type: 'button', text: 'Save' });
   save.addEventListener('click', async () => {
     try {
-      await api.saveRadioSettings({
+      const next = {
         presets_allowed: presets.filter(p => p.box.checked).map(p => p.name),
         traffic_chains: r.traffic_chains,
-        calls: { hang_ms: Number(hang.value), end_grace_ms: Number(grace.value) },
-        history: { retention_days: Number(days.value), sd_max_mb: Number(mb.value) },
-      });
+        calls: { hang_ms: typed(hang, 'A call closes after'), end_grace_ms: typed(grace, 'A call closes after its end') },
+        history: { retention_days: typed(days, 'The history is kept'), sd_max_mb: typed(mb, 'The history holds at most') },
+      };
+      // A lowered limit drops the calls past it as it is saved.
+      const lowered = next.history.retention_days < r.history.retention_days || next.history.sd_max_mb < r.history.sd_max_mb;
+      if (lowered && !confirm('A lower limit deletes the history past it at once. This cannot be undone. Save?')) return;
+      const kept = await api.saveRadioSettings(next);
+      r.history = kept.history;
       toast('Saved; the window presets and call timings apply at the next site switch');
     } catch (e) {
       toast(e.message, true);
@@ -142,12 +160,15 @@ function clockCard(radio) {
   const c = card('Clock');
   const source = h('select', { class: 'input', 'aria-label': 'Clock' },
     ...[['site', 'The control channel'], ['ntp', 'The internet'], ['manual', 'By hand']].map(([v, t]) => h('option', { value: v, text: t })));
-  source.value = radio.config.clock.source;
+  let kept = radio.config.clock.source;
+  source.value = kept;
   source.addEventListener('change', async () => {
     try {
       await api.setClockSource(source.value);
+      kept = source.value;
       toast('Clock source saved');
     } catch (e) {
+      source.value = kept;
       toast(e.message, true);
     }
   });
@@ -191,15 +212,20 @@ function crystalCard(initial) {
   const c = card('Crystal');
   const lines = h('dl', { class: 'kv' });
   const anchor = count(initial.anchor_hz, 0, 1000, 'Anchor, Hz');
+  // True once the radio holds it.
   const save = async (on) => {
     try {
-      show(await api.setCrystal({ tracking: on, anchor_hz: Number(anchor.value) }));
+      show(await api.setCrystal({ tracking: on, anchor_hz: typed(anchor, 'The anchor') }));
       toast('Crystal tracking saved');
+      return true;
     } catch (e) {
       toast(e.message, true);
+      return false;
     }
   };
-  const tracking = switchInput('', initial.tracking, on => save(on));
+  const tracking = switchInput('', initial.tracking, async on => {
+    if (!(await save(on))) tracking.input.checked = !on;
+  });
   tracking.input.setAttribute('aria-label', 'Follow its drift');
   const saveAnchor = h('button', { class: 'btn', type: 'button', text: 'Save' });
   saveAnchor.addEventListener('click', () => save(tracking.input.checked));
@@ -222,7 +248,7 @@ function crystalCard(initial) {
       ['Correction', `${ppm(s.ppm)} (LO ${signedHz(s.lo_shift_hz)})`],
       ['Measured from', s.source ? crystalSource(s.source) : 'nothing yet: the live site is not decoded'],
       ['Calibrated', cal
-        ? `${ppm(cal.ppm)} ${ago(Date.now() - cal.at_unix_ms)} (spectrum ${signedHz(cal.spectrum_offset_hz)}, residual ${cal.residual_hz === null ? 'not measured' : signedHz(cal.residual_hz)})`
+        ? `${ppm(cal.ppm)} ${ago(boardNow() - cal.at_unix_ms)} (spectrum ${signedHz(cal.spectrum_offset_hz)}, residual ${cal.residual_hz === null ? 'not measured' : signedHz(cal.residual_hz)})`
         : (s.calibrating ? 'now' : 'not since start')],
       ['Tracker', s.estimate_ppm === null ? `${num(s.samples)} samples of 60` : `${ppm(s.estimate_ppm)} from ${num(s.samples)} samples`],
       ...(s.last_decision ? [['Last', s.last_decision]] : []),
@@ -269,29 +295,33 @@ function configCard() {
       return;
     }
     if (!confirm(`Replace the radio settings, systems, sites and aliases with ${f.name}? The radio restarts.`)) return;
+    importBtn.disabled = reset.disabled = true;
     try {
       const r = await api.importConfig(doc);
       toast(`Imported ${r.systems} systems, ${r.sites} sites, ${r.aliases} aliases; restarting`);
       reloadAfterRestart();
     } catch (e) {
       toast(e.message, true);
+      importBtn.disabled = reset.disabled = false;
     }
   });
   const reset = h('button', { class: 'btn danger', type: 'button', text: 'Factory reset' });
   reset.addEventListener('click', async () => {
-    if (!confirm('Factory reset: delete every system (with its aliases), site, recording and the call history, and restore the default settings? The crystal calibration stays. This cannot be undone.')) return;
+    if (!confirm('Factory reset: delete every system (with its aliases), site, recording, the call history and the TV channel list, and restore the default settings? The crystal calibration stays. This cannot be undone.')) return;
+    importBtn.disabled = reset.disabled = true;
     try {
       const r = await api.factoryReset();
       toast(`Reset: ${r.sites} sites, ${r.recordings} recordings, ${r.calls} calls removed; restarting`);
       reloadAfterRestart();
     } catch (e) {
       toast(e.message, true);
+      importBtn.disabled = reset.disabled = false;
     }
   });
   c.body.append(
     row('Export', exportLink, 'The radio settings and the systems with their aliases and sites, as one file. What the radio learned on the air and the crystal calibration stay with the board.'),
     row('Import', [file, importBtn], 'Replaces the settings, systems, sites and aliases with a file\'s; the radio restarts.'),
-    row('Factory reset', reset, 'Deletes every system, site, recording and the call history, and restores the default settings. The crystal calibration stays.'));
+    row('Factory reset', reset, 'Deletes every system, site, recording, the call history and the TV channel list, and restores the default settings. The crystal calibration stays.'));
   return c.el;
 }
 

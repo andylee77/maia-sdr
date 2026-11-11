@@ -6,7 +6,7 @@
 import { h, card, toast, table, setText } from '../dom.js';
 import { ago, mhz, DASH } from '../format.js';
 import { api } from '../api.js';
-import { want } from '../store.js';
+import { want, boardNow } from '../store.js';
 
 const share = (part, whole) => (whole > 0 ? `${Math.round((100 * part) / whole)} %` : DASH);
 
@@ -55,7 +55,7 @@ export function windowCard() {
     const rows = [
       ['Window', `${v.preset || DASH} at ${mhz(v.lo_hz)}: ${inside} of ${v.channels.length} channels, ${share(v.covered_weight, v.total_weight)} of the grants`],
       ['Planner', v.best ? `${v.best.preset} at ${mhz(v.best.lo_hz)}: ${share(v.best.covered_weight, v.best.total_weight)}${v.better ? ', worth a move' : ''}` : DASH],
-      ['Moves', `${v.auto ? 'automatic' : 'by hand only'}${v.last_recentre_unix_ms ? `, last ${ago(Date.now() - v.last_recentre_unix_ms)}` : ''}`],
+      ['Moves', `${v.auto ? 'automatic' : 'by hand only'}${v.last_recentre_unix_ms ? `, last ${ago(boardNow() - v.last_recentre_unix_ms)}` : ''}`],
     ];
     if (outside.length) rows.push(['Outside it', outside.join(', ')]);
     box.replaceChildren(h('dl', { class: 'kv' }, ...rows.flatMap(([k, val]) => [h('dt', { text: k }), h('dd', { text: val })])),

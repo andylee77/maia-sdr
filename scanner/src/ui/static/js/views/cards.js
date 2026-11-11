@@ -269,7 +269,15 @@ function siteSettings(p, site, onInput) {
     ...(p.edits.controlSlot ? [h('span', { text: 'Control LCN' }), lcn] : []));
   return {
     el,
-    lcn: () => (p.edits.controlSlot && String(lcn.value).trim() !== '' ? Number(lcn.value) : site.control.lcn ?? null),
+    // What is typed, where the protocol has one: a whole number, or none.
+    lcn: () => {
+      if (!p.edits.controlSlot) return site.control.lcn ?? null;
+      const text = String(lcn.value).trim();
+      if (!text) return null;
+      const n = Number(text);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`${site.label}: the control LCN is a whole number`);
+      return n;
+    },
     read: () => ({
       modulation: p.edits.modulation ? modulation.value : site.modulation || 'auto',
       window: { ...(site.window || {}), auto: auto.checked, cc_position: position.value },

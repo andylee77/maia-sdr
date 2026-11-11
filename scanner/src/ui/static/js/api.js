@@ -12,8 +12,12 @@ async function request(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((data && data.error) || `${method} ${path}: HTTP ${res.status}`);
+  const text = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch { /* a refusal in plain text, or no body */ }
+  if (!res.ok) throw new Error((data && data.error) || text.trim() || `${method} ${path}: HTTP ${res.status}`);
   return data;
 }
 

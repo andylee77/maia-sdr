@@ -102,12 +102,6 @@ export function protocol(name) {
   return REGISTRY[name] || UNKNOWN;
 }
 
-// "P25 and DMR Tier III": the protocols the radio knows.
-export function protocolNames() {
-  const labels = Object.values(REGISTRY).map(p => p.label);
-  return labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}` : labels.join('');
-}
-
 // The packet data setting (Settings): the protocol whose sites announce a data channel.
 export const packetDataSetting = {
   label: 'Follow P25 data traffic',

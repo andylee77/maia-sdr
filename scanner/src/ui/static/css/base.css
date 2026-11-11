@@ -201,8 +201,6 @@ body[data-fill] .view { max-width: none; }
   body[data-fill] .page { min-height: 0; }
   body[data-fill] .view { min-height: 0; grid-template-rows: minmax(0, 1fr); padding-bottom: var(--gap); }
 }
-.grid-2 { display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.grid-3 { display: grid; gap: var(--gap); grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .stack { display: grid; gap: var(--gap); align-content: start; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
@@ -220,14 +218,6 @@ body[data-fill] .view { max-width: none; }
 }
 .toast.error { background: var(--danger); color: #fff; }
 .noscript { padding: 20px; }
-
-@media (max-width: 1100px) {
-  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 860px) {
-  .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* Phones: the rail becomes a bar along the bottom. */
 @media (max-width: 640px) {

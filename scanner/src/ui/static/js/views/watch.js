@@ -209,6 +209,8 @@ export function mount(el) {
   // was picked meanwhile.
   let starting = false;
   let again = false;
+  // The page was left: a start still under way plays nothing.
+  let gone = false;
   // What the play button last showed, and the pick last brought into view.
   let shownOn = null;
   let shownPick = null;
@@ -242,10 +244,16 @@ export function mount(el) {
         }
         if (onAir()) {
           if (!(await giveRadio('atsc', 'TV'))) break;
+          if (gone) break;
           // Tuned before the player asks for the stream, so it never meets the last channel's.
           // A channel of the RF channel the receiver is on plays from the stream as it runs.
-          if (!receiving(x.rf.number)) await api.atscLiveStart(x.rf.number);
+          if (!receiving(x.rf.number)) {
+            await api.atscLiveStart(x.rf.number);
+            // Tuned for a page that is no longer there: nobody watches it.
+            if (gone) api.atscLiveStop().catch(() => {});
+          }
         }
+        if (gone) break;
         if (again) continue;
         tv.start(x.rf.number, x.v.program);
         break;
@@ -299,7 +307,7 @@ export function mount(el) {
   });
   find.addEventListener('input', () => draw());
   // A browser starts sound only after a click on the page.
-  el.addEventListener('click', () => tv.resume());
+  root.addEventListener('click', () => tv.resume());
 
   function drawList(x) {
     const q = find.value.trim().toLowerCase();
@@ -422,8 +430,16 @@ export function mount(el) {
     player = s;
     draw();
   });
+  // The receiver was on this page's channel at the last push.
+  let fed = false;
   const offLive = want({ atsc_live: true }, m => {
     live = m.live;
+    const p = player.playing;
+    const on = !!p && receiving(p.rf);
+    // The receiver left the channel this page plays (stopped from elsewhere, tuned to another,
+    // or the radio went back to the scanner): its stream brings nothing more.
+    if (fed && p && !on && !starting) tv.stop();
+    fed = on;
     draw();
   });
   api.atscRecordings()
@@ -443,6 +459,7 @@ export function mount(el) {
       draw();
     },
     unmount() {
+      gone = true;
       offPlayer();
       const was = !!player.playing;
       tv.stop();

@@ -8,11 +8,14 @@
 
 import { h, toast, setText, setClass, keyedList, icon } from '../dom.js';
 import { api } from '../api.js';
+import { boardNow } from '../store.js';
 import { ago, num, DASH } from '../format.js';
 import { aliasOf, routeOf, nameOf, colorOf } from '../aliases.js';
 
 // The history is asked for the last week's talkgroups at most this often.
 const HEARD_EVERY_MS = 300000;
+// After a read that failed.
+const HEARD_RETRY_MS = 15000;
 // The lowest priority: what following a talkgroup gives it where only those with one are followed.
 const LOWEST_PRIORITY = 100;
 const SPEAKERS = ['both', 'left', 'right'];
@@ -29,7 +32,10 @@ async function readHeard(site) {
   try {
     const d = await api.activity('talkgroups', new URLSearchParams({ site, hours: '168', limit: '1000' }).toString());
     if (heard.site === site) Object.assign(heard, { items: d.items, version: heard.version + 1 });
-  } catch { /* read again later */ }
+  } catch {
+    // Read again soon, not a whole period later.
+    if (heard.site === site) heard.at = Date.now() - HEARD_EVERY_MS + HEARD_RETRY_MS;
+  }
 }
 
 // The live site and its system in the store, or nulls.
@@ -186,7 +192,7 @@ export function talkgroupBank() {
     const q = search.value.trim().toLowerCase();
     const items = q ? all.filter(t => String(t.tg).includes(q) || (t.name || '').toLowerCase().includes(q)) : all;
     const onAir = new Set(((s.calls && s.calls.open) || []).filter(c => c.site === site && !c.private).map(c => c.tg));
-    const now = s.status.now_unix_ms + (Date.now() - s.statusAt);
+    const now = boardNow();
     const controls = [s.systems, heard.version, items.map(t => t.tg).join(',')];
     const fresh = force || !drawn || controls.some((v, i) => v !== drawn[i]);
     drawn = controls;

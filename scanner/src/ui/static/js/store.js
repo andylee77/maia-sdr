@@ -33,6 +33,9 @@ const RECENT = 100;
 
 const subscribers = new Set();
 
+// The board's clock now (unix ms), moved on from the last status; ages are counted against it.
+export const boardNow = () => (store.status ? store.status.now_unix_ms + (Date.now() - store.statusAt) : Date.now());
+
 export function subscribe(fn) {
   subscribers.add(fn);
   return () => subscribers.delete(fn);
@@ -230,9 +233,14 @@ function connect(backoff = 1000) {
     sendWants();
   };
   ws.onmessage = e => {
+    let m;
     try {
-      receive(JSON.parse(e.data));
-    } catch { /* not ours */ }
+      m = JSON.parse(e.data);
+    } catch {
+      return; // not ours
+    }
+    // Outside the try: a page that fails on a message says so in the console.
+    receive(m);
   };
   ws.onclose = () => {
     store.connected = false;

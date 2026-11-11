@@ -52,7 +52,8 @@ export function mount(el) {
   }
 
   async function remove(what, call) {
-    if (!confirm(`Remove ${what}? What it learned goes too; the history keeps its calls.`)) return;
+    const unsaved = editing > 0 ? ' The changes typed here and not saved are lost.' : '';
+    if (!confirm(`Remove ${what}? What it learned goes too; the history keeps its calls.${unsaved}`)) return;
     try {
       await call();
       toast(`${what} removed`);

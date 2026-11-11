@@ -3,7 +3,7 @@
 // which the receiver does not cover. Kept in memory since the last start.
 
 import { h, table } from '../dom.js';
-import { num, unitLabel, DASH, dayTime } from '../format.js';
+import { num, mhz, unitLabel, DASH, dayTime } from '../format.js';
 
 // What a data record is, in words.
 const KINDS = {
@@ -37,7 +37,7 @@ export function packetDataPane() {
   function update(d) {
     const body = [];
     body.push(h('p', { class: 'card-note', style: { marginTop: '0' }, text:
-      (d.data_channel_hz ? 'Data channel ' + (d.data_channel_hz / 1e6).toFixed(4) + ' MHz. ' : 'No data channel announced yet. ')
+      (d.data_channel_hz ? 'Data channel ' + mhz(d.data_channel_hz) + '. ' : 'No data channel announced yet. ')
       + 'Network to radio only (radios transmit on the uplink, which is not received). Kept in memory since the last start.' }));
     const kinds = Object.entries(d.totals || {}).sort((a, b) => b[1] - a[1]);
     if (kinds.length) {
