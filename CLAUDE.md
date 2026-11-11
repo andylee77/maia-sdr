@@ -21,10 +21,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   is begun: a password, an administrator and a listener, tokens, and a guard on every route and
   socket (102, `doc/changes/102_access.md`). A unit is open until its administrator's password
   is set; unit A's is Andy's to set. The bounds on stalled clients are in (103,
-  `doc/changes/103_bounds.md`). Left of step 6, each waiting for Andy's word on what 103 found:
-  HTTPS as the one way in and its certificate (Q9: the firmware deletes its CA's key), `iiod`'s
-  switch (Q10: it is the USB gadget's daemon, and the bench uses it). 095's review of the UI and
-  its API:
+  `doc/changes/103_bounds.md`). HTTPS is the one way in once a password is set, under a CA and a
+  certificate the unit makes itself (104, `doc/changes/104_https_own_ca.md`; Q9, "Yes, keep
+  it"); no browser has been tried with the CA installed, which is Andy's to do. Left of step 6,
+  waiting for Andy's word on what 103 found: `iiod`'s switch (Q10: it is the USB gadget's
+  daemon, and the bench uses it). 095's review of the UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
@@ -56,8 +57,14 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   has heard: run `python runs/ui_check/seed_heard.py` before the PC daemon starts. Access (102):
   `access_api.py` and `access_page.mjs` set passwords, so they run against the PC daemon only
   and leave it open; never set a password on a unit. A tool or check reaches a unit that has a
-  password with a token in `SCANNER_TOKEN` (`tools/scanner_token.py`, `runs/ui_check/unit.mjs`).
-  The bounds (103): `bounds_api.py` against the PC daemon (`--slow` holds a download a minute).
+  password over HTTPS, with a token in `SCANNER_TOKEN` and the file of the unit's CA
+  (`http://<unit>:8080/ca.crt`) in `SCANNER_CA`, for a page check in `NODE_EXTRA_CA_CERTS`
+  (`tools/scanner_token.py`, `runs/ui_check/unit.mjs`). The bounds (103): `bounds_api.py`
+  against the PC daemon (`--slow` holds a download a minute). HTTPS (104): `https_api.py`, the
+  PC daemon only. Start the PC daemon with `--listen-https 127.0.0.1:8453` too; the checks that
+  set passwords take its plain address (`access_api.py`, `https_api.py`) or its HTTPS one
+  (`access_page.mjs`). Run the page checks with `node`: VS Code's Electron run as Node refuses
+  the unit's CA.
 
 ## Layout
 
@@ -154,14 +161,19 @@ Every commit builds and passes these, run from `scanner/`:
   - stream it to `/tmp/scanner.new`;
   - `/etc/init.d/S60scanner stop`, then wait until `pidof scanner` is empty;
   - copy it over `/usr/bin/scanner`, `chmod +x`, then start.
+  - An SD image from before tezuka_fw's 007 starts the scanner with certificate files, which a
+    scanner from 104 on does not take: copy `tezuka_fw/package/scanner/S60scanner` over
+    `/etc/init.d/S60scanner` with the binary.
   - The stop unmounts the card: mount `/dev/mmcblk0p1` on `/mnt/sd` before writing there.
   - The rootfs is in RAM, so a reboot returns to the SD image.
-  - Log: `/var/log/scanner.log`. Web UI on port 8080 (HTTPS 8443).
+  - Log: `/var/log/scanner.log`. Web UI on port 8080 (HTTPS 8443, under the unit's own CA).
 - **State on a unit:**
-  - `/mnt/jffs2/scanner/` (`radio.json`, `systems.json`, `state/`);
+  - `/mnt/jffs2/scanner/` (`radio.json`, `systems.json`, `state/`; `tls/`, the unit's CA and
+    certificate; `access.json` once a password is set);
   - `/mnt/sd/scanner-history.sqlite` and `/mnt/sd/p25_recordings/` (UTC day folders, locked ones
     under `locked/`; FAT32 allows a directory about 8,000 recordings, 086).
-  - A's flash still holds p25-httpd's old files; nothing reads them.
+  - A's flash still holds p25-httpd's old files and the firmware's old certificates; nothing
+    reads them.
 - **Shared units:** before a restart, deploy, retune or site switch, run `ListAgents` and message
   any other session that may be using the unit.
 - **Bench link:** A eth0 `10.25.0.1` ↔ B eth0 `10.25.0.2`, B transmitting into A through pads.

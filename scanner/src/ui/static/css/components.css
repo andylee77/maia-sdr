@@ -760,6 +760,7 @@ a.btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .access-made .card-note { margin: 0; }
 .access-token { width: 100%; font-size: 0.86em; }
 .access-names { min-width: 16em; }
+.access-print { margin: 6px 0 0; overflow-wrap: anywhere; }
 
 /* ── Tables ───────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }

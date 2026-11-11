@@ -32,12 +32,12 @@ SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "Us
 
 
 def get(host: str, path: str, timeout: float = 10.0):
-    with urllib.request.urlopen(f"http://{host}:8080{path}", timeout=timeout) as r:
+    with urllib.request.urlopen(f"{scanner_token.base(host)}{path}", timeout=timeout) as r:
         return json.load(r)
 
 
 def post(host: str, path: str, timeout: float = 60.0):
-    req = urllib.request.Request(f"http://{host}:8080{path}", data=b"", method="POST")
+    req = urllib.request.Request(f"{scanner_token.base(host)}{path}", data=b"", method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 

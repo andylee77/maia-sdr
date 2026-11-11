@@ -11,18 +11,9 @@ pub struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     pub listen: SocketAddr,
 
-    /// HTTPS listen address, used when a certificate and key are given.
+    /// HTTPS listen address, under the unit's own certificate (kept on the flash).
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub listen_https: SocketAddr,
-
-    #[arg(long)]
-    pub ssl_cert: Option<PathBuf>,
-
-    #[arg(long)]
-    pub ssl_key: Option<PathBuf>,
-
-    #[arg(long)]
-    pub ca_cert: Option<PathBuf>,
 
     /// Directory of the persistent flash (configuration, learned state).
     #[arg(long, default_value = "/mnt/jffs2")]

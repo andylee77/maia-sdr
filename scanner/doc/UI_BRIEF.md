@@ -201,7 +201,10 @@ Per system, SDRTrunk's alias list as a table, the talkgroups' aliases and the ra
   radio's Settings begins with **Access**: on an open radio the first password; to the
   administrator the passwords, the tokens for tools, the browsers signed in, the names the radio
   answers to, and opening it again. A listener sees the pages and changes nothing: the radio
-  refuses and the page says whose it is.
+  refuses and the page says whose it is. Under the card, for every reader (change 104), the
+  radio's HTTPS: its port, with a way to open the page over it; what its certificate names; its
+  CA to download and install, with the SHA-256 to hold against what the PC shows. An open radio
+  reached over plain HTTP says to open the page over HTTPS before a password is typed.
 - **Files** (change 101, the radio's own, in the rail): what is on the card, to take away. The
   recordings as one ZIP archive of a selection (dates, a site, a talkgroup, a radio, only the
   locked ones), shown with what it takes before its download, or of one day from the table; the

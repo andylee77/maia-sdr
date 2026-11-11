@@ -31,7 +31,7 @@ ID_KEY = re.compile(r"^-?\d+$")
 
 
 def get(host: str, path: str):
-    with urllib.request.urlopen(f"http://{host}:8080{path}", timeout=30) as r:
+    with urllib.request.urlopen(f"{scanner_token.base(host)}{path}", timeout=30) as r:
         return json.load(r)
 
 

@@ -38,13 +38,13 @@ VLC = "C:/Program Files/VideoLAN/VLC/vlc.exe"
 
 
 def get(host: str, path: str, timeout: float = 10.0):
-    with urllib.request.urlopen(f"http://{host}:8080{path}", timeout=timeout) as r:
+    with urllib.request.urlopen(f"{scanner_token.base(host)}{path}", timeout=timeout) as r:
         return json.load(r)
 
 
 def post(host: str, path: str, body: dict | None = None, timeout: float = 60.0):
     data = json.dumps(body).encode() if body is not None else b""
-    req = urllib.request.Request(f"http://{host}:8080{path}", data=data, method="POST",
+    req = urllib.request.Request(f"{scanner_token.base(host)}{path}", data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
@@ -185,7 +185,10 @@ def run_watch(args, run: Path) -> dict:
         return {"error": "live TV did not play", "last": live_sample(args.host)}
     vlc = None
     if args.vlc:
-        url = f"http://{args.host}:8080/api/v1/atsc/stream/{rf}" + (f"?program={args.program}" if args.program else "")
+        # The player sends no header: a closed scanner takes its token in the address.
+        query = [f"program={args.program}"] if args.program else []
+        query += [f"token={scanner_token.token()}"] if scanner_token.token() else []
+        url = f"{scanner_token.base(args.host)}/api/v1/atsc/stream/{rf}" + ("?" + "&".join(query) if query else "")
         vlc = subprocess.Popen([VLC, "-I", "dummy", "--dummy-quiet", "--vout", "dummy", "--aout", "dummy",
                                 "--run-time", str(int(args.minutes * 60)), "--file-logging", "--logfile", str(run / "vlc.log"),
                                 "--log-verbose", "1", url, "vlc://quit"])

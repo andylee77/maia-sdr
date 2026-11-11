@@ -71,6 +71,11 @@ impl Paths {
         self.root.join("state").join("sites").join(format!("{site}.json"))
     }
 
+    /// The unit's CA and certificate for HTTPS (`services::tls`).
+    pub fn tls(&self) -> PathBuf {
+        self.root.join("tls")
+    }
+
     /// The last TV scan that finished (`services::atsc::kept`).
     pub fn tv_scan(&self) -> PathBuf {
         self.root.join("state").join("tv_scan.json")

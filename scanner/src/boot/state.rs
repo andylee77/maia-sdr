@@ -17,6 +17,7 @@ use crate::services::notices::Notices;
 use crate::services::packet_data::PacketData;
 use crate::services::recordings::Recordings;
 use crate::services::system::SystemHealth;
+use crate::services::tls::Tls;
 
 use tokio::sync::Mutex;
 
@@ -32,6 +33,10 @@ use crate::trunking::trunk::Trunking;
 pub struct AppState {
     /// Who may reach the radio.
     pub access: Access,
+    /// The unit's certificate for HTTPS; none when its store could not be opened.
+    pub tls: Option<Tls>,
+    /// The port HTTPS is served on; 0 while it is not.
+    pub https_port: std::sync::atomic::AtomicU16,
     pub paths: Paths,
     pub config: Arc<Mutex<Config>>,
     pub tuner: Arc<RadioTuner>,

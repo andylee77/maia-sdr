@@ -31,13 +31,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def get(host: str, path: str):
-    with urllib.request.urlopen(f"http://{host}:8080{path}", timeout=10) as r:
+    with urllib.request.urlopen(f"{scanner_token.base(host)}{path}", timeout=10) as r:
         return json.load(r)
 
 
 def post(host: str, path: str, body: dict | None = None):
     data = json.dumps(body).encode() if body is not None else b""
-    req = urllib.request.Request(f"http://{host}:8080{path}", data=data, method="POST",
+    req = urllib.request.Request(f"{scanner_token.base(host)}{path}", data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)

@@ -208,7 +208,7 @@ fn check_new(password: &str) -> Result<(), String> {
 }
 
 /// The unit's own host name.
-fn host_name() -> Option<String> {
+pub fn host_name() -> Option<String> {
     let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok().or_else(|| std::env::var("COMPUTERNAME").ok())?;
     let name = name.trim().to_ascii_lowercase();
     (!name.is_empty()).then_some(name)
@@ -394,6 +394,12 @@ impl Access {
         }
         let secret = new.map(hash).transpose()?;
         let mut inner = self.lock();
+        if level == Level::Admin {
+            // The administrator's password was given right, or there was none to guess: the
+            // count of wrong ones starts over, as it does at a sign-in.
+            inner.wrong = 0;
+            inner.wait_until = None;
+        }
         match (level, secret) {
             (Level::Admin, None) => inner.stored = Stored { names: std::mem::take(&mut inner.stored.names), ..Stored::default() },
             (level, secret) => {
@@ -477,6 +483,11 @@ impl Access {
         }
     }
 
+    /// The names the unit answers to besides its own, and its own host name.
+    pub fn names(&self) -> (Vec<String>, Option<String>) {
+        (self.lock().stored.names.clone(), self.host_name.clone())
+    }
+
     /// A listener's password is set.
     #[cfg(test)]
     pub fn has_listener(&self) -> bool {
@@ -487,7 +498,8 @@ impl Access {
 /// What a route asks of a client: nothing, a listener's level or the administrator's.
 pub fn needed(method_is_read: bool, path: &str) -> Option<Level> {
     // The page itself and signing in: before anyone is known.
-    if path == "/" || path == "/index.html" || path.starts_with("/ui/") || path == "/api/v1/session" {
+    // And the CA's certificate, which a PC installs before it can trust the unit's HTTPS.
+    if path == "/" || path == "/index.html" || path.starts_with("/ui/") || path == "/api/v1/session" || path == "/ca.crt" || path == "/api/v1/certificate" {
         return None;
     }
     // The accounts are the administrator's to see too.
@@ -632,6 +644,17 @@ mod tests {
         // The right one clears the count.
         assert_eq!(a.check_password("correct horse 1"), Some(Level::Admin));
         assert!(a.must_wait().is_none());
+        // So does the administrator's password given right to change it: a wrong one after that
+        // is the first of its row, not one more.
+        for _ in 0..FREE_TRIES {
+            a.check_password("a wrong guess");
+        }
+        assert!(a.must_wait().is_some());
+        a.set_password(Level::Admin, Some("correct horse 1"), None, None).unwrap();
+        a.set_password(Level::Admin, None, Some("correct horse 2"), None).unwrap();
+        assert!(a.must_wait().is_none());
+        assert_eq!(a.check_password("a wrong guess"), None);
+        assert!(a.must_wait().is_none());
     }
 
     #[test]
@@ -666,7 +689,7 @@ mod tests {
 
     #[test]
     fn each_route_asks_for_its_level() {
-        for path in ["/", "/index.html", "/ui/v1/js/main.js", "/api/v1/session"] {
+        for path in ["/", "/index.html", "/ui/v1/js/main.js", "/api/v1/session", "/ca.crt", "/api/v1/certificate"] {
             assert_eq!((needed(true, path), needed(false, path)), (None, None), "{path}");
         }
         assert_eq!(needed(true, "/api/v1/status"), Some(Level::Listener));

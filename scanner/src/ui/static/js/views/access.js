@@ -1,7 +1,8 @@
 // The Access card (the radio's Settings): who may reach this radio. With no password set it is
 // open and the card offers to set the administrator's; after that it shows who is signed in
 // here, and to the administrator the passwords, the tokens for tools, the browsers signed in and
-// the names the radio answers to. A listener sees only that they are one.
+// the names the radio answers to. A listener sees only that they are one. Everyone sees the
+// radio's HTTPS: where it is, what its certificate names, and its CA to install.
 
 import { h, toast, table } from '../dom.js';
 import { api } from '../api.js';
@@ -10,6 +11,25 @@ import { row, foot, section } from './settings_parts.js';
 
 const LEVEL = { admin: 'Administrator', listener: 'Listener' };
 const MIN = 8;
+
+// A fingerprint in groups a person can read across to what a PC shows.
+const grouped = hex => hex.toUpperCase().match(/.{1,4}/g).join(' ');
+
+// The radio's HTTPS, for every reader of the card: `c` as `GET /api/v1/certificate` gives it.
+function https(c) {
+  if (!c || !c.https_port) return [h('h3', { class: 'access-part', text: 'HTTPS' }), h('p', { class: 'card-note', text: 'This radio does not serve HTTPS: its certificate could not be made.' })];
+  const here = `https://${location.hostname}:${c.https_port}/${location.hash}`;
+  const out = [
+    h('h3', { class: 'access-part', text: 'HTTPS' }),
+    row(`HTTPS is on port ${c.https_port}`, location.protocol === 'https:' ? h('span', { class: 'dim', text: 'this page is on it' }) : h('a', { class: 'btn', href: here, text: 'Open this page over HTTPS' }),
+      `Its certificate names ${c.names.join(', ')}. The radio makes it again when its address changes.`),
+    row("The radio's CA", h('a', { class: 'btn', href: '/ca.crt', download: 'fishball-scanner-ca.crt', text: 'Download its certificate' }),
+      `${c.ca_name}. Install it on this PC as a trusted root and the browser trusts this radio; until then it warns. It can sign only for private addresses and local names.`),
+    h('p', { class: 'card-note access-print' }, 'SHA-256, to hold against what the PC shows: ', h('span', { class: 'mono', text: grouped(c.ca_sha256) })),
+  ];
+  if (c.left_out.length) out.push(h('p', { class: 'card-note', text: `Not named in the certificate, because the CA may not sign for them: ${c.left_out.join(', ')}.` }));
+  return out;
+}
 
 const secret = label => h('input', { class: 'input', type: 'password', autocomplete: 'new-password', 'aria-label': label });
 
@@ -57,10 +77,11 @@ export function accessCard(reload) {
     }));
     return [
       h('p', { class: 'access-state warn', text: 'No password is set: anyone who can reach this radio on the network can listen to it and change it.' }),
+      location.protocol === 'https:' ? null : h('p', { class: 'card-note', text: 'This page is on plain HTTP: a password typed here crosses the network in the clear. Open the page over HTTPS first (below).' }),
       row('The administrator\'s password', first, `At least ${MIN} characters.`),
       row('…again', again),
-      foot('Once it is set, every browser and tool signs in. A password that is lost: put an empty file named scanner-reset-access on the card and restart the radio.', set),
-    ];
+      foot('Once it is set, every browser and tool signs in, and the plain HTTP port only sends a browser to HTTPS. A password that is lost: put an empty file named scanner-reset-access on the card and restart the radio.', set),
+    ].filter(Boolean);
   }
 
   function listener() {
@@ -158,12 +179,12 @@ export function accessCard(reload) {
 
   return {
     el: sec.el,
-    show({ me, access }) {
+    show({ me, access, certificate }) {
       // What is being typed is not thrown away by a read that changes nothing.
-      const key = JSON.stringify([me, access, made && made.id]);
+      const key = JSON.stringify([me, access, certificate, made && made.id]);
       if (key === body.dataset.key) return;
       body.dataset.key = key;
-      body.replaceChildren(...(!me || !me.protected ? open() : me.level === 'admin' && access ? admin(access) : listener()));
+      body.replaceChildren(...(!me || !me.protected ? open() : me.level === 'admin' && access ? admin(access) : listener()), ...https(certificate));
     },
   };
 }

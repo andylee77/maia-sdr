@@ -43,6 +43,8 @@ export const api = {
   session: () => request('GET', SESSION),
   signIn: password => request('POST', SESSION, { password }),
   signOut: () => request('DELETE', SESSION),
+  // The radio's HTTPS: its port, its CA's name and SHA-256, the names its certificate is for.
+  certificate: () => request('GET', '/api/v1/certificate'),
   // The administrator's: the passwords set, the browsers signed in, the tokens, the names.
   access: () => request('GET', '/api/v1/access'),
   // `edit`: { level, new, current }; `new` null takes the password away.

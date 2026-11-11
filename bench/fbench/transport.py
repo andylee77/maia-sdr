@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shlex
+import ssl
 import subprocess
 import time
 import urllib.error
@@ -230,7 +231,12 @@ class Http:
     """Minimal JSON-over-HTTP client for the scanner's API (scanner/doc/API.md)."""
 
     def __init__(self, host: str, port: int = 8080, timeout: float = 5.0) -> None:
-        self.base = f"http://{host}:{port}"
+        # A scanner with a password answers only over HTTPS (port 8443), to a tool with its
+        # token (SCANNER_TOKEN) that trusts its CA (SCANNER_CA, the file of its certificate).
+        closed = bool(os.environ.get("SCANNER_TOKEN"))
+        self.base = f"https://{host}:8443" if closed and port == 8080 else f"http://{host}:{port}"
+        ca = os.environ.get("SCANNER_CA")
+        self._trust = ssl.create_default_context(cafile=ca) if closed and ca else None
         self.timeout = timeout
 
     def _url(self, path: str, params: dict[str, Any] | None) -> str:
@@ -240,12 +246,12 @@ class Http:
         return url
 
     def _request(self, req: urllib.request.Request, timeout: float | None) -> Any:
-        # A scanner with a password answers a tool only with its token.
+        # A scanner with a password answers a tool only with its token, which goes over HTTPS only.
         token = os.environ.get("SCANNER_TOKEN")
-        if token:
+        if token and self.base.startswith("https:"):
             req.add_unredirected_header("Authorization", f"Bearer {token}")
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self._trust) as resp:
                 body = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             raise TransportError(f"HTTP {exc.code} for {req.full_url}") from exc

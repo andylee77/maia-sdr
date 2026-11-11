@@ -8,6 +8,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/session` | who the client is: whether a password is set (`protected`), its level (`admin`, `listener`, null: not signed in) and how it is known (`open`: no password is set, `session`, `token`) |
 | POST | `/api/v1/session` | sign in with `password` (the level is whose it is) or trade a `token` for a browser's session; the answer sets the session's cookie |
 | DELETE | `/api/v1/session` | sign out: the session ends |
+| GET | `/ca.crt` | the unit's CA certificate (PEM), for a PC to install so that its browser and tools trust the unit's HTTPS; open to a client that is not signed in, and served over plain HTTP too |
+| GET | `/api/v1/certificate` | the unit's HTTPS: its port, the CA's name and the SHA-256 of its certificate (to hold against what a PC shows), the names the certificate is for, those left out because the CA signs only private addresses and local names, and when it ends |
 | GET | `/api/v1/access` | the administrator's: whether each password is set, the browsers signed in, the tokens, the names the unit answers to |
 | PUT | `/api/v1/access/password` | set, change or remove a level's password (`level`, `new`; `current` to change or remove the administrator's). The first administrator's password closes the radio and signs its setter in; removing it removes every password, session and token |
 | POST | `/api/v1/access/tokens` | make a token for a tool (`label`, `level`): the token is in the answer this once, and is sent as `Authorization: Bearer <token>` |

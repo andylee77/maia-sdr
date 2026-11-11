@@ -113,6 +113,57 @@ pub async fn guard(State(s): State<Arc<AppState>>, mut req: Request, next: Next)
     next.run(req).await
 }
 
+/// The name in a `Host` without its port, an IPv6 address in its brackets.
+fn host_name_of(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.split_inclusive(']').next().unwrap_or(host);
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    }
+}
+
+/// The plain HTTP port once a password is set: every request is sent to HTTPS, where a password,
+/// a session and a token do not cross the network in the clear. The CA's certificate stays here:
+/// a PC needs it before it can trust the other port.
+pub async fn https_only(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let port = s.https_port.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 || !s.access.protected() || req.uri().path() == "/ca.crt" {
+        return next.run(req).await;
+    }
+    let Some(host) = served_as(req.headers(), req.uri()) else {
+        return refuse(StatusCode::BAD_REQUEST, format!("this radio is reached over HTTPS, on port {port}"));
+    };
+    let to = format!("https://{}:{port}{}", host_name_of(host), req.uri().path_and_query().map_or("/", |p| p.as_str()));
+    (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, to)]).into_response()
+}
+
+/// The unit's CA certificate, to install on a PC.
+pub async fn ca_certificate(State(s): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    let pem = s.tls.as_ref().ok_or_else(|| ApiError::not_found("a certificate store on this radio"))?.ca_pem().map_err(failed)?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/x-x509-ca-cert"), (header::CONTENT_DISPOSITION, "attachment; filename=\"fishball-scanner-ca.crt\"")],
+        pem,
+    )
+        .into_response())
+}
+
+#[derive(Serialize)]
+pub struct CertificateView {
+    /// The port HTTPS is served on; null while it is not.
+    pub https_port: Option<u16>,
+    #[serde(flatten)]
+    pub certificate: crate::services::tls::View,
+}
+
+/// The unit's HTTPS, for a person to check and trust it.
+pub async fn certificate(State(s): State<Arc<AppState>>) -> ApiResult<CertificateView> {
+    let tls = s.tls.as_ref().ok_or_else(|| ApiError::not_found("a certificate store on this radio"))?;
+    let port = s.https_port.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(Json(CertificateView { https_port: (port != 0).then_some(port), certificate: tls.view() }))
+}
+
 /// Who the client is, as the page asks at its start.
 #[derive(Serialize)]
 pub struct Session {
@@ -332,6 +383,14 @@ mod tests {
         assert_eq!(take_token(&mut req), None);
         assert_eq!(req.uri().to_string(), "/api/v1/status?tokens=1");
         assert_eq!(take_token(&mut request("/api/v1/status")), None);
+    }
+
+    #[test]
+    fn a_hosts_name_is_taken_without_its_port() {
+        assert_eq!(host_name_of("192.168.120.50:8080"), "192.168.120.50");
+        assert_eq!(host_name_of("pluto.local"), "pluto.local");
+        assert_eq!(host_name_of("[fd00::1]:8080"), "[fd00::1]");
+        assert_eq!(host_name_of("[fd00::1]"), "[fd00::1]");
     }
 
     #[test]

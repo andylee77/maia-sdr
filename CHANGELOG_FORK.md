@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 104: HTTPS as the one way in: the unit's own CA and certificate
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's Q9, the rest of step 6 but for `iiod`. A password crossed the network
+  in the clear, and the firmware's certificate could not be made again (its CA's key was
+  deleted) and did not name a unit's Ethernet address. Asked whether to keep a new CA's key on
+  the unit, Andy answered "Yes, keep it". Record: `doc/changes/104_https_own_ca.md`.
+- **The unit makes a CA of its own,** once, its key kept on the flash; it can sign only for
+  private addresses and local names. From it the unit makes its certificate for the addresses
+  and names it is reached by now, and makes it again when they change, when it nears its end,
+  and once the clock is set. What the CA may not sign for is left out and told.
+- **Once a password is set, the plain HTTP port only sends each request to HTTPS,** but for
+  the CA's certificate (`GET /ca.crt`). An open unit serves both ports as before.
+  `GET /api/v1/certificate` tells of the unit's HTTPS; the Access card shows it, with the CA to
+  install and its SHA-256.
+- **The tools, the bench's client and the page checks** reach a unit that has a password over
+  HTTPS, trusted by the CA's file in `SCANNER_CA`, and send a token over HTTPS only.
+- **The scanner's `--ssl-cert`, `--ssl-key` and `--ca-cert` are gone;** the firmware's
+  `S60scanner` goes with it (tezuka_fw 007, local, not built into an image).
+- **Fixed on the way:** a host name no certificate can carry (an underscore) is left out of
+  the certificate, where it made a strict verifier refuse the whole of it; the count of wrong
+  passwords starts over when the administrator's password is changed or removed.
+- **Not checked:** a browser with the CA installed on the PC, which is Andy's to do.
+
 ## [2026-11-11] 103: Bounds on what a stalled or greedy client can hold
 
 **Branch:** fishball-p25 (local)

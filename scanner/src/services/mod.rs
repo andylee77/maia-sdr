@@ -19,3 +19,4 @@ pub mod notices;
 pub mod packet_data;
 pub mod recordings;
 pub mod system;
+pub mod tls;

@@ -128,8 +128,18 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         tracing::warn!("access: {note}");
         log.radio("access", note);
     }
+    let tls = match crate::services::tls::Tls::open(&paths.tls(), crate::services::access::host_name().as_deref()) {
+        Ok(tls) => Some(tls),
+        Err(e) => {
+            tracing::error!("the certificate's store: {e}; HTTPS is not served");
+            log.radio("access", format!("HTTPS is not served: {e}"));
+            None
+        }
+    };
     let state = Arc::new(AppState {
         access,
+        tls,
+        https_port: Default::default(),
         paths,
         config,
         tuner,
@@ -158,7 +168,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     });
     let app = crate::api::router(state.clone());
     tokio::select! {
-        r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
+        r = crate::api::serve(app, state.clone(), args.listen, args.listen_https) => r?,
         _ = shutdown_signal() => tracing::warn!("shutting down"),
         _ = state.restart.notified() => tracing::warn!("restarting"),
     }

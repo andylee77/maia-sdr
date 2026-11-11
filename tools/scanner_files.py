@@ -201,7 +201,7 @@ def check_tv(file, size, promised):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", required=True, help="the scanner: a host, host:port or URL (port 8080 by default)")
+    ap.add_argument("--host", required=True, help="the scanner: a host, host:port or URL (port 8080; with SCANNER_TOKEN set, HTTPS on 8443)")
     ap.add_argument("--out", type=Path, help="where to save (default runs/files/<host>/)")
     ap.add_argument("--health", action="store_true", help="read the receivers before, during and after the download")
     sub = ap.add_subparsers(dest="what", required=True)
@@ -220,9 +220,7 @@ def main():
     args = ap.parse_args()
     scanner_token.install(args.host)
 
-    base = args.host if "://" in args.host else f"http://{args.host}"
-    if base.count(":") < 2:
-        base += ":8080"
+    base = scanner_token.base(args.host)
     host = urllib.parse.urlparse(base).hostname
     out_dir = args.out or REPO / "runs" / "files" / host
     result = {"host": base, "what": args.what}

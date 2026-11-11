@@ -406,6 +406,16 @@ ROUTES: dict[str, list] = {
         ("level", "string or null", "The client's level: `admin` or `listener`; null: not signed in."),
         ("via", "string or null", "How it is known: `open` (no password is set), `session` (a browser's cookie) or `token`."),
     ],
+    "/api/v1/certificate": [
+        ("https_port", "number or null", "The port HTTPS is served on; null: it is not served (the certificate could not be made)."),
+        ("ca_name", "string", "The name of the unit's CA, as a PC lists it once installed."),
+        ("ca_sha256", "string", "SHA-256 of the CA's certificate (64 hex digits), to hold against the fingerprint a PC shows for the file from `GET /ca.crt`."),
+        ("names", "array", "The addresses and names the unit's certificate is for: those the unit is reached by now."),
+        ("names[]", "string", "An address, or a host name."),
+        ("left_out", "array", "Addresses and names the unit has that its CA may not sign for (a public address, a name that is not local, a name that is not a host name as a certificate writes one): HTTPS by one of them is not trusted."),
+        ("left_out[]", "string", "An address, or a name."),
+        ("not_after_unix_s", "number", "When the certificate ends. It is made again 30 days before, when the unit's addresses or names change, and once the clock is set."),
+    ],
     "/api/v1/access": [
         ("protected", "bool", "An administrator's password is set."),
         ("listener", "bool", "A listener's password is set."),
@@ -1340,6 +1350,15 @@ NOT_JSON: dict[str, str] = {
         "| `meta` | `lane` (0 or 1), `tg`, `src` (0: unknown), `call_id`, `speaker` (`both`, `left`, `right`, `off`) | Before a lane's first frame of a new call or talker. |\n"
         "| `alert` | `lane`, `tg`, `call_id`, `seq`, `kind`, `tones_hz`, `offset_ms` | With `v=2`, before the frame that makes the call's audio an alert tone; it began `offset_ms` into the call's audio. |\n"
         "| `lag` | `skipped` | The listener fell behind; frames were skipped. |"
+    ),
+    "/ca.crt": (
+        "The certificate of the unit's CA (PEM, `application/x-x509-ca-cert`, an attachment named "
+        "`fishball-scanner-ca.crt`): installed on a PC as a trusted root it makes the unit's HTTPS "
+        "trusted, and given to a tool as `SCANNER_CA` likewise. It can sign only for private "
+        "addresses and local names. Anyone may read it, and it stays on the plain HTTP port after "
+        "a password is set, when every other request there is sent to HTTPS: a PC needs it before "
+        "it can trust the other port. Hold its SHA-256 against `GET /api/v1/certificate`'s "
+        "`ca_sha256` as Settings, Access shows it."
     ),
     "/api/v1/files/recordings.zip": (
         "A ZIP archive (`application/zip`, an attachment named for its days and what narrowed it: "

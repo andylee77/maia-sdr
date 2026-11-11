@@ -86,6 +86,8 @@ routes! {
     get "/api/v1/session" => access::session, "who the client is: whether a password is set (`protected`), its level (`admin`, `listener`, null: not signed in) and how it is known (`open`: no password is set, `session`, `token`)";
     post "/api/v1/session" => access::sign_in, "sign in with `password` (the level is whose it is) or trade a `token` for a browser's session; the answer sets the session's cookie";
     delete "/api/v1/session" => access::sign_out, "sign out: the session ends";
+    get "/ca.crt" => access::ca_certificate, "the unit's CA certificate (PEM), for a PC to install so that its browser and tools trust the unit's HTTPS; open to a client that is not signed in, and served over plain HTTP too";
+    get "/api/v1/certificate" => access::certificate, "the unit's HTTPS: its port, the CA's name and the SHA-256 of its certificate (to hold against what a PC shows), the names the certificate is for, those left out because the CA signs only private addresses and local names, and when it ends";
     get "/api/v1/access" => access::get, "the administrator's: whether each password is set, the browsers signed in, the tokens, the names the unit answers to";
     put "/api/v1/access/password" => access::put_password, "set, change or remove a level's password (`level`, `new`; `current` to change or remove the administrator's). The first administrator's password closes the radio and signs its setter in; removing it removes every password, session and token";
     post "/api/v1/access/tokens" => access::create_token, "make a token for a tool (`label`, `level`): the token is in the answer this once, and is sent as `Authorization: Bearer <token>`";
@@ -275,20 +277,69 @@ async fn not_found(State(_): State<Arc<AppState>>) -> ApiError {
     ApiError::not_found("route")
 }
 
-/// Serve HTTP, and HTTPS too when a certificate and key are given.
-pub async fn serve(
-    app: Router,
-    http: SocketAddr,
-    https: SocketAddr,
-    cert: Option<&std::path::Path>,
-    key: Option<&std::path::Path>,
-) -> anyhow::Result<()> {
+/// How often the certificate is held against the unit's names and the clock.
+const CERTIFICATE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// See that the unit's certificate names what the unit is reached by now. True when it was made.
+async fn certificate_current(s: &Arc<AppState>) -> Result<bool, String> {
+    let state = s.clone();
+    tokio::task::spawn_blocking(move || {
+        let tls = state.tls.as_ref().ok_or("no certificate store")?;
+        let (added, host) = state.access.names();
+        let names = crate::services::tls::names(&crate::services::tls::addresses(), host.as_deref(), &added);
+        tls.ensure(&names, crate::util::time::unix_ms() / 1000)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Keep the certificate current while the unit runs: its address may change with a lease, its
+/// administrator may add a name, and the clock is set after the start.
+async fn keep_certificate(s: Arc<AppState>, config: axum_server::tls_rustls::RustlsConfig) {
+    let mut names = s.access.changes();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(CERTIFICATE_EVERY) => {}
+            changed = names.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        match certificate_current(&s).await {
+            Ok(false) => {}
+            Ok(true) => {
+                let loaded = match s.tls.as_ref().map(|t| t.pems()) {
+                    Some(Ok((cert, key))) => config.reload_from_pem(cert, key).await.map_err(|e| e.to_string()),
+                    Some(Err(e)) => Err(e),
+                    None => return,
+                };
+                let names = s.tls.as_ref().map(|t| t.view().names.join(", ")).unwrap_or_default();
+                match loaded {
+                    Ok(()) => s.log.radio("access", format!("the certificate was made again: it names {names}")),
+                    Err(e) => s.log.radio("access", format!("the new certificate was not taken: {e}")),
+                }
+            }
+            Err(e) => tracing::warn!("the certificate: {e}"),
+        }
+    }
+}
+
+/// Serve HTTP, and HTTPS under the unit's own certificate (`services::tls`). Once a password is
+/// set the HTTP port only sends a browser to HTTPS.
+pub async fn serve(app: Router, state: Arc<AppState>, http: SocketAddr, https: SocketAddr) -> anyhow::Result<()> {
     use axum_server::accept::NoDelayAcceptor;
     // No Nagle: small live-audio frames must not wait for an ACK.
-    let plain = axum_server::bind(http).acceptor(NoDelayAcceptor::new()).serve(app.clone().layer(axum::Extension(access::Secure(false))).into_make_service());
-    match (cert, key) {
-        (Some(cert), Some(key)) => {
-            let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+    let plain_app = app.clone().layer(middleware::from_fn_with_state(state.clone(), access::https_only)).layer(axum::Extension(access::Secure(false)));
+    let plain = axum_server::bind(http).acceptor(NoDelayAcceptor::new()).serve(plain_app.into_make_service());
+    let tls = match certificate_current(&state).await.and_then(|_| state.tls.as_ref().ok_or("no certificate store".to_string())?.pems()) {
+        Ok((cert, key)) => axum_server::tls_rustls::RustlsConfig::from_pem(cert, key).await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    match tls {
+        Ok(tls) => {
+            tokio::spawn(keep_certificate(state.clone(), tls.clone()));
+            state.https_port.store(https.port(), std::sync::atomic::Ordering::Relaxed);
             let secure = axum_server::bind_rustls(https, tls)
                 .map(|r| r.acceptor(NoDelayAcceptor::new()))
                 .serve(app.layer(axum::Extension(access::Secure(true))).into_make_service());
@@ -298,7 +349,9 @@ pub async fn serve(
                 r = secure => r?,
             }
         }
-        _ => {
+        Err(e) => {
+            tracing::error!("HTTPS is not served: {e}");
+            state.log.radio("access", format!("HTTPS is not served: {e}"));
             tracing::info!("serving http://{http}");
             plain.await?
         }

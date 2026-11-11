@@ -83,7 +83,7 @@ Last change e020ec2 (2026-10-04); every session loads it. **Update.** What is wr
 | 72-76 | Deploy and state: `/tmp/p25-httpd.new`, `S60p25-httpd`, `/usr/bin/p25-httpd`, `/var/log/p25-httpd.log`, `/mnt/jffs2/p25-*`, `p25-history.sqlite` | `/etc/init.d/S60scanner stop` (wait until `pidof scanner` is empty; the stop unmounts the card), `/usr/bin/scanner`, `/var/log/scanner.log`, `/mnt/jffs2/scanner/`, `/mnt/sd/scanner-history.sqlite`, recordings in `/mnt/sd/p25_recordings` |
 | 84 | "Each change gets `doc/changes/NNN_*.md`" | ROADMAP says a doc is written "when it is large", and 060-074 have none. One of the two should win |
 | 91 | "Gateware does not change in 076" | Obsolete. The live rule is 079's gates |
-| 98 | Init script `overlay_p25/etc/init.d/S60p25-httpd` | `package/scanner/S60scanner`; the overlay holds only `S50maia-kmod` and `S50p25-httpd-certificates` |
+| 98 | Init script `overlay_p25/etc/init.d/S60p25-httpd` | `package/scanner/S60scanner`; the overlay holds only `S50maia-kmod` and `S50flash` (what 104 left of `S50p25-httpd-certificates`: the first-boot format of the flash) |
 
 ## 3. p25-httpd/
 
@@ -339,7 +339,7 @@ Today it counts 54 scripts, defaults to `192.168.2.1`, and leaves out 12 tools.
 | `package/p25-httpd/`, `Config.in:28` | **delete** with p25-httpd (no defconfig selects it) |
 | `build.sh:151-166`, `post-build-p25.sh:43` | **delete** with it (harmless guards) |
 | `README.md:22,48,99,116`, `CLAUDE.md:26-27,64`, `build.bat:53`, `overlay_tezuka/etc/init.d/S91nfs-mount:19` | **update**: they name p25-httpd, `S60p25-httpd` or the old fishball-p25 repo as current |
-| `S60scanner` and `S50p25-httpd-certificates` (`/mnt/jffs2/p25-httpd.crt`, `.key`) | **keep**: file names on the units; renaming them would orphan the units' certificates |
+| `S60scanner` and `S50p25-httpd-certificates` (`/mnt/jffs2/p25-httpd.crt`, `.key`) | **gone in 104** (tezuka_fw 007): the scanner makes its own CA and certificate in `/mnt/jffs2/scanner/tls/`, `S60scanner` passes no certificate files, and the old ones stay on a unit's flash, read by nothing |
 | untracked `2026-10-03-output_images.zip`, `build_stage3_verify.log` | **delete** (the images are in `output_images/` and the radio core backup is in `_archive`; inferred) |
 
 ## 11. MAIA_SDR/_archive and the folders beside it

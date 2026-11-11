@@ -186,7 +186,9 @@ export function mount(el) {
       const [radio, crystal, me] = await Promise.all([api.radio(), api.crystal(), api.session()]);
       // The passwords, sessions and tokens are the administrator's to see.
       const access = me.protected && me.level === 'admin' ? await api.access() : null;
-      return { radio, crystal, me, access };
+      // A radio whose certificate store did not open has none to show.
+      const certificate = await api.certificate().catch(() => null);
+      return { radio, crystal, me, access, certificate };
     },
     build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), configCard()]],
     rev: s => `${s.radioRev}.${s.accessRev}`,

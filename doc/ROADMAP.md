@@ -127,12 +127,13 @@ On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
 ### Security
 
 What a client on the network can do, from the code and unit A's open ports (102 built the
-guard; a unit is open until its administrator's password is set, and unit A's is not set yet):
+guard, 104 HTTPS as the one way in; a unit is open until its administrator's password is set,
+and unit A's is not set yet):
 
-| Door | Open unit (no password) | With a password (102) |
+| Door | Open unit (no password) | With a password (102, 104) |
 |------|-------------------------|-----------------------|
-| HTTP on 8080 | Anyone who can reach the unit | Every route asks who the client is. Still plain HTTP: a password crosses the network in the clear until Q9's redirect is built |
-| HTTPS on 8443 | The same API under a self-made certificate, which names 192.168.x.1 and not the unit's Ethernet address, so a browser warns twice | The same guard; the session's cookie is sent over TLS only |
+| HTTP on 8080 | Anyone who can reach the unit | Every request is sent to HTTPS (307), but for the CA's certificate (`/ca.crt`): no password, session or token crosses the network in the clear |
+| HTTPS on 8443 | The same API under the unit's own certificate, which names the addresses and names the unit is reached by now and is made again when they change; a PC trusts it once the unit's CA is installed, and a browser warns until then | Every route asks who the client is; the session's cookie is sent over TLS only |
 | Reads | All open: the live audio, every recording, the history, the whole configuration, the control channel's IQ | A listener's session or token, or the administrator's |
 | Writes | Anyone but a page of another origin | The administrator's session or token |
 | `/ws/live`, `/ws/audio`, `/ws/events` | Anyone but a page of another origin (since 102, with or without a password) | A session or a token at the upgrade; closed when it is revoked |
@@ -149,9 +150,12 @@ What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
   own names; a way back in when the password is lost that needs the unit in hand (a file on the
   card); a factory reset leaves the passwords, as it leaves the certificates; the tools that
   drive the API send a token (`tools/*.py`, the bench's HTTP client, `runs/ui_check/*.mjs`);
-- **to do:** a certificate remade when the unit's addresses change, from the unit's own CA
-  (`S50p25-httpd-certificates` in tezuka_fw), so HTTPS can be the one way in (Q9). HTTPS also
-  gives the browser the better audio path (the worklet needs a secure page);
+- **done (104):** the unit makes a CA of its own, whose key stays on its flash and which can
+  sign only for private addresses and local names, and from it a certificate for the addresses
+  and names it is reached by, made again when they change; once a password is set the plain
+  port only sends a client to HTTPS (Q9); the tools, the bench's client and the page checks
+  reach a closed unit over HTTPS with its CA (`SCANNER_CA`) and send a token over HTTPS only.
+  HTTPS also gives the browser the better audio path (the worklet needs a secure page);
 - **to do:** `iiod` off unless switched on (Q10); SSH, which is Andy's to say; the bench off the
   legacy routes so that they can go.
 
@@ -249,7 +253,7 @@ are used, not its code.
 | **Settings** | The radio's own: the clock, the crystal, the configuration as a file | **exists** (100). Storage, the network and access come with steps 5 and 6 |
 | | Each module's, among its tabs: the scanner's gain, window presets, call timings, history, recording and packet data. A card saves its own part and follows a change made elsewhere | **exists** (100). TV has no setting yet; Data's come with Data |
 | **Files** | What is on the card, and taking it away: the recordings as a ZIP archive of a selection or of a day, the history's database, the TV recordings | **exists** (101) |
-| **Access** | The passwords, the tokens for tools, the browsers signed in, the names the unit answers to: a card of the radio's Settings | **exists** (102). The certificate and `iiod`'s switch are to come |
+| **Access** | The passwords, the tokens for tools, the browsers signed in, the names the unit answers to: a card of the radio's Settings; the radio's HTTPS on it, with its CA to install | **exists** (102, 104). `iiod`'s switch is to come |
 
 ### The handheld
 
@@ -271,7 +275,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
-| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds. To do: HTTPS as the one way in and its certificate (Q9), `iiod`'s switch (Q10) | Andy's word on what 103 found: a new CA whose key stays on the unit, the tools on HTTPS; `iiod` and the USB gadget, and the bench's use of it. SSH is his to say. The bench reading `/api/v1` so the legacy routes can go |
+| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it. To do: `iiod`'s switch (Q10) | Andy's word on what 103 found of Q10: `iiod` and the USB gadget, and the bench's use of it. SSH is his to say. Unit A's password is his to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
@@ -348,11 +352,12 @@ Each has a recommendation first. Short answers are enough.
   tools and the panel. Built in 102.
 - **Q9. Does plain HTTP stay?** Answered 2026-11-11 ("Yes, as recommended"): once a password is
   set, port 8080 only sends the browser to HTTPS, and the certificate is remade when the unit's
-  address changes. The browser warns once unless the unit's CA is installed on the PC. Not built
-  yet, and a question came of it (103): the firmware deletes its CA's key, so remaking the
-  certificate takes a new CA whose key is kept on the unit (recommended: on the flash, readable
-  by root alone, the CA limited to private addresses and the unit's own names), and the tools
-  and the bench then speak HTTPS and trust that CA.
+  address changes. The browser warns once unless the unit's CA is installed on the PC. A
+  question came of it (103): the firmware deleted its CA's key, so remaking the certificate
+  takes a new CA whose key is kept on the unit. Asked "Keep a new CA's key on the unit, so its
+  certificate can be remade when the address changes?", Andy answered "Yes, keep it"
+  (2026-11-11). Built in 104: the key on the flash, readable by root alone, the CA limited to
+  private addresses and local names; the tools and the bench speak HTTPS and trust that CA.
 - **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Answered 2026-11-11
   ("Yes, as recommended"): off unless a switch in Settings turns it on (SDR++ or SDRTrunk using
   the board as a tuner need it). Not built yet, and a question came of it (103): `iiod` is the
@@ -455,10 +460,9 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
 - **Done (103), the bounds:** the recordings' list has a limit; a stalled CSV reader and a
   stalled download are ended after a minute; a socket whose client takes nothing is closed
   after ten seconds, and at most 64 are open.
-- **Found (103), for Q9:** the firmware's certificate script deletes its CA's key at first boot,
-  so a certificate cannot be remade from that CA. Remaking it when the address changes takes a
-  new CA whose key stays on the unit; and once port 8080 only redirects, every tool and the
-  bench must speak HTTPS and trust it (they all use `http://<unit>:8080`).
+- **Done (104), Q9:** the unit's own CA and certificate, and HTTPS as the one way in once a
+  password is set (103 had found that the firmware's script deleted its CA's key, so no
+  certificate could be remade from it).
 - **Found (103), for Q10:** `iiod` is the USB gadget's FunctionFS daemon, started in `S23udc`.
   Stopping it can take the gadget down, the USB network with it (unit B is reached that way);
   the unit has no firewall and `iiod` no option to serve USB alone; and the bench reaches each

@@ -75,7 +75,7 @@ def main() -> int:
     ap.add_argument("--no-names", action="store_true", help="find the channels only, no station names")
     args = ap.parse_args()
     scanner_token.install(args.host)
-    unit = f"http://{args.host}:8080"
+    unit = scanner_token.base(args.host)
     run = ROOT / "runs" / "atsc" / time.strftime("%Y%m%d_%H%M%S")
     run.mkdir(parents=True, exist_ok=True)
     try:
