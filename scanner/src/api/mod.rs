@@ -94,6 +94,8 @@ routes! {
     delete "/api/v1/access/tokens/{id}" => access::revoke_token, "revoke a token";
     delete "/api/v1/access/sessions" => access::end_other_sessions, "end every session but the asker's";
     delete "/api/v1/access/sessions/{id}" => access::end_session, "end one session";
+    get "/api/v1/access/iiod" => access::get_iiod, "the administrator's: libiio's daemon (`iiod`: port 30431 on the network, and the USB gadget's IIO function), which lets another program use the board as a tuner and so retune it under the scanner. Whether the system has its switch (`available`), the choice kept (`wanted`) and whether it runs now (`running`)";
+    put "/api/v1/access/iiod" => access::put_iiod, "switch libiio's daemon (`on`). The choice is kept for every start, unless `until_restart` goes with `on`: then it runs until the unit restarts and the choice kept stays. The USB gadget leaves the bus for a moment and returns, so a host on the USB cable loses the unit's network and serial console and finds them again";
     put "/api/v1/access/names" => access::put_names, "the host names the unit answers to besides its addresses, `localhost` and its own host name (`names`): a request sent to any other name is refused";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";

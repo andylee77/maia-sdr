@@ -19,6 +19,10 @@ pub struct Args {
     #[arg(long, default_value = "/mnt/jffs2")]
     pub flash_dir: PathBuf,
 
+    /// The firmware's switch for libiio's daemon (`iiod`); a system without it has no switch.
+    #[arg(long, default_value = "/usr/sbin/iio-switch")]
+    pub iio_switch: PathBuf,
+
     /// Mount point of the SD card (history, recordings).
     #[arg(long, default_value = "/mnt/sd")]
     pub sd_dir: PathBuf,

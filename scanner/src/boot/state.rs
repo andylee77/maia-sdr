@@ -37,6 +37,8 @@ pub struct AppState {
     pub tls: Option<Tls>,
     /// The port HTTPS is served on; 0 while it is not.
     pub https_port: std::sync::atomic::AtomicU16,
+    /// The firmware's switch for libiio's daemon.
+    pub iiod: crate::services::iiod::Iiod,
     pub paths: Paths,
     pub config: Arc<Mutex<Config>>,
     pub tuner: Arc<RadioTuner>,

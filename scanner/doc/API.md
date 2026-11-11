@@ -16,6 +16,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | DELETE | `/api/v1/access/tokens/{id}` | revoke a token |
 | DELETE | `/api/v1/access/sessions` | end every session but the asker's |
 | DELETE | `/api/v1/access/sessions/{id}` | end one session |
+| GET | `/api/v1/access/iiod` | the administrator's: libiio's daemon (`iiod`: port 30431 on the network, and the USB gadget's IIO function), which lets another program use the board as a tuner and so retune it under the scanner. Whether the system has its switch (`available`), the choice kept (`wanted`) and whether it runs now (`running`) |
+| PUT | `/api/v1/access/iiod` | switch libiio's daemon (`on`). The choice is kept for every start, unless `until_restart` goes with `on`: then it runs until the unit restarts and the choice kept stays. The USB gadget leaves the bus for a moment and returns, so a host on the USB cable loses the unit's network and serial console and finds them again |
 | PUT | `/api/v1/access/names` | the host names the unit answers to besides its addresses, `localhost` and its own host name (`names`): a request sent to any other name is refused |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |

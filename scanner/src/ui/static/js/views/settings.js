@@ -188,7 +188,9 @@ export function mount(el) {
       const access = me.protected && me.level === 'admin' ? await api.access() : null;
       // A radio whose certificate store did not open has none to show.
       const certificate = await api.certificate().catch(() => null);
-      return { radio, crystal, me, access, certificate };
+      // libiio's switch is the administrator's, and on an open radio every client is that.
+      const iiod = me.level === 'admin' ? await api.iiod().catch(() => null) : null;
+      return { radio, crystal, me, access, certificate, iiod };
     },
     build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), configCard()]],
     rev: s => `${s.radioRev}.${s.accessRev}`,

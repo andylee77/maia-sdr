@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod events;
 pub mod files;
 pub mod history;
+pub mod iiod;
 pub mod iq;
 pub mod mode;
 pub mod notices;

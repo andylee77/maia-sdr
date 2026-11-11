@@ -6,13 +6,25 @@ same methods, so no code path needs hardware to be exercised.
 
 from __future__ import annotations
 
+import logging
+import socket
 import time
+import urllib.error
 from datetime import datetime
 from typing import Any, Sequence
 
 from .agent import AgentClient
 from .config import BenchConfig
+from .errors import TransportError, TransportTimeout
 from .transport import CmdResult, Http, Iio, Ssh, SshLike, ping, run_process
+
+log = logging.getLogger("fbench.services")
+
+#: The unit's command that switches libiio's daemon on until the unit restarts, started apart
+#: from the SSH session that asks: the USB gadget leaves the bus while it works, and a unit
+#: reached over USB would take the session with it.
+IIOD_ONCE = ("[ -x /usr/sbin/iio-switch ] && "
+             "(setsid sh -c 'sleep 1; /usr/sbin/iio-switch once' > /dev/null 2>&1 < /dev/null &)")
 
 
 class Services:
@@ -63,7 +75,77 @@ class Services:
             u = self.cfg.unit(unit)
             uri = f"ip:{u.host}" if u.iiod_port == 30431 else f"ip:{u.host}:{u.iiod_port}"
             self._iio[unit] = Iio(uri, self.cfg.iio.backend)
+            self._iiod_on(unit)
         return self._iio[unit]
+
+    def _port_open(self, host: str, port: int, timeout: float = 1.5) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _ssh_by_any_card(self, unit: str) -> list[SshLike]:
+        """SSH to the unit before the card in it is known. Each card has its own host key and so
+        its own alias, and which card it is is read over libiio: one transport for each alias
+        this bench has recorded for the unit, and the unit's bare alias last. Only the right
+        card's connects; the others are refused for their key."""
+        u = self.cfg.unit(unit)
+        prefix = f"fbench-{unit}-"
+        cards: list[str | None] = []
+        try:
+            for line in self.cfg.known_hosts.read_text(encoding="utf-8", errors="replace").splitlines():
+                for alias in line.split(" ", 1)[0].split(","):
+                    if alias.startswith(prefix) and alias[len(prefix):] not in cards:
+                        cards.append(alias[len(prefix):])
+        except OSError:
+            pass
+        return [Ssh(unit=unit, host=u.host, user=u.ssh_user, identity=self.cfg.ssh.identity,
+                    known_hosts=self.cfg.known_hosts, connect_timeout=self.cfg.ssh.connect_timeout_s, card=card)
+                for card in [*cards, None]]
+
+    def _iiod_on(self, unit: str) -> bool:
+        """A scanner image keeps libiio's daemon (iiod) off unless it is switched on. When its
+        port is closed, have the unit switch it on until it restarts: through the scanner's API
+        (an open unit, or an administrator's token in SCANNER_TOKEN), and with the scanner
+        stopped or refusing, over SSH. Returns whether the port is open in the end. Best
+        effort: a unit that cannot be asked fails where libiio is first used, as before."""
+        u = self.cfg.unit(unit)
+        if self._port_open(u.host, u.iiod_port):
+            return True
+        # asked: the unit took it. refused: it did not, or cannot be asked. unknown: no answer.
+        outcome = "refused"
+        try:
+            self.http(unit, 15.0).put_json("/api/v1/access/iiod", {"on": True, "until_restart": True})
+            outcome = "asked"
+            log.info("%s: libiio's daemon was off: switched on until the unit restarts", unit)
+        except TransportError as exc:
+            if not isinstance(exc.__cause__, urllib.error.HTTPError):
+                # No answer. The scanner is stopped; or it switched, and its answer was lost
+                # with the link: a unit reached over its USB cable is off the bus meanwhile.
+                outcome = "unknown"
+            for ssh in self._ssh_by_any_card(unit):
+                try:
+                    rc, _, _ = ssh.run(IIOD_ONCE, 15.0)
+                except (TransportError, TransportTimeout):
+                    continue
+                if rc == 0:
+                    outcome = "asked"
+                    log.info("%s: libiio's daemon was off: switched on over SSH until the unit restarts", unit)
+                break
+        if outcome == "refused":
+            log.warning("%s: libiio's daemon (iiod) is off and could not be switched on from here: switch it on "
+                        "in the radio's Settings, Access, or give the bench an administrator's token "
+                        "(SCANNER_TOKEN)", unit)
+            return False
+        # A unit reached over its USB cable is away while its gadget returns to the bus.
+        deadline = self.monotonic() + (20.0 if outcome == "asked" else 8.0)
+        while self.monotonic() < deadline:
+            if self._port_open(u.host, u.iiod_port):
+                return True
+            self.sleep(0.5)
+        log.warning("%s: libiio's daemon did not come up after it was switched on", unit)
+        return False
 
     @property
     def agent(self) -> AgentClient:

@@ -176,6 +176,15 @@ agent info, IIO context), `log.txt`, `artifacts/`, `FINDINGS.md`. Suites also wr
 Unit identity: the IIO `hw_serial` follows the SD card, so it is only a hint
 (`known_serials`); `fpga_dna` (hwval image) is authoritative. Nothing is keyed by IP.
 
+libiio's daemon: a scanner image keeps `iiod` off unless it is switched on (the radio's
+Settings, Access), and the bench works through it (the card's serial, the host's stimulus and
+captures, `tx off` without the agent). The first time a run needs it and finds its port closed,
+the bench has the unit switch it on until the unit restarts: through the scanner's API (an open
+unit, or an administrator's token in `SCANNER_TOKEN`), and with the scanner stopped, over SSH by
+a host key it has on record for the unit. The unit's USB gadget leaves the bus for a moment
+while it switches. The hwval image has it on at every start. A unit that cannot be asked is
+named in a warning: switch it on in its Settings.
+
 ## Tests
 
 `fbench list` is authoritative. Tier 0 runs on the production image; Tier 1 (`hw.*`)

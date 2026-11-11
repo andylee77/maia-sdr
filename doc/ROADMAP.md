@@ -127,8 +127,8 @@ On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
 ### Security
 
 What a client on the network can do, from the code and unit A's open ports (102 built the
-guard, 104 HTTPS as the one way in; a unit is open until its administrator's password is set,
-and unit A's is not set yet):
+guard, 104 HTTPS as the one way in, 105 libiio's switch; a unit is open until its
+administrator's password is set, and unit A's is not set yet):
 
 | Door | Open unit (no password) | With a password (102, 104) |
 |------|-------------------------|-----------------------|
@@ -138,7 +138,7 @@ and unit A's is not set yet):
 | Writes | Anyone but a page of another origin | The administrator's session or token |
 | `/ws/live`, `/ws/audio`, `/ws/events` | Anyone but a page of another origin (since 102, with or without a password) | A session or a token at the upgrade; closed when it is revoked |
 | A name pointed at the unit by another's DNS | Refused (since 102): the unit answers to its addresses, its host name and names its administrator adds | The same |
-| libiio (`iiod`, port 30431) | Open: anyone can retune the AD9361 under the scanner | The same: Q10 is not built |
+| libiio (`iiod`: port 30431, and the USB gadget's IIO function) | Off unless it is switched on (105). On, anyone who reaches the port or the USB cable can retune the AD9361 under the scanner: libiio asks nobody who they are | The same, and the switch is the administrator's |
 | SSH (dropbear, port 22) | Root, by password or key | The same: Andy's to say |
 | The legacy `/api/*` routes for the bench | Open | Behind the guard like the rest |
 
@@ -156,8 +156,11 @@ What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
   port only sends a client to HTTPS (Q9); the tools, the bench's client and the page checks
   reach a closed unit over HTTPS with its CA (`SCANNER_CA`) and send a token over HTTPS only.
   HTTPS also gives the browser the better audio path (the worklet needs a secure page);
-- **to do:** `iiod` off unless switched on (Q10); SSH, which is Andy's to say; the bench off the
-  legacy routes so that they can go.
+- **done (105):** `iiod` off unless switched on (Q10): the firmware's switch, kept on the
+  flash, builds the USB gadget with or without its IIO function and changes it while it runs;
+  the Access card and the API switch it; the bench switches it on, until the unit restarts,
+  when it needs it;
+- **to do:** SSH, which is Andy's to say; the bench off the legacy routes so that they can go.
 
 ### Hardware controls
 
@@ -253,7 +256,7 @@ are used, not its code.
 | **Settings** | The radio's own: the clock, the crystal, the configuration as a file | **exists** (100). Storage, the network and access come with steps 5 and 6 |
 | | Each module's, among its tabs: the scanner's gain, window presets, call timings, history, recording and packet data. A card saves its own part and follows a change made elsewhere | **exists** (100). TV has no setting yet; Data's come with Data |
 | **Files** | What is on the card, and taking it away: the recordings as a ZIP archive of a selection or of a day, the history's database, the TV recordings | **exists** (101) |
-| **Access** | The passwords, the tokens for tools, the browsers signed in, the names the unit answers to: a card of the radio's Settings; the radio's HTTPS on it, with its CA to install | **exists** (102, 104). `iiod`'s switch is to come |
+| **Access** | The passwords, the tokens for tools, the browsers signed in, the names the unit answers to: a card of the radio's Settings; the radio's HTTPS on it, with its CA to install; libiio's switch (the board as a tuner for other programs) | **exists** (102, 104, 105) |
 
 ### The handheld
 
@@ -275,7 +278,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
-| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it. To do: `iiod`'s switch (Q10) | Andy's word on what 103 found of Q10: `iiod` and the USB gadget, and the bench's use of it. SSH is his to say. Unit A's password is his to set. The bench reading `/api/v1` so the legacy routes can go |
+| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on. Left: SSH | SSH is Andy's to say. Unit A's password is his to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
@@ -360,11 +363,12 @@ Each has a recommendation first. Short answers are enough.
   private addresses and local names; the tools and the bench speak HTTPS and trust that CA.
 - **Q10. libiio and SSH.** `iiod` lets anything on the LAN retune the radio. Answered 2026-11-11
   ("Yes, as recommended"): off unless a switch in Settings turns it on (SDR++ or SDRTrunk using
-  the board as a tuner need it). Not built yet, and a question came of it (103): `iiod` is the
-  USB gadget's own daemon and the bench reaches it over the network, so "off" stops IIO over
-  USB too and takes a change to the gadget's script and to the bench (recommended: the gadget
-  built without its IIO function while the switch is off, and the bench switching it on with its
-  token). **Still open:** SSH, keys only or as it is?
+  the board as a tuner need it). A question came of it (103): `iiod` is the USB gadget's own
+  daemon and the bench reaches it over the network, so "off" stops IIO over USB too and takes a
+  change to the gadget's script and to the bench. Asked "Build iiod's switch as recommended: off
+  unless switched on, the bench turning it on?", Andy answered "Yes, build it" (2026-11-11).
+  Built in 105: the gadget without its IIO function while the switch is off, and the bench
+  switching it on until the unit restarts. **Still open:** SSH, keys only or as it is?
 
 **Modes (steps 7 and 8)**
 
@@ -463,10 +467,8 @@ what it recommends for each API quirk the pages lean on is in `scanner/doc/API_I
 - **Done (104), Q9:** the unit's own CA and certificate, and HTTPS as the one way in once a
   password is set (103 had found that the firmware's script deleted its CA's key, so no
   certificate could be remade from it).
-- **Found (103), for Q10:** `iiod` is the USB gadget's FunctionFS daemon, started in `S23udc`.
-  Stopping it can take the gadget down, the USB network with it (unit B is reached that way);
-  the unit has no firewall and `iiod` no option to serve USB alone; and the bench reaches each
-  unit's `iiod` over the network.
+- **Done (105), Q10:** `iiod` off unless switched on (103 had found it is the USB gadget's
+  FunctionFS daemon, which cannot simply be stopped: the gadget is rebuilt without the function).
 
 **TV:** `POST /atsc/live` answers `available: false` on a unit with the block (found in 100); a
 cancelled scan replaces the channel list until a restart; one stream for the receiver's
@@ -511,7 +513,7 @@ the voice-grant and patch ones so those systems can be followed.
 ### Remote libiio control (shared use of the board)
 
 `iiod` gives network libiio access, so SDR++, GQRX or SDRTrunk can retune the AD9361 under the
-scanner (Q10 decides whether it is on at all).
+scanner. It is off unless switched on (105); what follows is for when it is on.
 
 - **Detect it:** compare the AD9361's LO, rate and gain each second with what the scanner last
   set; watch `iiod`'s connections to show who is connected.

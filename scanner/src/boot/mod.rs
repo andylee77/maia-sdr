@@ -140,6 +140,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         access,
         tls,
         https_port: Default::default(),
+        iiod: crate::services::iiod::Iiod::new(&args.iio_switch),
         paths,
         config,
         tuner,

@@ -1,10 +1,11 @@
 // The Access card (the radio's Settings): who may reach this radio. With no password set it is
 // open and the card offers to set the administrator's; after that it shows who is signed in
 // here, and to the administrator the passwords, the tokens for tools, the browsers signed in and
-// the names the radio answers to. A listener sees only that they are one. Everyone sees the
-// radio's HTTPS: where it is, what its certificate names, and its CA to install.
+// the names the radio answers to, and the switch for libiio (the board as a tuner for other
+// programs). A listener sees only that they are one. Everyone sees the radio's HTTPS: where it
+// is, what its certificate names, and its CA to install.
 
-import { h, toast, table } from '../dom.js';
+import { h, toast, table, switchInput } from '../dom.js';
 import { api } from '../api.js';
 import { dayTime } from '../format.js';
 import { row, foot, section } from './settings_parts.js';
@@ -161,7 +162,11 @@ export function accessCard(reload) {
       row('Other names this radio answers to', [names, saveNames],
         `It answers to its addresses${a.host_name ? `, to ${a.host_name} and ${a.host_name}.local` : ''}. A request sent to any other name is refused, so a web page elsewhere cannot point a name at it. Names are separated by commas.`));
 
-    // Open again.
+    return out;
+  }
+
+  // The way back to an open radio: the administrator's last part.
+  function reopen() {
     const proof = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'The administrator\'s password, to remove it' });
     const remove = h('button', { class: 'btn danger', type: 'button', text: 'Remove the passwords' });
     remove.addEventListener('click', () => {
@@ -171,20 +176,56 @@ export function accessCard(reload) {
         location.reload();
       });
     });
-    out.push(
+    return [
       h('h3', { class: 'access-part', text: 'Open the radio again' }),
-      row('The administrator\'s password', [proof, remove], 'Removes every password, session and token.'));
+      row('The administrator\'s password', [proof, remove], 'Removes every password, session and token.'),
+    ];
+  }
+
+  // libiio's daemon, for whoever may switch it: `i` as `GET /api/v1/access/iiod` gives it.
+  function libiio(i) {
+    if (!i) return [];
+    const out = [h('h3', { class: 'access-part', text: 'The board as a tuner (libiio)' })];
+    if (!i.available) {
+      out.push(h('p', { class: 'card-note', text: 'This radio\'s firmware has no switch for libiio\'s daemon (iiod): where it is installed it runs always, and a program on the network can retune the board under the scanner.' }));
+      return out;
+    }
+    const flip = async on => {
+      try {
+        await api.setIiod(on);
+        toast(on ? 'libiio is switched on' : 'libiio is switched off');
+        reload();
+      } catch (e) {
+        sw.input.checked = i.wanted;
+        toast(e.message, true);
+        // A browser on the radio's USB cable loses the answer with the cable: look again.
+        setTimeout(reload, 4000);
+      }
+    };
+    const sw = switchInput('', i.wanted, flip);
+    sw.input.setAttribute('aria-label', 'libiio for other programs');
+    out.push(row('libiio for other programs', sw.el,
+      'Lets a program use this board as a tuner (SDR++, SDRTrunk, GNU Radio) over the network (iiod, port 30431) or the USB cable, and so retune it under the scanner. Off unless switched on here. Switching it takes the board off its USB cable for a moment.'));
+    if (i.running && !i.wanted) {
+      out.push(foot('It runs now, until the radio restarts: a tool switched it on (the bench does).',
+        h('button', { class: 'btn', type: 'button', text: 'Stop it now', onclick: () => flip(false) })));
+    } else if (i.wanted && !i.running) {
+      out.push(h('p', { class: 'access-state warn', text: 'It is switched on, but libiio\'s daemon is not running.' }));
+    }
     return out;
   }
 
   return {
     el: sec.el,
-    show({ me, access, certificate }) {
+    show({ me, access, certificate, iiod }) {
       // What is being typed is not thrown away by a read that changes nothing.
-      const key = JSON.stringify([me, access, certificate, made && made.id]);
+      const key = JSON.stringify([me, access, certificate, iiod, made && made.id]);
       if (key === body.dataset.key) return;
       body.dataset.key = key;
-      body.replaceChildren(...(!me || !me.protected ? open() : me.level === 'admin' && access ? admin(access) : listener()), ...https(certificate));
+      const administrator = me && me.protected && me.level === 'admin' && access;
+      body.replaceChildren(
+        ...(!me || !me.protected ? open() : administrator ? admin(access) : listener()),
+        ...libiio(iiod), ...https(certificate), ...(administrator ? reopen() : []));
     },
   };
 }

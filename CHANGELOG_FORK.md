@@ -5,6 +5,27 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 105: libiio's daemon off unless switched on
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's Q10. `iiod` let anything that reached a unit on the network retune its
+  AD9361 under the scanner, and it could not simply be stopped: it is the USB gadget's own
+  daemon. Asked "Build iiod's switch as recommended: off unless switched on, the bench turning
+  it on?", Andy answered "Yes, build it". Record: `doc/changes/105_iiod_switch.md`.
+- **The firmware's switch** (tezuka_fw 008, local, not built into an image): `iio-switch` keeps
+  the choice on the flash; the gadget's script builds the gadget with or without its IIO
+  function and changes it while it runs, its other functions untouched.
+- **The scanner** asks and tells that command: `GET` and `PUT /api/v1/access/iiod`, the
+  administrator's, and a part of the Access card, "The board as a tuner (libiio)".
+- **The bench** switches it on, until the unit restarts, the first time a run needs libiio and
+  finds its port closed: through the scanner's API, or over SSH with the scanner stopped.
+- **It costs:** a unit is off until someone switches it on (SDR++, SDRTrunk and GNU Radio as
+  clients need it on); switching takes the unit off its USB cable for a moment.
+- **Not checked:** the gadget built at start by the choice, and a host on the USB cable while
+  it is switched (no image was built; unit A has no USB host, unit B was off).
+
 ## [2026-11-11] 104: HTTPS as the one way in: the unit's own CA and certificate
 
 **Branch:** fishball-p25 (local)

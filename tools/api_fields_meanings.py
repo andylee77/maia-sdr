@@ -416,6 +416,11 @@ ROUTES: dict[str, list] = {
         ("left_out[]", "string", "An address, or a name."),
         ("not_after_unix_s", "number", "When the certificate ends. It is made again 30 days before, when the unit's addresses or names change, and once the clock is set."),
     ],
+    "/api/v1/access/iiod": [
+        ("available", "bool", "The unit's firmware has the switch. False (a PC, an image from before it): nothing here switches libiio's daemon, and where it is installed it runs always."),
+        ("wanted", "bool", "The choice kept on the flash: on at every start. A unit is off unless it was switched on."),
+        ("running", "bool", "libiio's daemon runs now. True with `wanted` false: it was switched on until the unit restarts (`until_restart` on the `PUT`; the bench does that)."),
+    ],
     "/api/v1/access": [
         ("protected", "bool", "An administrator's password is set."),
         ("listener", "bool", "A listener's password is set."),

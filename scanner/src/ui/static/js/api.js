@@ -54,6 +54,10 @@ export const api = {
   endSession: id => request('DELETE', `/api/v1/access/sessions/${encodeURIComponent(id)}`),
   endOtherSessions: () => request('DELETE', '/api/v1/access/sessions'),
   setNames: names => request('PUT', '/api/v1/access/names', { names }),
+  // libiio's daemon (the board as a tuner for other programs): { available, wanted, running }.
+  iiod: () => request('GET', '/api/v1/access/iiod'),
+  // Switched for every start.
+  setIiod: on => request('PUT', '/api/v1/access/iiod', { on }),
   status: () => request('GET', '/api/v1/status'),
   radio: () => request('GET', '/api/v1/radio'),
   setGain: (mode, manual_db) => request('PUT', '/api/v1/radio/gain', { mode, manual_db }),

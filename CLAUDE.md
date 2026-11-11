@@ -23,9 +23,11 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   is set; unit A's is Andy's to set. The bounds on stalled clients are in (103,
   `doc/changes/103_bounds.md`). HTTPS is the one way in once a password is set, under a CA and a
   certificate the unit makes itself (104, `doc/changes/104_https_own_ca.md`; Q9, "Yes, keep
-  it"); no browser has been tried with the CA installed, which is Andy's to do. Left of step 6,
-  waiting for Andy's word on what 103 found: `iiod`'s switch (Q10: it is the USB gadget's
-  daemon, and the bench uses it). 095's review of the UI and its API:
+  it"); no browser has been tried with the CA installed, which is Andy's to do. libiio's
+  daemon (`iiod`) is off unless switched on, in Settings, Access, and the bench switches it on
+  when it needs it (105, `doc/changes/105_iiod_switch.md`; Q10, "Yes, build it"; the firmware's
+  `iio-switch`, tezuka_fw 008). Left of step 6: SSH, which is Andy's to say. 095's review of the
+  UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
@@ -64,7 +66,10 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   PC daemon only. Start the PC daemon with `--listen-https 127.0.0.1:8453` too; the checks that
   set passwords take its plain address (`access_api.py`, `https_api.py`) or its HTTPS one
   (`access_page.mjs`). Run the page checks with `node`: VS Code's Electron run as Node refuses
-  the unit's CA.
+  the unit's CA. libiio's switch (105): start the PC daemon with
+  `--iio-switch <repo>/runs/ui_check/fake_iio_switch.cmd` too, the firmware's command's
+  stand-in; `iiod_api.py` tries the switch there, and with `--unit` a unit's real one (it leaves
+  it as it found it).
 
 ## Layout
 
@@ -164,12 +169,16 @@ Every commit builds and passes these, run from `scanner/`:
   - An SD image from before tezuka_fw's 007 starts the scanner with certificate files, which a
     scanner from 104 on does not take: copy `tezuka_fw/package/scanner/S60scanner` over
     `/etc/init.d/S60scanner` with the binary.
+  - An SD image from before tezuka_fw's 008 has no switch for libiio's daemon: the scanner says
+    so, and `iiod` runs always. To try the switch there, copy `overlay_base/etc/init.d/S23udc`
+    (without its CRs) and `overlay_p25/usr/sbin/iio-switch` to the unit.
   - The stop unmounts the card: mount `/dev/mmcblk0p1` on `/mnt/sd` before writing there.
   - The rootfs is in RAM, so a reboot returns to the SD image.
   - Log: `/var/log/scanner.log`. Web UI on port 8080 (HTTPS 8443, under the unit's own CA).
 - **State on a unit:**
   - `/mnt/jffs2/scanner/` (`radio.json`, `systems.json`, `state/`; `tls/`, the unit's CA and
-    certificate; `access.json` once a password is set);
+    certificate; `access.json` once a password is set); `/mnt/jffs2/iio-switch`, the firmware's
+    choice for libiio's daemon (`on`; anything else is off);
   - `/mnt/sd/scanner-history.sqlite` and `/mnt/sd/p25_recordings/` (UTC day folders, locked ones
     under `locked/`; FAT32 allows a directory about 8,000 recordings, 086).
   - A's flash still holds p25-httpd's old files and the firmware's old certificates; nothing

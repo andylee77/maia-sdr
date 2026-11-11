@@ -1,5 +1,6 @@
 //! The guard on every route and socket, signing in and out (`/api/v1/session`), and the
-//! administrator's routes for the passwords, sessions, tokens and names (`/api/v1/access`).
+//! administrator's routes for the passwords, sessions, tokens and names (`/api/v1/access`), with
+//! the switch for libiio's daemon under them.
 //!
 //! A client is known by its session's cookie (a browser) or a bearer token (a tool). A read may
 //! carry its token in the address instead (`?token=`), for a player that sends no header (VLC on
@@ -347,6 +348,48 @@ pub struct Names {
 pub async fn put_names(State(s): State<Arc<AppState>>, Extension(who): Extension<Who>, Json(req): Json<Names>) -> ApiResult<View> {
     s.access.set_names(req.names).map_err(ApiError::bad_request)?;
     Ok(Json(s.access.view(who.session.as_deref())))
+}
+
+/// libiio's daemon and the gadget's IIO function: the switch, as the firmware tells it.
+pub async fn get_iiod(State(s): State<Arc<AppState>>) -> ApiResult<crate::services::iiod::View> {
+    let state = s.clone();
+    Ok(Json(tokio::task::spawn_blocking(move || state.iiod.view()).await.map_err(|e| ApiError::from(anyhow::anyhow!(e)))?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IiodEdit {
+    pub on: bool,
+    /// With `on`: until the unit restarts, the choice kept staying as it is.
+    #[serde(default)]
+    pub until_restart: bool,
+}
+
+/// Switch libiio's daemon.
+pub async fn put_iiod(State(s): State<Arc<AppState>>, Json(req): Json<IiodEdit>) -> ApiResult<crate::services::iiod::View> {
+    if req.until_restart && !req.on {
+        return Err(ApiError::bad_request("off is kept: `until_restart` goes with `on`"));
+    }
+    let state = s.clone();
+    let done = tokio::task::spawn_blocking(move || state.iiod.view().available.then(|| state.iiod.set(req.on, !req.until_restart)))
+        .await
+        .map_err(|e| ApiError::from(anyhow::anyhow!(e)))?
+        .ok_or_else(|| ApiError::not_found("a switch for libiio's daemon on this system"))?;
+    match done {
+        Ok(view) => {
+            let how = match (req.on, req.until_restart) {
+                (true, false) => "on",
+                (true, true) => "on until the radio restarts",
+                (false, _) => "off",
+            };
+            s.log.radio("access", format!("libiio's daemon (iiod) was switched {how}"));
+            Ok(Json(view))
+        }
+        Err(e) => {
+            s.log.radio("access", e.clone());
+            Err(failed(e))
+        }
+    }
 }
 
 #[cfg(test)]
