@@ -2,7 +2,8 @@
 
 **Date:** 2026-11-09. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** on unit A in the SD image `2026-11-10-tv2` (092's status log).
+**Status:** done; in unit A's SD image since `2026-11-10-tv2` (092's status log). 093 rebuilt
+the page and kept its dates and Show more.
 
 ## Why
 

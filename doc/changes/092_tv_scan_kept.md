@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** done; unit A runs the SD image `2026-11-10-tv2` (it holds 087 to 092), with a kept
-scan of 8 stations on its flash.
+**Status:** done; in unit A's SD image since `2026-11-10-tv2` (the first with 087 to 092). A
+has a kept scan of 8 stations on its flash.
 
 ## Why
 

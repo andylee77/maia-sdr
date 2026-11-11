@@ -2,8 +2,7 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** on unit A in the test build `2026-11-10-pages2` (094's status log), in RAM. A reboot
-returns it to the SD image `2026-11-10-tv2`, which has the old Activity and Systems pages.
+**Status:** done; in unit A's SD image since `2026-11-10-pages2` (094's status log).
 
 ## Why
 

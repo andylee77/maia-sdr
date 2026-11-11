@@ -2,9 +2,7 @@
 
 **Date:** 2026-11-10. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** unit A runs the test build `2026-11-10-pages2` in RAM (it holds 093 and 094). A
-reboot returns it to the SD image `2026-11-10-tv2`, which has the old layouts of the five pages
-of 093 and 094.
+**Status:** done; in unit A's SD image since `2026-11-10-pages2` (the first with 093 and 094).
 
 ## Why
 
@@ -118,3 +116,15 @@ The page fills the screen.
     channel's panel without its spectrum, with four Watch buttons; Watch on 47.1 WJAXHD played
     live (MER 23.9 dB), then the large view, 47.2, full screen, 30.1 on RF 14 and Stop; Return
     to Scanner brought Clay back, control decode 100 %.
+- 2026-11-10: the SD image `2026-11-10-pages2` (fishball-p25 d554ac1, tezuka_fw 2827b89, the
+  radio core 2.1.0's fifth build) on unit A, its boot files also in `/mnt/sd/boot_new_pages2`
+  (tv2's in `/mnt/sd/boot_new_tv2`). It is the first image with 093 and 094.
+  - **Checked before installing:** the ramdisk's scanner carries the tag and both changes'
+    code; `BOOT.bin` differs from tv2's in 4 bytes, U-Boot's build time, so the bitstream is the
+    same; the card's copies matched the build's sha256 before the reboot.
+  - **After the reboot:** the scanner started 55 s into the boot and was live on Clay County
+    within 31 s, control decode 100 % at 40 messages a second; 101,523 recordings listed and new
+    ones written to the card; the kept TV scan there (8 stations, 53 channels).
+  - **The pages, A serving them:** `tool_pages.mjs` 15 steps, `scanner_pages.mjs` 40,
+    `now_rail.mjs` (read only) 10, no exceptions. The TV check was not run again on the image:
+    it passed on the same sources as the test build above.

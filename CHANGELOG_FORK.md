@@ -22,6 +22,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Settings** is two columns of cards, each setting a row with its name on the left and its
   control on the right. Nothing it sends changed.
 - With this every page is in the rail's layout.
+- **The SD image `2026-11-10-pages2`** on unit A is the first with 093 and 094 (tezuka_fw
+  2827b89, the gateware unchanged). After its reboot A was live on Clay County and the three
+  page checks passed with A serving the pages.
 
 ## [2026-11-10] 093: Scanner: the Activity and Systems pages in the rail's layout
 
