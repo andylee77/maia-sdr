@@ -751,6 +751,7 @@ th[aria-sort="ascending"] .aircraft-sort > span:first-child::after { content: " 
 th[aria-sort="descending"] .aircraft-sort > span:first-child::after { content: " \2193"; }
 .aircraft-table + .dim { margin: 10px 0 0; }
 .aircraft-state.warn { color: var(--warn); }
+.aircraft-links { margin-left: 14px; }
 
 /* The analog receiver: the bands in the strip, the tuner with its frequency, controls and meter. */
 button.data-win { background: transparent; cursor: pointer; font: inherit; }

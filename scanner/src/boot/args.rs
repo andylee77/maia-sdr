@@ -46,6 +46,11 @@ pub struct Args {
     #[arg(long)]
     pub adsb_replay: Option<PathBuf>,
 
+    /// The same for the module's other link, UAT at 978 MHz: a capture at 4 MSPS with its LO a
+    /// megahertz above, as `uat_979M_4000k.cs16`.
+    #[arg(long)]
+    pub uat_replay: Option<PathBuf>,
+
     /// Receiver LO with no live site (Hz).
     #[arg(long)]
     pub rx_lo: Option<u64>,

@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 114: UAT at 978 MHz on the unit, and the Aircraft module's two links in turn
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** asked "Build UAT on the unit next, as a switch between 1090 and 978 MHz?", Andy
+  answered "Yes, a switch", then: "depending on broadcast period in the captured signals we
+  could auto switch and maintain both right? every 5 or 10 seconds? since the tuner can switch
+  fast." Record: `doc/changes/114_uat_and_links.md`.
+- **The link is a setting of three:** 1090 MHz, 978 MHz, or both in turn (10 s on 1090 MHz,
+  then 5 s on 978 MHz). An aircraft sends every second or so and is kept a minute, so both
+  links' aircraft stay listed; each link misses what is sent while the other has its turn.
+  `PUT /api/v1/adsb/link`, a switch on the Aircraft page, kept across restarts.
+- **UAT is read on the unit** (`protocol::adsb::uat`): each sample turned a quarter of a turn
+  (the LO is a megahertz above the link), four summed, the sign of the phase's turn kept; the
+  36 bits of synchronisation fitted with at most four wrong; the Reed-Solomon codes with their
+  correction (6 wrong bytes of a short message's 30, 7 of a long one's 48). Read of a message:
+  the address, the place whole, the altitude, the velocity and rate of climb, the callsign and
+  category.
+- **Held against the PC, message for message:** `tools/uat_look.py` reads a capture by the
+  same method, and the scanner finds the same 11 and 11 messages at the same samples in 113's
+  two captures, with as many bytes put right (113's look, without the correction, took 7 and
+  10).
+- **Not in it:** what a ground station sends on 978 MHz (none was on the air here); the
+  squawk; the turn's lengths as a setting.
+
 ## [2026-11-12] 113: The ADS-B decoder on the unit and the Aircraft page; a look at 978 MHz (UAT)
 
 **Branch:** fishball-p25 (local)

@@ -1,13 +1,15 @@
-//! The aircraft heard, each with what it last said, by its address. An aircraft is listed once
-//! two messages gave its address: a single one may be noise that passed the parity. It goes
-//! when it has not been heard for a minute.
+//! The aircraft heard on either link, each with what it last said, by its address. An aircraft
+//! is listed once two messages gave its address: a single Mode S one may be noise that passed
+//! the parity. It goes when it has not been heard for a minute.
 
 use std::collections::HashMap;
 
 use serde::Serialize;
 
+use super::Link;
 use crate::protocol::adsb::cpr;
 use crate::protocol::adsb::squitter::{Half, Says, Squitter};
+use crate::protocol::adsb::uat::message::Message;
 
 /// An aircraft not heard for this long is gone.
 pub const SILENT_MS: u64 = 60_000;
@@ -20,6 +22,8 @@ const LISTED: u64 = 2;
 pub struct Aircraft {
     /// Its 24-bit address, six hexadecimal digits.
     pub icao: String,
+    /// The link it was last heard on.
+    pub link: Link,
     pub callsign: Option<String>,
     pub category: Option<String>,
     pub altitude_ft: Option<i32>,
@@ -54,11 +58,12 @@ fn tenths(v: f32) -> f32 {
 }
 
 impl Table {
-    /// A message whose parity was right, heard at `now_ms`.
-    pub fn heard(&mut self, s: &Squitter, level_dbfs: f32, now_ms: u64) {
-        let entry = self.by.entry(s.icao).or_insert_with(|| Entry {
+    /// The aircraft a message of `link` is from, counted and brought up to `now_ms`.
+    fn message(&mut self, icao: u32, link: Link, level_dbfs: f32, now_ms: u64) -> &mut Entry {
+        let entry = self.by.entry(icao).or_insert_with(|| Entry {
             aircraft: Aircraft {
-                icao: format!("{:06X}", s.icao),
+                icao: format!("{icao:06X}"),
+                link,
                 callsign: None,
                 category: None,
                 altitude_ft: None,
@@ -76,12 +81,20 @@ impl Table {
             halves: [None; 2],
         });
         let a = &mut entry.aircraft;
+        a.link = link;
         a.messages += 1;
         a.last_unix_ms = now_ms;
         a.level_dbfs = tenths(level_dbfs);
         if a.messages == LISTED {
             self.listed += 1;
         }
+        entry
+    }
+
+    /// A Mode S message whose parity was right, heard at `now_ms`.
+    pub fn heard(&mut self, s: &Squitter, level_dbfs: f32, now_ms: u64) {
+        let entry = self.message(s.icao, Link::Es, level_dbfs, now_ms);
+        let a = &mut entry.aircraft;
         match &s.says {
             Says::Other(_) => {}
             Says::Identity { callsign, category } => {
@@ -108,6 +121,26 @@ impl Table {
                 a.vertical_fpm = vertical_fpm.or(a.vertical_fpm);
             }
         }
+    }
+
+    /// A UAT message its code put right, heard at `now_ms`: it says its place whole.
+    pub fn said(&mut self, m: &Message, level_dbfs: f32, now_ms: u64) {
+        let a = &mut self.message(m.icao, Link::Uat, level_dbfs, now_ms).aircraft;
+        if let Some(callsign) = &m.callsign {
+            a.callsign = Some(callsign.clone());
+        }
+        a.category = m.category.clone().or(a.category.take());
+        a.altitude_ft = m.altitude_ft.or(a.altitude_ft);
+        if let Some((lat, lon)) = m.place {
+            a.lat = Some((lat * 1e5).round() / 1e5);
+            a.lon = Some((lon * 1e5).round() / 1e5);
+            a.position_unix_ms = Some(now_ms);
+        }
+        if let Some((speed_kt, track_deg)) = m.velocity {
+            a.speed_kt = Some(tenths(speed_kt));
+            a.track_deg = Some(tenths(track_deg));
+        }
+        a.vertical_fpm = m.vertical_fpm.or(a.vertical_fpm);
     }
 
     /// Drop the aircraft not heard for a minute; true when one that was listed went.
@@ -151,7 +184,7 @@ mod tests {
         let list = table.list();
         assert_eq!((list.len(), table.count(), table.listed()), (1, 1, 1));
         let a = &list[0];
-        assert_eq!((a.icao.as_str(), a.altitude_ft, a.messages, a.first_unix_ms, a.last_unix_ms, a.level_dbfs), ("40621D", Some(38_000), 2, 1_000, 1_400, -21.2));
+        assert_eq!((a.icao.as_str(), a.link, a.altitude_ft, a.messages, a.first_unix_ms, a.last_unix_ms, a.level_dbfs), ("40621D", Link::Es, Some(38_000), 2, 1_000, 1_400, -21.2));
         // The odd half came last: the place is its.
         assert_eq!((a.lat, a.lon, a.position_unix_ms), (Some(52.26578), Some(3.93891), Some(1_400)));
         // Another aircraft's callsign and velocity; an all-call reply counts as a message.
@@ -167,6 +200,27 @@ mod tests {
         hear(&mut table, "8D485020994409940838175B284F", 2_500);
         let other = table.list().into_iter().find(|a| a.icao == "485020").unwrap();
         assert_eq!((other.speed_kt, other.track_deg, other.vertical_fpm), (Some(159.2), Some(182.9), Some(-832)));
+    }
+
+    #[test]
+    fn what_the_other_link_says_is_the_aircraft_s_too() {
+        use crate::protocol::adsb::uat::message::tests::{bytes, LONG_CALLSIGN, LONG_SQUAWK, SHORT_HEARD};
+        use crate::protocol::adsb::uat::message::read as read_uat;
+        let mut table = Table::default();
+        table.said(&read_uat(&bytes(SHORT_HEARD)).unwrap(), -37.66, 5_000);
+        assert_eq!(table.count(), 0);
+        table.said(&read_uat(&bytes(LONG_CALLSIGN)).unwrap(), -37.66, 6_000);
+        let a = table.list().remove(0);
+        assert_eq!((a.icao.as_str(), a.link, a.callsign.as_deref(), a.category.as_deref(), a.altitude_ft, a.messages), ("A82090", Link::Uat, Some("N6224A"), Some("A1"), Some(4_400), 2));
+        // Its place whole from one message, its velocity and its climb.
+        assert_eq!((a.lat, a.lon, a.position_unix_ms, a.speed_kt, a.track_deg, a.vertical_fpm, a.level_dbfs), (Some(30.31514), Some(-81.81991), Some(6_000), Some(53.1), Some(250.2), Some(832), -37.7));
+        // A message with its squawk in the callsign's place leaves the callsign as it was.
+        table.said(&read_uat(&bytes(LONG_SQUAWK)).unwrap(), -37.0, 7_000);
+        assert_eq!(table.list()[0].callsign.as_deref(), Some("N6224A"));
+        // Heard on the other link, it is the one aircraft, last heard there.
+        table.heard(&read(&frame("5DA820909C9F8F")), -20.0, 8_000);
+        let a = table.list().remove(0);
+        assert_eq!((table.count(), a.link, a.messages, a.callsign.as_deref()), (1, Link::Es, 4, Some("N6224A")));
     }
 
     #[test]

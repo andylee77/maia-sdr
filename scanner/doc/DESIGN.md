@@ -197,9 +197,10 @@ scanner/src/         the fresh crate (D13)
                      devices keyed by pulse distance: an AcuRite 606TX, a Prologue sensor)
     analog.rs        the analog receivers: wide FM, narrow FM and AM, a 250 kSPS channel to
                      audio at 31,250 Hz, with the meter and the squelch over the floor
-    adsb/            what aircraft send at 1090 MHz: mode_s (the messages in a 4 MSPS window,
-                     taken when their parity is right), squitter (what one says), cpr (a
-                     whole position from two halves)
+    adsb/            what aircraft send of themselves: at 1090 MHz mode_s (the messages in a
+                     4 MSPS window, taken when their parity is right), squitter (what one
+                     says) and cpr (a whole position from two halves); at 978 MHz uat (the
+                     messages, their Reed-Solomon codes in code, their fields in message)
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -228,9 +229,10 @@ scanner/src/         the fresh crate (D13)
     analog/          the analog module: what it is tuned to, and listen (the window read from
                      the capture ring, the channel cut at the frequency, the receiver's audio
                      to its listeners)
-    adsb/            the aircraft module: listen (the window at 1090 MHz read from the
-                     capture ring, the search's thread) and table (the aircraft heard, each
-                     with what it last said)
+    adsb/            the aircraft module: the link it listens to (1090 MHz, 978 MHz or both
+                     in turn), listen (the radio on the link whose turn it is, its window
+                     read from the capture ring, the search's thread) and table (the
+                     aircraft heard on either, each with what it last said)
     data/            data mode: listen (the window read from the capture ring, the bursts and
                      the emitters), the devices the decoders read with their logs, captures
                      (bursts' IQ on the card, cs16 and SigMF)

@@ -1,5 +1,5 @@
 //! What the radio learns by itself, kept apart from the user's configuration:
-//! `state/radio.json` (mode, live site, crystal calibration, the analog receiver's tuning) and `state/sites/<id>.json` (per site:
+//! `state/radio.json` (mode, live site, crystal calibration, the analog receiver's tuning, the link the aircraft module listens to) and `state/sites/<id>.json` (per site:
 //! channel plan, grant counts, encrypted talkgroups, what the site announces of its neighbours
 //! and other channels, and the DMR channels a lane heard name themselves).
 
@@ -21,11 +21,13 @@ pub struct RadioState {
     pub crystal: Option<Crystal>,
     /// What the analog receiver was last tuned to.
     pub analog: crate::services::analog::Tuned,
+    /// The link the aircraft module listens to: one of the two, or both in turn.
+    pub aircraft: crate::services::adsb::Listen,
 }
 
 impl Default for RadioState {
     fn default() -> Self {
-        RadioState { version: VERSION, mode: Mode::Scanner, live_site: None, crystal: None, analog: Default::default() }
+        RadioState { version: VERSION, mode: Mode::Scanner, live_site: None, crystal: None, analog: Default::default(), aircraft: Default::default() }
     }
 }
 

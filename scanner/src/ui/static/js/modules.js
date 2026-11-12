@@ -77,7 +77,8 @@ function aircraftLine(s) {
   if (!a || a.state === 'off') return 'not listening';
   if (a.state === 'starting') return 'starting…';
   if (a.state === 'error') return 'not listening: an error';
-  return `${a.aircraft} aircraft · ${Math.round(a.messages_per_s)} messages a second · Scanner paused`;
+  const where = a.link === 'both' ? '1090 and 978 MHz' : `${a.link} MHz`;
+  return `${where} · ${a.aircraft} aircraft · ${Math.round(a.messages_per_s)} messages a second · Scanner paused`;
 }
 
 export const MODULES = [
@@ -151,7 +152,7 @@ export const MODULES = [
     ],
     line: aircraftLine,
     working: s => !!s.status.adsb && s.status.adsb.state === 'listening',
-    away: 'The Aircraft module lists the aircraft that send their positions at 1090 MHz (ADS-B). It listens only while it has the radio: an aircraft stays listed for a minute after it was last heard.',
+    away: 'The Aircraft module lists the aircraft that send their positions (ADS-B) at 1090 MHz and at 978 MHz. It listens only while it has the radio: an aircraft stays listed for a minute after it was last heard.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

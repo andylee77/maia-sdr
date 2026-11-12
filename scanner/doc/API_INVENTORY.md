@@ -105,7 +105,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`, `analog`, `adsb`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv`, `data`, `analog` and `aircraft`; `js/modules.js` maps them to the modes. `adsb` listens at 1090 MHz since 113 |
+| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`, `analog`, `adsb`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv`, `data`, `analog` and `aircraft`; `js/modules.js` maps them to the modes. `adsb` listens at 1090 MHz since 113, and at 978 MHz or both in turn since 114 |
 | `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Watch (play and stop; the state itself is pushed on `/ws/live` as `atsc_live` since 091) | Stop has no notion of who else is on the stream: Watch stops the receiver only when the pushed `viewers` is at most 1 |
 | `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP; after a restart, the last scan that finished (092) | UI Channels and Watch; `tools/atsc_check.py` | Nothing says a scan came back from before a restart, or how old the antenna's state is: only its `finished_unix_ms` |
 | `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | Not kept across a restart: 404 until the next scan |
@@ -131,7 +131,8 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET /api/v1/adsb` | The module: its state, the window (1090 MHz, 4 MSPS, the gain), the messages a second, the counts, and the aircraft heard twice or more in the last minute, each with what it last said | UI Aircraft (pushed on `/ws/live` as `adsb`, once a second); `tools/adsb_listen.py` | The whole list each second, however little changed (107 aircraft are 30 kB). No distance or bearing: the radio does not know where it is. In memory: gone at a restart. The gain is fixed and nothing sets it. No route for one aircraft or its track |
+| `GET /api/v1/adsb` | The module: its state, the link asked for and the one it is on, the window (4 MSPS, the gain), the messages a second, the counts of each link, and the aircraft heard twice or more in the last minute, each with its link and what it last said | UI Aircraft (pushed on `/ws/live` as `adsb`, once a second); `tools/adsb_listen.py` | The whole list each second, however little changed (107 aircraft are 30 kB). No distance or bearing: the radio does not know where it is. In memory: gone at a restart. The gain is fixed and nothing sets it. No route for one aircraft or its track. One rate of messages for both links |
+| `PUT /api/v1/adsb/link` | The link it listens to: `1090`, `978` or `both` in turn | UI Aircraft's switch; the tool | The turn's lengths (10 s and 5 s) are not in the request: they are constants |
 
 ## The analog receiver
 

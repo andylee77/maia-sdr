@@ -126,6 +126,8 @@ export const api = {
   analog: () => request('GET', '/api/v1/analog'),
   // The aircraft module: its listening at 1090 MHz and the aircraft heard.
   adsb: () => request('GET', '/api/v1/adsb'),
+  // The link it listens to: `1090`, `978` or `both` in turn.
+  adsbLink: link => request('PUT', '/api/v1/adsb/link', { link }),
   analogTune: tuned => request('PUT', '/api/v1/analog/tune', tuned),
   // Data mode's listening: its state, window, emitters, newest bursts and what is armed.
   data: () => request('GET', '/api/v1/data'),

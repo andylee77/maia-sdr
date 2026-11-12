@@ -264,7 +264,8 @@ pub(crate) mod tests {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
             let path = entry.path();
             let listed = path.with_extension("messages");
-            if path.extension().is_none_or(|e| e != "cs16") || !listed.exists() {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if path.extension().is_none_or(|e| e != "cs16") || !name.starts_with("adsb_") || !listed.exists() {
                 continue;
             }
             let want: Vec<(u64, String)> = std::fs::read_to_string(&listed).unwrap().lines().map(|l| {
@@ -288,7 +289,6 @@ pub(crate) mod tests {
                 }
             }
             let got: Vec<(u64, String)> = found.iter().map(|f| (f.at, f.bytes[..if f.long { 14 } else { 7 }].iter().map(|b| format!("{b:02x}")).collect())).collect();
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
             println!("{name}: {} messages ({} long), {} preambles tried", got.len(), found.iter().filter(|f| f.long).count(), demod.tried());
             assert_eq!(got.len(), want.len(), "{name}");
             assert!(got == want, "{name}: the first that differs: {:?}", got.iter().zip(&want).find(|(g, w)| g != w));

@@ -1,9 +1,11 @@
-// The Aircraft module's Aircraft page: every aircraft heard at 1090 MHz in the last minute, a
-// row each with what it last said: its address, callsign and category, its altitude, speed,
-// track and rate of climb, its place, how strong its last message was, how many were heard and
-// when the last. A column's head sorts by it. The radio pushes the list once a second while it
-// listens; it listens only while this module has the radio. Nothing is plotted, and there are
-// no distances: the radio does not know where it is.
+// The Aircraft module's Aircraft page: every aircraft heard in the last minute on either of its
+// two links (1090 MHz, Mode S; 978 MHz, UAT), a row each with what it last said: its address,
+// the link, its callsign and category, its altitude, speed, track and rate of climb, its
+// place, how strong its last message was, how many were heard and when the last. A column's
+// head sorts by it. The switch over the table says which link the radio listens to, or both in
+// turn: it hears one at a time. The radio pushes the list once a second while it listens; it
+// listens only while this module has the radio. Nothing is plotted, and there are no
+// distances: the radio does not know where it is.
 
 import { h, card, toast, setText, setClass, keyedList } from '../dom.js';
 import { api } from '../api.js';
@@ -18,6 +20,7 @@ const climb = v => (v === 0 ? '0' : `${v > 0 ? '+' : '−'}${num(Math.abs(v))}`)
 // last), and whether the numbers run downwards first.
 const COLUMNS = [
   { head: 'Address', show: a => a.icao, by: a => a.icao },
+  { head: 'Link', show: a => a.link, by: a => a.link },
   { head: 'Callsign', show: a => shown(a.callsign, v => v), by: a => a.callsign },
   { head: 'Category', show: a => shown(a.category, v => v), by: a => a.category },
   { head: 'Altitude', unit: 'ft', show: a => shown(a.altitude_ft, num), by: a => a.altitude_ft, down: true },
@@ -29,7 +32,9 @@ const COLUMNS = [
   { head: 'Messages', show: a => num(a.messages), by: a => a.messages, down: true },
   { head: 'Heard', show: a => ago(Math.max(0, boardNow() - a.last_unix_ms)), by: a => a.last_unix_ms, down: true },
 ];
-const TEXT = 3;
+const TEXT = 4;
+// What the radio can be asked to listen to.
+const LINKS = [['1090', '1090 MHz', 'Mode S: airliners and most other aircraft'], ['978', '978 MHz', 'UAT: small aircraft in the United States'], ['both', 'Both', '10 s on 1090 MHz, then 5 s on 978 MHz, and so on: the radio hears one at a time']];
 
 function stateLine(v) {
   if (v.state === 'error') return `Not listening: ${v.error}`;
@@ -37,7 +42,8 @@ function stateLine(v) {
   if (v.state !== 'listening') return 'Not listening: another module has the radio.';
   const w = v.window;
   const how = w.source === 'replay' ? 'a replayed capture in the radio\'s place' : `${w.gain_db} dB of gain`;
-  return `Listening at ${w.lo_hz / 1e6} MHz: a ${w.sample_rate_hz / 1e6} MSPS window, ${how}.`;
+  const where = v.link === 'both' ? `1090 and 978 MHz in turn, now ${v.on} MHz` : `${v.on} MHz`;
+  return `Listening at ${where}: a ${w.sample_rate_hz / 1e6} MSPS window, ${how}.`;
 }
 
 export function mount(el) {
@@ -50,7 +56,19 @@ export function mount(el) {
   const count = h('span', { class: 'dim' });
   list.head.querySelector('h2').after(count);
   const rate = h('span', { class: 'dim aircraft-rate' });
-  list.right.append(rate);
+  const links = LINKS.map(([link, text, title]) => {
+    const b = h('button', { type: 'button', title, text, 'aria-pressed': 'false' });
+    b.addEventListener('click', async () => {
+      try {
+        view = await api.adsbLink(link);
+        if (!gone) draw();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+    return b;
+  });
+  list.right.append(rate, h('div', { class: 'seg aircraft-links', role: 'group', 'aria-label': 'The link the radio listens to' }, ...links));
   const heads = COLUMNS.map((c, k) => {
     const b = h('button', { class: 'aircraft-sort', type: 'button', title: `Sort by ${c.head.toLowerCase()}` }, h('span', { text: c.head }), c.unit ? h('span', { class: 'dim', text: ` ${c.unit}` }) : null);
     b.addEventListener('click', () => {
@@ -65,7 +83,7 @@ export function mount(el) {
   list.body.append(
     h('div', { class: 'table-wrap aircraft-table' }, h('table', { class: 'table' }, h('thead', null, h('tr', null, ...heads)), body)),
     none, state,
-    h('p', { class: 'card-note', text: 'An aircraft is listed once two of its messages were heard, and for a minute after its last. Altitudes are by pressure. Not read yet: positions on the ground, squawk codes, and the 978 MHz link small aircraft use.' }));
+    h('p', { class: 'card-note', text: 'An aircraft is listed once two of its messages were heard, and for a minute after its last. The radio hears one link at a time: with both, each misses what is sent while the other has its turn. Altitudes are by pressure. Not read yet: positions on the ground, squawk codes, and what a ground station sends on 978 MHz.' }));
   el.append(h('div', { class: 'aircraft-page' }, list.el));
 
   function sorted(aircraft) {
@@ -86,6 +104,11 @@ export function mount(el) {
     setText(count, `${num(aircraft.length)} heard in the last minute`);
     setText(rate, view.state === 'listening' ? `${num(view.messages_per_s, 1)} messages a second` : '');
     heads.forEach((th, k) => th.setAttribute('aria-sort', sort.column !== k ? 'none' : sort.down ? 'descending' : 'ascending'));
+    links.forEach((b, k) => {
+      const on = LINKS[k][0] === view.link;
+      setClass(b, 'on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
     keyedList(body, sorted(aircraft), a => a.icao,
       () => h('tr', null, ...COLUMNS.map((_, k) => h('td', { class: k >= TEXT ? 'num' : k === 0 ? 'aircraft-icao' : null }))),
       (tr, a) => COLUMNS.forEach((c, k) => setText(tr.children[k], c.show(a))));

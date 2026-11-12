@@ -109,10 +109,22 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   code is not used. Checks: `runs/ui_check/aircraft_page.mjs`; against the PC daemon start it
   with `--adsb-replay <repo>/runs/adsb/look_20261112/adsb_g73_1090M_4000k.cs16` too. On a
   unit, `tools/adsb_listen.py --host <unit> listen --seconds 40 --take-radio` says what came
-  and what it cost (exit 1 when no squitter came or a block was dropped). **978 MHz (UAT):**
-  Andy asked for it ("can we also add 978 MHz"); unit A's antenna hears its aircraft
-  (`tools/uat_look.py` on the two captures in `runs/adsb/look_20261112/`); the radio hears one
-  of the two links at a time; its decoder on the unit is not built.
+  and what it cost (exit 1 when no squitter came or a block was dropped).
+- **UAT and the two links (114, `doc/changes/114_uat_and_links.md`; Andy: "Yes, a switch", then
+  "we could auto switch and maintain both right? every 5 or 10 seconds?"):** the Aircraft
+  module's link is a setting of three, `1090`, `978` or `both` in turn (10 s on 1090 MHz, 5 s
+  on 978 MHz; `PUT /api/v1/adsb/link`, the switch on the Aircraft page, kept in the radio's
+  state): the radio hears one link at a time, and an aircraft is kept a minute.
+  `protocol::adsb::uat` reads an aircraft's UAT messages (the LO at 979 MHz, a megahertz above
+  the link; the Reed-Solomon codes with their correction, `code`; the fields, `message`), the
+  same way as `tools/uat_look.py` sample for sample:
+  `UAT_CAPTURE_DIR=<repo>/runs/adsb/look_20261112 cargo test --release adsb::` holds it against
+  the lists `tools/uat_look.py FILE --messages` writes. dump978's code is not used. A ground
+  station's messages are not read (none is heard at unit A). Against the PC daemon start it
+  with `--uat-replay <repo>/runs/adsb/look_20261112/uat_g73_979M_4000k.cs16` too;
+  `aircraft_page.mjs` tries the switch (on a unit `--uat <seconds>` is how long it waits for
+  an aircraft on 978 MHz: there may be none in the air). On a unit,
+  `tools/adsb_listen.py --host <unit> listen --link 978 --seconds 60 --take-radio`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan
