@@ -188,14 +188,14 @@ See the status log for the counts.
     only, over HTTP: `scanner_pages.mjs` 40, `tool_pages.mjs` 27, `files_page.mjs` 9,
     `aliases_page.mjs` 9, `playlist_page.mjs --preview-only` 13; over HTTPS: `tool_pages.mjs`
     27, `files_page.mjs` 9. `scanner/doc/API_FIELDS.md` regenerated from A.
-  - **`now_rail.mjs` 11 of 15, over HTTP and HTTPS:** its four steps that play a recording
-    found none to play. Now lists the calls since the scanner's start, and in the 40 minutes
-    after this reboot (to 11:27 UTC, before half past six in the morning there) no call was
-    recorded: one was followed, TG 300 at 10:57:49, and it carried no voice (the lane decoded
-    the site's four call terminations two seconds after the grant, so the lane hears; the 40
-    calls of that talkgroup before the reboot all had voice and a recording). Lane 2 decodes
-    the data channel's packets meanwhile. So no voice call has been recorded from this image
-    yet: none was sent on a talkgroup it follows.
+  - **`now_rail.mjs` 15 steps over HTTP and over HTTPS, once a call had been recorded.** Run
+    right after the reboot it passed 11: its four steps that play a recording found none to
+    play. Now lists the calls since the scanner's start, and in the first hour after this
+    reboot (before seven in the morning there) none was recorded: one was followed, TG 300 at
+    10:57:49, and it carried no voice (the lane decoded the site's four call terminations two
+    seconds after the grant). The first voice calls came at 11:49:23 and 11:55:52 UTC (TG 300,
+    153 and 189 voice frames, recorded, 3.1 and 3.8 s), and the check, run again then, passed.
+    On a unit this check needs a recorded call since the scanner's start.
 - **Seen and not changed:** a capture's description writes its 32-bit numbers with a 64-bit
   number's digits (`"temperature_c": 13.300000190734863` for 13.3 °C; the levels likewise since
   109): it is built as a JSON value, which holds every number as 64 bits. The API's list and
