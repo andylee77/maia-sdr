@@ -43,6 +43,7 @@ pub fn read(on: &[bool], sample_us: f32) -> Option<Reading> {
         id: u32::from(first[0] & 0xF),
         channel: Some((first[0] >> 6) + 1),
         temperature_c: Some(if first[2] & 0x20 != 0 { -temperature } else { temperature }),
+        humidity_pct: None,
         battery_low: Some(first[2] & 0x80 != 0),
         repeats,
     })
@@ -137,7 +138,7 @@ pub(crate) mod tests {
 
     fn read_keyed(keyed: &[u32], amplitude: f32) -> Option<Reading> {
         let iq = keyed_burst(-40_000.0, amplitude, 20_000, keyed);
-        read(&pulses::sliced(&iq, -40_000.0), pulses::SAMPLE_US)
+        read(&pulses::tests::sliced(&iq, -40_000.0), pulses::SAMPLE_US)
     }
 
     #[test]

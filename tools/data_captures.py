@@ -2,25 +2,27 @@
 """Data mode's listening and its captures, through a scanner's API (`/api/v1/data`).
 
     data_captures.py --host 192.168.120.50 status
-    data_captures.py --host 192.168.120.50 keep --count 2 [--freq HZ] [--span HZ] [--wait S] [--take-radio] [--oregon-v1]
+    data_captures.py --host 192.168.120.50 keep --count 2 [--freq HZ] [--span HZ] [--wait S] [--take-radio] [--oregon-v1 | --decoded]
     data_captures.py --host 192.168.120.50 list
     data_captures.py --host 192.168.120.50 fetch [ID ...]
     data_captures.py --host 192.168.120.50 delete ID
-    data_captures.py look FILE.cs16 [--oregon-v1]
+    data_captures.py look FILE.cs16 [--oregon-v1 | --decode]
 
 `keep` asks for the IQ of the next bursts (any, or those near `--freq`). With `--wait` it waits
 that long for them, downloads them under `--out` (default `runs/data/<host>/`), holds each
 against the list (its size, its description) and looks at it. With `--take-radio` it puts the
 scanner in data mode first and gives the radio back after: no call is followed meanwhile.
 
-`look` says what a capture holds: its burst's pulses and gaps and its carrier's offset; with
-`--oregon-v1`, whether it is an Oregon Scientific version 1 message, and what it says. That is a
-reading of the capture on the PC, apart from the scanner's own decoder: `keep --oregon-v1` holds
-what the scanner read of each burst against it.
+`look` says what a capture holds: its burst's pulses and gaps and its carrier's offset. With
+`--oregon-v1`, whether it is an Oregon Scientific version 1 message, and what it says; with
+`--decode`, what any device this tool knows says in it (Oregon Scientific version 1, AcuRite
+606TX, a Prologue sensor). That is a reading of the capture on the PC, apart from the scanner's
+own decoders and from the same facts: `keep --oregon-v1` and `keep --decoded` hold what the
+scanner read of each burst against it.
 
 Prints one JSON object; exits 0 when all is as asked, 1 when not (a capture missing or not what
-the list says, `--oregon-v1` finding no message or another than the scanner read), 3 when the
-scanner refused.
+the list says, `--oregon-v1`, `--decode` or `--decoded` finding no message or another than the
+scanner read), 3 when the scanner refused.
 """
 
 import argparse
@@ -42,6 +44,34 @@ REPO = Path(__file__).resolve().parent.parent
 OREGON_V1_BIT_US = 1e6 / 342.0
 OREGON_V1_SYNC_US = (5000, 6500)
 OREGON_V1_AFTER_SYNC_US = 5200
+
+# The readers take a burst through a filter of 4 kHz either side, its envelope smoothed over
+# 120 us: every keying read here has pulses of half a millisecond or longer, and the band's
+# clicks, as wide as the channel, lose more to a narrow filter than a burst does.
+READ_HALF_HZ = 4000.0
+READ_SMOOTH_US = 120
+
+# Devices keyed by pulse distance: pulses of half a millisecond, the gap after each a bit (about
+# 2 ms a zero, 4 ms a one), about 9 ms between the repeats of the message. Each device's facts:
+# how many bits, how many times a burst must hold the same message, what guards it, and where its
+# fields are (first bit, bits). Temperatures are signed, in tenths of a degree C.
+#   AcuRite 606TX: 32 bits, six times. The fourth byte is a digest of the first three: each bit
+#   that is set adds in a key that is shifted right at every bit, 0x98 put in when a one falls out
+#   (the key begins as 0xF1).
+#   A Prologue sensor: 36 bits and a spare one, six or seven times; no check of its own but its
+#   first four bits, 1001.
+# What is shorter than 160 us in their envelope is a glitch, not an edge.
+DISTANCE_ZERO_US = (1400, 2800)
+DISTANCE_ONE_US = (3200, 5000)
+DISTANCE_REPEAT_US = 7000
+DISTANCE_PULSE_US = (250, 900)
+DISTANCE_GLITCH_US = 160
+DISTANCE_DEVICES = [
+    {"model": "AcuRite 606TX", "bits": 32, "spare": 0, "needs": 2, "digest": (0x98, 0xF1), "leads": None,
+     "id": (0, 8), "channel": None, "battery_good": 8, "temperature": (12, 12), "humidity": None},
+    {"model": "Prologue TH", "bits": 36, "spare": 1, "needs": 3, "digest": None, "leads": "1001",
+     "id": (4, 8), "channel": (14, 2), "battery_good": 12, "temperature": (16, 12), "humidity": (28, 8)},
+]
 
 
 def call(base, path, method="GET", body=None, timeout=60):
@@ -111,7 +141,7 @@ def runs(on):
     return [(bool(on[s]), int(s), int(e - s)) for s, e in zip(starts, ends)]
 
 
-def look(path, freq_hz=None, oregon_v1=False):
+def look(path, freq_hz=None, oregon_v1=False, decode=False):
     """What a capture holds."""
     import numpy as np
 
@@ -148,9 +178,114 @@ def look(path, freq_hz=None, oregon_v1=False):
     if c["meta"]:
         out["burst"] = c["meta"]["annotations"][0].get("fishball:burst")
         out["taken_utc"] = c["meta"]["captures"][0]["core:datetime"]
-    if oregon_v1:
-        out["oregon_v1"] = oregon_v1_messages(on, us)
+    if oregon_v1 or decode:
+        keyed, keyed_us = keying(path, freq_hz)
+        out["oregon_v1"] = oregon_v1_messages(keyed, keyed_us)
+    if decode:
+        out["decoded"] = oregon_v1_reading(out["oregon_v1"]) or distance_reading(keyed, keyed_us)
     return out
+
+
+def keying(path, freq_hz=None):
+    """A capture's burst as the readers take it: on or off at each sample, and a sample's
+    microseconds."""
+    import numpy as np
+
+    c = envelope(path, freq_hz, READ_HALF_HZ)
+    us = 1e6 / c["rate"]
+    width = max(1, round(READ_SMOOTH_US / us))
+    env = np.convolve(np.abs(c["y"]), np.ones(width) / width, mode="same")
+    noise = float(np.median(env))
+    return env > noise + 0.35 * (float(np.percentile(env, 99.8)) - noise), us
+
+
+def oregon_v1_reading(messages):
+    """The look's Oregon Scientific messages as the scanner gives a reading."""
+    if not messages:
+        return None
+    first = messages[0]
+    return {"model": "Oregon Scientific v1", "kind": "weather", "id": first["id"], "channel": first["channel"],
+            "temperature_c": first["temperature_c"], "humidity_pct": None, "battery_low": first["battery_low"],
+            "repeats": sum(m["bytes"] == first["bytes"] for m in messages)}
+
+
+def digest8(data, generator, key):
+    """Each set bit of `data` adds in the key, which is shifted right at every bit, the generator
+    put in when a one falls out."""
+    total = 0
+    for byte in data:
+        for bit in range(7, -1, -1):
+            if byte >> bit & 1:
+                total ^= key
+            key = key >> 1 ^ generator if key & 1 else key >> 1
+    return total
+
+
+def distance_words(on, us):
+    """The words of a burst keyed by pulse distance: the gaps after its pulses, as bits, between
+    the longer gaps."""
+    # The runs in microseconds, a glitch given to the run before it.
+    clean = []
+    for state, _, length in runs(on):
+        if clean and (length * us < DISTANCE_GLITCH_US or clean[-1][0] == state):
+            clean[-1][1] += length * us
+        else:
+            clean.append([state, length * us])
+    words, word = [], ""
+    after_pulse = False
+    for state, length in clean:
+        if state:
+            # A pulse of another length is not this keying: what was read of the word is dropped.
+            after_pulse = DISTANCE_PULSE_US[0] <= length <= DISTANCE_PULSE_US[1]
+            if not after_pulse:
+                word = ""
+        elif not after_pulse:
+            word = ""
+        elif DISTANCE_ZERO_US[0] <= length <= DISTANCE_ZERO_US[1]:
+            word += "0"
+        elif DISTANCE_ONE_US[0] <= length <= DISTANCE_ONE_US[1]:
+            word += "1"
+        else:
+            if length >= DISTANCE_REPEAT_US and word:
+                words.append(word)
+            word = ""
+    return words
+
+
+def distance_reading(on, us):
+    """What a device keyed by pulse distance says in a burst, as the scanner gives a reading."""
+    words = distance_words(on, us)
+    for device in DISTANCE_DEVICES:
+        seen = {}
+        for word in words:
+            if not device["bits"] <= len(word) <= device["bits"] + device["spare"]:
+                continue
+            word = word[:device["bits"]]
+            if device["leads"] and not word.startswith(device["leads"]):
+                continue
+            if device["digest"]:
+                data = [int(word[i:i + 8], 2) for i in range(0, len(word), 8)]
+                if digest8(data[:-1], *device["digest"]) != data[-1]:
+                    continue
+            seen[word] = seen.get(word, 0) + 1
+        if not seen:
+            continue
+        word, repeats = max(seen.items(), key=lambda kv: kv[1])
+        if repeats < device["needs"]:
+            continue
+
+        def field(at, word=word):
+            return int(word[at[0]:at[0] + at[1]], 2)
+
+        tenths = field(device["temperature"])
+        tenths -= 1 << device["temperature"][1] if tenths >> device["temperature"][1] - 1 else 0
+        humidity = field(device["humidity"]) if device["humidity"] else None
+        return {"model": device["model"], "kind": "weather", "id": field(device["id"]),
+                "channel": field(device["channel"]) + 1 if device["channel"] else None,
+                "temperature_c": tenths / 10, "temperature_f": round(tenths / 10 * 9 / 5 + 32, 1),
+                "humidity_pct": humidity if humidity is not None and humidity <= 100 else None,
+                "battery_low": word[device["battery_good"]] == "0", "repeats": repeats, "bits": word}
+    return None
 
 
 def oregon_v1_messages(on, us):
@@ -267,8 +402,22 @@ def keep(base, args, out_dir):
         for kept in reversed(new):
             got = fetch(base, kept, out_dir)
             if got["ok"]:
-                got["look"] = look(Path(got["file"]), oregon_v1=args.oregon_v1)
-                if args.oregon_v1 and not got["look"]["oregon_v1"]:
+                got["look"] = look(Path(got["file"]), oregon_v1=args.oregon_v1, decode=args.decoded)
+                if args.decoded:
+                    # What the scanner read of the burst is what the look reads of its capture. How
+                    # many times a weak burst held its message is each reader's own count.
+                    seen, read = got["look"]["decoded"], got["reading"]
+                    same = ("model", "id", "channel", "humidity_pct", "battery_low")
+                    if not seen:
+                        got["ok"] = False
+                        got["problems"].append("the look reads no device's message in it")
+                    elif not read:
+                        got["ok"] = False
+                        got["problems"].append("the scanner did not read the burst; the look does")
+                    elif any(read.get(k) != seen[k] for k in same) or round(read["temperature_c"], 1) != seen["temperature_c"]:
+                        got["ok"] = False
+                        got["problems"].append(f"the scanner read {read}, the look {seen}")
+                elif args.oregon_v1 and not got["look"]["oregon_v1"]:
                     got["ok"] = False
                     got["problems"].append("no Oregon Scientific version 1 message in it")
                 elif args.oregon_v1:
@@ -312,6 +461,7 @@ def main():
     k.add_argument("--wait", type=float, help="wait this many seconds for them, then download and look at each")
     k.add_argument("--take-radio", action="store_true", help="put the scanner in data mode first, and give the radio back after")
     k.add_argument("--oregon-v1", action="store_true", help="each capture must hold an Oregon Scientific version 1 message")
+    k.add_argument("--decoded", action="store_true", help="each capture must hold a message this tool reads, the one the scanner read")
     sub.add_parser("list", help="the captures on the card")
     f = sub.add_parser("fetch", help="download captures (every one, or those named)")
     f.add_argument("ids", nargs="*")
@@ -321,12 +471,13 @@ def main():
     lk.add_argument("file", type=Path)
     lk.add_argument("--freq", type=float, help="look at this frequency, Hz (default: the burst's, from the description)")
     lk.add_argument("--oregon-v1", action="store_true", help="it must hold an Oregon Scientific version 1 message")
+    lk.add_argument("--decode", action="store_true", help="it must hold a message of a device this tool reads")
     args = ap.parse_args()
 
     if args.what == "look":
-        result = look(args.file, args.freq, args.oregon_v1)
+        result = look(args.file, args.freq, args.oregon_v1, args.decode)
         print(json.dumps(result, indent=1))
-        return 1 if args.oregon_v1 and not result["oregon_v1"] else 0
+        return 1 if args.oregon_v1 and not result["oregon_v1"] or args.decode and not result["decoded"] else 0
     if not args.host:
         ap.error("--host is needed")
     scanner_token.install(args.host)

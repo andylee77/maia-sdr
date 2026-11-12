@@ -10,17 +10,18 @@ null. NOT_JSON describes the GET routes that do not answer JSON.
 STRUCTS: dict[str, list[tuple[str, str]] | list] = {}
 
 STRUCTS["reading"] = [
-    ("model", "string", "The decoder's name for the device (`Oregon Scientific v1`, the one so far)."),
+    ("model", "string", "The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`."),
     ("kind", "string", "What kind of device it is: `weather`."),
     ("id", "number", "The device's id as its message gives it."),
     ("channel", "number or null", "Its channel (a switch on the device); null for a device that has none."),
     ("temperature_c", "number or null", "The temperature it sent, in °C whatever unit the pages show; null for a device that sends none."),
+    ("humidity_pct", "number or null", "The relative humidity it sent, per cent; null for a device that sends none."),
     ("battery_low", "bool or null", "Its battery is low; null for a device that does not say."),
-    ("repeats", "number", "How many times the burst held the message (this sensor sends it twice)."),
+    ("repeats", "number", "How many times the burst held the message (a sensor sends it two to seven times, by its make)."),
 ]
 
 STRUCTS["data_device"] = [
-    ("key", "string", "`<model>.<id>.<channel>` in lower case, for `GET /api/v1/data/devices/{key}`."),
+    ("key", "string", "`<model>.<id>.<channel>` in lower case (`<model>.<id>` for a device with no channel), for `GET /api/v1/data/devices/{key}`."),
     ("kind", "string", "`weather`, so far."),
     ("model", "string", "The decoder's name for it."),
     ("id", "number", "Its id as its messages give it."),

@@ -344,7 +344,7 @@ Each step is checked before the next starts.
 | 2 | **The mode.** `Mode::Data` and the lease, the `packet_data` rename, the three tabs empty, round trips through all three modes. **Built in 108** | Host tests as 080's; a mode round trip on A |
 | 3 | **Scan.** Band plan, scan and park, the burst detector, emitters by frequency with names, the data log per frequency, `/ws/spectrum` and the waterfall, the Scan tab. **Begun in 109** for one parked window: the burst detector, the emitters by frequency, the Scan tab without a waterfall (section 13) | A key-fob press is seen in its frame; a sensor's interval is right; a named emitter keeps its log. The ESP32-DIV sends bursts of known frequency, length and spacing, so the detector's times can be checked |
 | 4 | **Captures and raw IQ.** Per-burst cs16 and SigMF, armed captures, window snapshots, the Captures tab, `/ws/iq`. Then a day of captures on A: the corpus in `runs/data/`, decoded on the PC by `tools/rtl433_reference.py`. **Begun in 109:** per-burst cs16 and SigMF, armed captures, the Captures tab (section 13) | The corpus decodes with rtl_433 as live bursts do; it says which families to port first |
-| 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices. **Begun in 110:** the envelope's slice, the Oregon Scientific version 1 decoder, devices and their last readings in memory, the Devices page (section 13) | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
+| 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices. **Begun in 110:** the envelope's slice, the Oregon Scientific version 1 decoder, devices and their last readings in memory, the Devices page. **111:** the table-driven decoder, with an AcuRite 606TX and a Prologue sensor as its first rows (section 13) | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
 | 6 | **Later outputs.** NDJSON stream, MQTT with Home Assistant discovery, an rtl_tcp server | A sensor shows up in Home Assistant; SDR++ tunes a lane |
 | 7 | **Later, on evidence:** more families; other data protocols on the same machinery (POCSAG, APRS, AIS; ADS-B on a 2 MSPS stage-1-only lane); FPGA classifiers trained on the corpus | |
 
@@ -433,10 +433,10 @@ Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
 
 | MHz | Over the floor | Every | What |
 |-----|----------------|-------|------|
-| 433.880 | 29 to 31 dB | 30.0 s | Andy's Oregon Scientific sensor, version 1: Manchester at 342 bits a second, 32 bits, twice in 392 ms. Decoded on the PC: id 3, channel 1 |
-| 433.916 | 44 dB | about 31 s | A 32-bit pulse-position message six times in 747 ms (0.53 ms pulses, gaps of 2.03 and 4.07 ms). Not identified |
-| 433.871 | 18 to 20 dB | about 53 s | Pulse position, about 36 bits, 780 ms. Not identified |
-| 433.924 | 12 to 15 dB | 16.0 s | Pulses of 0.1 to 0.3 ms. At the limit of detection. Not identified |
+| 433.880 | 29 to 31 dB | 30.0 s | Andy's Oregon Scientific sensor, version 1: Manchester at 342 bits a second, 32 bits, twice in 392 ms. Read since 110: id 3, channel 1 |
+| 433.916 | 44 dB | 31.0 s | **An AcuRite 606TX** temperature sensor (named in 111 by its check): 32 bits keyed by pulse distance six times in 747 ms (0.53 ms pulses, gaps of 2.03 and 4.07 ms, 9.07 ms between repeats). Read since 111: id 181, 21.2 °C that night |
+| 433.871 | 18 to 20 dB | about 53 s | **A Prologue sensor,** temperature and humidity (named in 111 by its keying and its fields; its protocol has no check): 36 bits and a spare one, six or seven times in 780 ms (0.48 ms pulses, gaps of 1.96 and 3.91 ms, 8.8 ms between repeats). Read since 111: id 86, channel 2, 1.2 °C over Andy's sensor each time, its battery low |
+| 433.924 | 12 to 15 dB | 16.0 s | On-off keyed, Manchester at 1024 bits a second: a preamble of ones, 0101, then about 29 nibbles, most the same in every message; sent once (123 ms) and twice (255 ms) turn about. 7 to 8 dB over the noise in its own bandwidth. **Not identified** (111 has what was read of it) |
 
 - **The antenna question of section 10 is answered for 433 MHz:** the weakest of the four is
   12 dB over a 3.9 kHz bin's floor, the strongest 44 dB, at a manual gain of 55 dB with nothing
@@ -461,7 +461,15 @@ Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
 - since 110, each burst that ends sliced into its pulses and read by the decoders, on a thread
   of its own (`protocol::ism::pulses`, `oregon_v1`): a read burst is a device's, with what it
   last said and its last 200 readings in memory (`GET /api/v1/data/devices/{key}`), on Devices
-  as section 7 draws it, without the filters, the names and the log on the card.
+  as section 7 draws it, without the filters, the names and the log on the card;
+- since 111, section 5's table-driven decoder (`protocol::ism::distance`): the devices keyed by
+  pulse distance, each a row of its facts (its keying, its bits, what guards its message, where
+  its fields are), with an AcuRite 606TX and a Prologue sensor as the first two. A reading has
+  a humidity. Every burst is read through a filter of 4 kHz either side since (it was 15 kHz),
+  the table's devices with the glitches left out too: the clicks are as wide as the channel,
+  and through the wider filter they kept the weaker of the two from reading and, in a noisier
+  hour (the floor 2 to 8 dB higher at 13 h UTC), cost Andy's own sensor one of its two copies
+  in a burst.
 
 **Where it departs from sections 3 to 8:**
 
@@ -478,10 +486,20 @@ Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
 - **The first decoder is Oregon Scientific version 1** (110): the sensor is on the air every
   30 s, and `tools/data_captures.py look --oregon-v1` reads it from a capture on the PC apart
   from the Rust, which the unit's own reading is held against. Section 5's gate, a match with
-  rtl_433 on the corpus, is not met: rtl_433 is not on this PC. The decoder is hand-written;
-  the table-driven one of section 5 waits for a second device to share it with.
-- **Two devices within 10 kHz of each other that send at once are one burst** (the sensor and
-  the device 8.4 kHz under it do, every few minutes): the pulse front end has to take a burst
-  apart by frequency.
+  rtl_433 on the corpus, is not met: rtl_433 is not on this PC. The decoder is hand-written.
+- **Two of the other three are keyed by pulse distance with the same times,** and share the
+  table-driven decoder (111). What names them without rtl_433: the AcuRite's check fits its
+  messages (one pair of the check's 65,536 fits the two that were captured); the Prologue
+  sensor has none, and rests on its keying, its first four bits and readings that make sense
+  beside Andy's sensor. `tools/data_captures.py look --decode` reads both from a capture.
+- **The fourth is not on-off pulses but Manchester at 1024 bits a second,** which 109's look
+  missed: its slicer sat between that signal's own median and peak. Its framing is Oregon
+  Scientific version 3's and its content is not one of that make's sensors'; too weak (7 to
+  8 dB) for its last nibbles to read the same twice. rtl_433 (step 0) is the way to its name.
+- **Two devices within 10 kHz of each other that send at once would be one burst** (the
+  detector joins what is within 2.5 of its bins): Andy's sensor and the Prologue sensor 8.4 kHz
+  under it are that near and, by their periods, send at once about every twenty minutes. No
+  capture of it is on hand; the pulse front end would have to take such a burst apart by
+  frequency.
 - **Hours of listening are not tried:** whether the capture ring is ever read too late over a
   day is not known.

@@ -192,7 +192,9 @@ scanner/src/         the fresh crate (D13)
                      together in receiver: a capture to its station's names and contents
     ism/             the data bands: channel (a 250 kSPS channel cut from the window's raw IQ),
                      bursts (the transmissions in it, broadband clicks left out), pulses (a
-                     burst sliced into on and off) and the decoders that read them: oregon_v1
+                     burst's envelope, read as on and off through the filter a keying allows)
+                     and the decoders that read them: oregon_v1, and distance (a table of the
+                     devices keyed by pulse distance: an AcuRite 606TX, a Prologue sensor)
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent

@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 111: Two more sensors read, by a table: an AcuRite 606TX and a Prologue sensor
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** unit A hears four devices at 433.92 MHz and 110 read one. Asked "Identify and decode
+  the other three devices at 433.92 MHz next?", Andy answered "Yes, decode them". Record:
+  `doc/changes/111_distance_decoders.md`.
+- **Two are named and read.** At 433.916 MHz an **AcuRite 606TX** temperature sensor (id 181):
+  its check fits the messages captured, one pair of the check's 65,536 fitting both. At
+  433.871 MHz a **Prologue sensor,** temperature and humidity (id 86, channel 2): its protocol
+  has no check, and it is named by its keying, its first bits and readings that follow Andy's
+  own sensor 1.2 °C above it.
+- **The third is not identified,** and nothing was built for it: on-off keyed, Manchester at
+  1024 bits a second (not the short pulses 109's look took it for), every 16 s, 7 to 8 dB over
+  the noise. The record has what was read of it.
+- **The table-driven decoder** (`protocol::ism::distance`): the devices keyed by pulse distance,
+  each a row of its facts.
+- **Every burst is read through a narrower filter** (4 kHz either side; it was 15 kHz), the
+  table's devices with the glitches left out too. The band's clicks are as wide as the channel
+  and lose more to it than a burst does: it is what reads the weaker of the two new sensors,
+  and it reads Andy's own twice in a burst where a noisier band, at 13 h UTC, had left one.
+- **A reading has a humidity** (`humidity_pct`), on Devices with a line of its own.
+  `tools/data_captures.py look --decode` and `keep --decoded` read and hold the new devices.
+- **Not held against rtl_433,** which is not on this PC.
+
 ## [2026-11-12] 110: The first decoder: Oregon Scientific version 1, and Devices
 
 **Branch:** fishball-p25 (local)

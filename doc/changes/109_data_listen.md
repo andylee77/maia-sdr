@@ -29,9 +29,9 @@ of 434.42 MHz, manual gain 55 dB. They are in `runs/data/look_20261112/`
   | MHz | Over the floor | Every | What |
   |-----|----------------|-------|------|
   | 433.880 | 31 dB | 30.0 s | **Andy's sensor: Oregon Scientific version 1.** Manchester at 342 bits a second (1.5 and 3.0 ms pulses), a 5.6 ms sync pulse, 32 bits, sent twice in 392 ms. Decoded on the PC with a good checksum each time: bytes `03 59 01 5d`, id 3, channel 1, 15.9 °C, battery ok |
-  | 433.916 | 44 dB | about 31 s | A 32-bit pulse-position message six times in 747 ms (0.53 ms pulses, gaps of 2.03 and 4.07 ms, 9.07 ms between repeats). Not identified |
-  | 433.871 | 20 dB | about 53 s | Pulse position, about 36 bits, 780 ms (0.48 ms pulses, gaps of 1.96 and 3.91 ms, 8.8 ms between repeats). Too weak for the look's slicer to read the same bits twice. Not identified |
-  | 433.924 | 12 to 15 dB | 16.0 s | Pulses of 0.1 to 0.3 ms, 110 to 250 ms. At the limit of detection. Not identified |
+  | 433.916 | 44 dB | about 31 s | A 32-bit pulse-position message six times in 747 ms (0.53 ms pulses, gaps of 2.03 and 4.07 ms, 9.07 ms between repeats). Not identified then; an AcuRite 606TX (111) |
+  | 433.871 | 20 dB | about 53 s | Pulse position, about 36 bits, 780 ms (0.48 ms pulses, gaps of 1.96 and 3.91 ms, 8.8 ms between repeats). Too weak for the look's slicer to read the same bits twice. Not identified then; a Prologue sensor (111) |
+  | 433.924 | 12 to 15 dB | 16.0 s | 110 to 250 ms; on-off keyed, Manchester at 1024 bits a second (111 read it so; this look's slicer could not). At the limit of detection. Not identified |
 
 - **A steady carrier** at 434.0318 MHz, about 5 kHz wide. Unknown; it may be a spur.
 - **Broadband clicks, about 130 a second:** noise-like bursts of 1 to 3 ms over the whole window,
@@ -267,9 +267,12 @@ See the status log for the counts.
     UTC by another client (no session of this work: Andy, by the page's default of five
     bursts). The scanner was restarted under that client at 04:19 for the last test build.
 - **Seen on A and not changed:**
-  - **two devices within 10 kHz of each other that send at the same time are one burst:** the
-    sensor and the device 8.4 kHz under it do every few minutes (a burst of 485 ms at
-    433.879 MHz on A's page, and 539 ms among the captures);
+  - **two devices within 10 kHz of each other that send at the same time would be one burst**
+    (the detector joins what is within 2.5 of its bins): the sensor and the device 8.4 kHz
+    under it are that near and, by their periods, send at once about every twenty minutes. It
+    was not captured: the longer bursts at the sensor's frequency (485 ms on A's page, 539 ms
+    among the captures) were taken for it here, and 111 found the other device was not due
+    then and its message is not in them;
   - the `2M` preset is in the presets' table and cannot be tuned on this radio;
   - the broadband clicks' source, and what the steady carrier at 434.0318 MHz is.
 - **Not checked:** hours of listening (whether a gap ever comes; the card's captures as they

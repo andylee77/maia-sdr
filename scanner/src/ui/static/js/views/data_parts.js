@@ -9,10 +9,11 @@ export function deviceName(d) {
   return `${d.model} · id ${d.id}${d.channel === null ? '' : ` · channel ${d.channel}`}`;
 }
 
-// What a reading says: "58.1 °F", with "battery low" when it is.
+// What a reading says: "58.1 °F · 75 %", with "battery low" when it is.
 export function readingText(r) {
   const parts = [];
   if (r.temperature_c !== null) parts.push(temperature(r.temperature_c, store.units.temperature));
+  if (r.humidity_pct !== null) parts.push(`${r.humidity_pct} %`);
   if (r.battery_low) parts.push('battery low');
   return parts.join(' · ');
 }

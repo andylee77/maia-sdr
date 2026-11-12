@@ -91,8 +91,8 @@ channel, the temperature, the battery and how many times), and fails on a differ
 - The data log on the card and its tables in the history's database; names; the filters and
   kinds beyond "weather"; an export of a device's log.
 - A burst taken apart by frequency: when the sensor and the device 8.4 kHz under it send at
-  once the slice still reads the sensor, which is 12 dB the stronger, and would not read the
-  weaker.
+  once (about every twenty minutes, by their periods) they would be one burst, and the slice
+  would read the stronger of them at most. No capture of it is on hand.
 
 ## Checks
 
@@ -154,7 +154,7 @@ See the status log for the counts.
     `playlist_page.mjs --preview-only` 13, and over HTTPS: `tool_pages.mjs` 27, `now_rail.mjs`
     15; `API_FIELDS.md` regenerated from A;
   - **left listening four minutes after the checks:** eight messages of the sensor's, every
-    30.009 s, each read (one in a burst of 589 ms that also held the device 8.4 kHz under it),
+    30.009 s, each read (one in a burst of 589 ms, longer than the sensor's own 392),
     13.0 to 13.1 °C. A is back in scanner mode, live on Clay County at 100 %.
 - 2026-11-12: **the SD image `2026-11-12-decode1`** (fishball-p25 3af4679, tezuka_fw 2bcddb0,
   the radio core 2.1.0) on unit A, its boot files also in `/mnt/sd/boot_new_decode1` (ssh1's in
@@ -182,8 +182,9 @@ See the status log for the counts.
   - **The gate from the image:** the same command exits 0 (`runs/data/gate_110_image.json`):
     two captures 30 s apart, and the scanner's reading of each the same as the PC's reading of
     its file: id 3, channel 1, 13.3 °C (55.9 °F), twice (the bytes `03 33 01 37`). The first of
-    them is a burst of 570 ms that also holds the device 8.4 kHz under the sensor. No gap, no
-    burst dropped, the radio given back.
+    them is a burst of 570 ms, longer than the sensor's own 392: the device 8.4 kHz under it was
+    not due then and its message is not in the capture (111), and what lengthened it is not
+    known. No gap, no burst dropped, the radio given back.
   - **The pages, A serving them:** `data_listen.mjs` 13 steps and `data_mode.mjs` 13; reads
     only, over HTTP: `scanner_pages.mjs` 40, `tool_pages.mjs` 27, `files_page.mjs` 9,
     `aliases_page.mjs` 9, `playlist_page.mjs --preview-only` 13; over HTTPS: `tool_pages.mjs`

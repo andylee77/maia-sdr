@@ -1,6 +1,6 @@
 // Data's Devices page, laid out as the study drew it: every device the decoders have read, each
 // a row with what it last said; under them the picked device's data log, the last things it
-// said, with its temperature drawn as a line. The radio pushes the devices as they change, and
+// said, with each thing it measures drawn as a line. The radio pushes the devices as they change, and
 // the log is read again when its device says something new. The log is the radio's memory since
 // it started: the data log on the card, the names and the filters are not built.
 
@@ -46,7 +46,7 @@ export function mount(el) {
   const count = h('span', { class: 'dim' });
   list.head.querySelector('h2').after(count);
   const body = h('tbody');
-  const none = h('p', { class: 'dim', text: 'No device read yet. The radio reads Oregon Scientific version 1 temperature sensors so far; everything else it hears is on Scan, by frequency.' });
+  const none = h('p', { class: 'dim', text: 'No device read yet. The radio reads three kinds of weather sensor so far (Oregon Scientific version 1, AcuRite 606TX, Prologue); everything else it hears is on Scan, by frequency.' });
   list.body.append(
     h('div', { class: 'table-wrap data-table' }, h('table', { class: 'table data-pick' },
       h('thead', null, h('tr', null, ...['Kind', 'Device', 'ID', 'MHz', 'Last', 'Every', 'Over the floor', 'Latest'].map(t => h('th', { text: t })))), body)),
@@ -81,10 +81,10 @@ export function mount(el) {
   const title = one.head.querySelector('h2');
   const keep = h('button', { class: 'btn small', type: 'button', title: 'Keep the IQ of its next burst, for Captures' }, icon('download', 14), h('span', { text: 'Keep next' }));
   one.right.append(keep);
-  const line = h('div', { class: 'data-line' });
+  const lines = h('div');
   const entries = h('tbody');
   one.body.append(
-    line,
+    lines,
     h('div', { class: 'table-wrap data-table' }, h('table', { class: 'table' },
       h('thead', null, h('tr', null, ...['Time', 'MHz', 'Over the floor', 'Level', 'Reading', 'IQ'].map(t => h('th', { text: t })))), entries)),
     h('p', { class: 'card-note', text: 'The last 200 things it said since the radio started, the newest first; they arrive as they are read. A message sent more than once in a burst is one entry.' }));
@@ -107,13 +107,16 @@ export function mount(el) {
     if (!d || !log) return;
     setText(title, `${deviceName(d)}: data log`);
     keep.disabled = view.state !== 'listening' || !view.captures;
-    const temps = log.map(s => s.reading.temperature_c).filter(t => t !== null).reverse();
-    line.replaceChildren(...(temps.length ? [
-      h('span', { class: 'dim', text: 'Temperature' }), sparkline(temps),
-      h('strong', { text: temperature(temps[temps.length - 1], unit) }),
-      h('span', { class: 'dim', text: temps.length < 2 ? '' : Math.min(...temps) === Math.max(...temps) ? `the same over ${plural(temps.length, 'reading')}`
-        : `${temperature(Math.min(...temps), unit)} to ${temperature(Math.max(...temps), unit)} over ${plural(temps.length, 'reading')}` }),
-    ] : []));
+    // Each thing it measures: a line of its values (oldest first), the newest, and their range.
+    const measured = [
+      ['Temperature', 'temperature_c', v => temperature(v, unit)],
+      ['Humidity', 'humidity_pct', v => `${v} %`],
+    ].map(([label, field, show]) => [label, log.map(s => s.reading[field]).filter(v => v !== null).reverse(), show]);
+    lines.replaceChildren(...measured.filter(([, values]) => values.length).map(([label, values, show]) => h('div', { class: 'data-line' },
+      h('span', { class: 'dim', text: label }), sparkline(values),
+      h('strong', { text: show(values[values.length - 1]) }),
+      h('span', { class: 'dim', text: values.length < 2 ? '' : Math.min(...values) === Math.max(...values) ? `the same over ${plural(values.length, 'reading')}`
+        : `${show(Math.min(...values))} to ${show(Math.max(...values))} over ${plural(values.length, 'reading')}` }))));
     keyedList(entries, log, s => s.seq, () => h('tr', null, ...Array.from({ length: 6 }, () => h('td', { class: 'num' }))), (tr, s) => {
       const c = tr.children;
       setText(c[0], clock(s.unix_ms, true));

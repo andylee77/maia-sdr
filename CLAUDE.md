@@ -57,8 +57,13 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (`protocol::ism`), the emitters by frequency on Scan, and the IQ of the next bursts kept on
   the card when asked (`data_captures/`, cs16 and SigMF; `tools/data_captures.py`). Since 110
   (`doc/changes/110_oregon_v1_decoder.md`) each burst that ends is sliced into its pulses and
-  read by the decoders (`protocol::ism::pulses`, `oregon_v1`, the one so far), and a read
-  burst is a device's, on Devices with its last readings (in memory). A decoder is written
+  read by the decoders (`protocol::ism::pulses`, `oregon_v1`), and a read burst is a device's,
+  on Devices with its last readings (in memory). Since 111
+  (`doc/changes/111_distance_decoders.md`) a table of the devices keyed by pulse distance
+  (`protocol::ism::distance`: another such device is a row and a capture to test with) reads
+  two more of the four heard at 433.92 MHz, an AcuRite 606TX (433.916 MHz, id 181) and a
+  Prologue sensor (433.871 MHz, id 86 on channel 2, with humidity); the fourth (433.924 MHz,
+  every 16 s, Manchester at 1024 bits a second) is not identified. A decoder is written
   from its protocol's facts, never from rtl_433's code; rtl_433 is the reference a decoder is
   to be held against and is not on this PC. Its steps 0 and 1 wait for Andy (the RTL-SDR's
   ground truth; the wide lanes on the bench). 108 to 110 are in unit A's SD image
@@ -70,7 +75,8 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   with `DATA_CAPTURE_DIR=<repo>/runs/data/look_20261112 cargo test --release ism::`. On a unit,
   `tools/data_captures.py --host <unit> keep --count 2 --freq 433880000 --span 6000 --wait 110
   --take-radio --oregon-v1` holds the scanner's reading of the sensor against the PC's of its
-  capture. Temperatures are shown in the unit Settings picks (`units.temperature`, Andy:
+  capture; with `--freq 433916300 ... --decoded` or `--freq 433871200 ... --wait 130 --decoded`
+  it holds the AcuRite's or the Prologue sensor's. Temperatures are shown in the unit Settings picks (`units.temperature`, Andy:
   "°C/°F in settings"; unit A's is °F); the API's fields stay in °C.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),

@@ -310,7 +310,7 @@ mod tests {
         let first = captures.keep(job(T0, 1, 100)).unwrap();
         // One with what its burst said.
         let mut read = job(T0 + 86_400_000, 2, 200);
-        read.kept.reading = Some(Reading { model: "Oregon Scientific v1".into(), kind: "weather".into(), id: 3, channel: Some(1), temperature_c: Some(14.5), battery_low: Some(false), repeats: 2 });
+        read.kept.reading = Some(Reading { model: "Oregon Scientific v1".into(), kind: "weather".into(), id: 3, channel: Some(1), temperature_c: Some(14.5), humidity_pct: None, battery_low: Some(false), repeats: 2 });
         let second = captures.keep(read).unwrap();
         assert_eq!(second.reading.as_ref().and_then(|r| r.temperature_c), Some(14.5));
         // A description without its samples is not listed.
