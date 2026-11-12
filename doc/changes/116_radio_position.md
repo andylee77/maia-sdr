@@ -2,9 +2,8 @@
 
 **Date:** 2026-11-12. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-12-range1`) over the
-SD image `2026-11-12-decode1`, which does not have it. Unit A has not been told where it is:
-that is Andy's to enter, in Settings.
+**Status:** committed locally. In unit A's SD image, `2026-11-12-range1`, with 111 to 115. Unit A
+has not been told where it is: that is Andy's to enter, in Settings.
 
 ## Why
 
@@ -137,10 +136,58 @@ See the status log for the counts.
     `farthest_nm` given. `API_FIELDS.md` was regenerated from A within the minute, so its
     example of a place is that made one; the place was taken away again. The radio was off
     the scanner's site for it from 22:01:38 to 22:02:04 UTC.
+- 2026-11-12: **the SD image `2026-11-12-range1`** (fishball-p25 703e416, tezuka_fw 2bcddb0,
+  the radio core 2.1.0) on unit A, its boot files also in `/mnt/sd/boot_new_range1`
+  (decode1's in `/mnt/sd/boot_new_decode1`). Asked "Build an SD image with 111 to 116 and put
+  it on unit A?", Andy answered "Yes, build it". It is the first image with 111 to 116: the
+  table-driven decoders, the Analog module and the Aircraft module; the firmware is decode1's.
+  - **Built** in 5 min 14 s, the image's Rust 1.86 compiling the scanner in 3 min 41 s: the
+    code of 111 to 116, which only this PC's Rust had compiled, builds with the image's too.
+    No `[ERROR]` in the log.
+  - **Checked before installing** (the ramdisk read on the PC): the scanner carries the tag
+    and the marks of 111 to 116 (the two sensors' names, the two listening threads' names,
+    the analog socket, the link's route, the map's page, the distance's field, the place's
+    refusal), none of which decode1's scanner has. Against decode1's ramdisk nothing differs
+    but the scanner and what differs at every build: the root password's salted hash (the same
+    scheme and digest length) and 16 bytes of the USB drive's image. SSH is as decode1 had it.
+    `BOOT.bin` differs in 6 bytes, U-Boot's build time, so the bitstream is the same; the
+    device tree and `uEnv.txt` are decode1's; the kernel was built again (8 bytes longer). The
+    card's copies matched the build's sha256 before the reboot.
+  - **After the reboot** (asked at 22:30:53 UTC): live on Clay County 101 s after it was
+    asked, control decode 100 % at 40 messages a second. The binary on A is the image's (its
+    sha256 the one read from the ramdisk). The radio's settings are what they were to the
+    last field (the temperature's unit still °F, no place); open as before, libiio off and its
+    choice kept off, the aircraft's link `both`, the analog receiver's tuning kept. HTTPS
+    verified by the CA file saved before the reboot and refused without it. SSH offers
+    `publickey` alone; a login by key works. One line in the scanner's log, its start.
+  - **Every module from the image, A serving the pages:** `aircraft_map.mjs` 16 steps,
+    `aircraft_page.mjs --uat 60` 20 (117 aircraft each with its distance and bearing from a
+    made place, an aircraft heard on 978 MHz, both links in turn), `data_mode.mjs` 18,
+    `data_listen.mjs` 15 (the three sensors read and listed: the AcuRite, Andy's Oregon
+    Scientific and the Prologue with its humidity), `analog_listen.mjs --fm 102.9` 12. The
+    unit had no place before them and has none after.
+  - **The tools from the image:** `tools/adsb_listen.py listen --link both --seconds 45
+    --take-radio` exits 0: 5,987 extended squitters, 1,725 all-call replies and 3 UAT
+    messages, 115 aircraft listed and 92 with a place, no gap, no block dropped, the
+    `adsb-listen` thread at 62 % of one core. `tools/analog_listen.py listen --mhz 162.55
+    --demod nfm --squelch 8 --seconds 10 --take-radio` exits 0: 10.08 s of audio in 10 s,
+    none lagged, 22.5 to 23.7 dB over the floor.
+  - The radio was off the scanner's site for these from 22:33:43 to 22:42:58 UTC and from
+    22:48:23 to 22:49:23 (this PC's clock; the unit's is half a minute ahead of it).
+  - **Reads only,** over HTTP: `scanner_pages.mjs` 40, `tool_pages.mjs` 27, `now_rail.mjs` 15
+    (a call had been recorded since the start), `files_page.mjs` 9, `aliases_page.mjs` 9,
+    `playlist_page.mjs --preview-only` 13; over HTTPS: `tool_pages.mjs` 27, `now_rail.mjs` 15,
+    `files_page.mjs` 9.
+  - **Two checks failed a step first, by their own haste, and pass with their waits mended:**
+    `analog_listen.mjs` looked at the header's line before the status that carries it had
+    come (it showed the band's first frequency a moment longer); `scanner_pages.mjs` set an
+    alert's recording to go round once, and the panel puts another player in its place when
+    the call's details come, so a recording of 4.8 s had ended when the check looked again.
+    It now keeps whatever recording is in the panel going round while it looks at the alerts.
 - **Seen and not changed:** a ring's name is drawn before the aircraft, so an aircraft or its
   name may lie over it. At a zoom that shows 250 NM the rings, the grid and the aircraft
   make a busy picture.
 - **Not checked:** unit A's own place (it has none: Andy's to enter), and so no distance
   that means anything yet; a place near a pole or across the date line on the map; the
   setting through an exported and imported configuration; a browser other than headless
-  Chrome; an image with it.
+  Chrome.

@@ -23,6 +23,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - Until the radio has a place the cells are empty, there are no rings, and both pages say
   where it is set.
 - The header's line says "1 message a second", not "1 messages".
+- **The SD image `2026-11-12-range1`** (111 to 116; tezuka_fw 2bcddb0, no firmware change) is
+  on unit A, on Andy's "Yes, build it": the first image with the table-driven decoders, the
+  Analog module and the Aircraft module.
 
 ## [2026-11-12] 115: The Aircraft module's Map
 

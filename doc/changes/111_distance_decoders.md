@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-12. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-12-distance2`) over the
-SD image `2026-11-12-decode1`, which does not have it.
+**Status:** committed locally. In unit A's SD image, `2026-11-12-range1` (111 to 116; its record
+in 116's).
 
 ## Why
 
