@@ -127,8 +127,8 @@ On unit A's card on 2026-11-11 (58 GB, 7.3 GB used):
 ### Security
 
 What a client on the network can do, from the code and unit A's open ports (102 built the
-guard, 104 HTTPS as the one way in, 105 libiio's switch; a unit is open until its
-administrator's password is set, and unit A's is not set yet):
+guard, 104 HTTPS as the one way in, 105 libiio's switch, 107 SSH by key only; a unit is open
+until its administrator's password is set, and unit A's is not set yet):
 
 | Door | Open unit (no password) | With a password (102, 104) |
 |------|-------------------------|-----------------------|
@@ -139,7 +139,7 @@ administrator's password is set, and unit A's is not set yet):
 | `/ws/live`, `/ws/audio`, `/ws/events` | Anyone but a page of another origin (since 102, with or without a password) | A session or a token at the upgrade; closed when it is revoked |
 | A name pointed at the unit by another's DNS | Refused (since 102): the unit answers to its addresses, its host name and names its administrator adds | The same |
 | libiio (`iiod`: port 30431, and the USB gadget's IIO function) | Off unless it is switched on (105). On, anyone who reaches the port or the USB cable can retune the AD9361 under the scanner: libiio asks nobody who they are | The same, and the switch is the administrator's |
-| SSH (dropbear, port 22) | Root, by password or key | The same: Andy's to say |
+| SSH (dropbear, port 22) | Root, by key only (107): the image's key. The root password, which is in the firmware's repository, opens the serial consoles and nothing on the network | The same |
 | The legacy `/api/*` routes for the bench | Open | Behind the guard like the rest |
 
 What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
@@ -160,7 +160,8 @@ What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
   flash, builds the USB gadget with or without its IIO function and changes it while it runs;
   the Access card and the API switch it; the bench switches it on, until the unit restarts,
   when it needs it;
-- **to do:** SSH, which is Andy's to say; the bench off the legacy routes so that they can go.
+- **done (107):** SSH takes a key and no password;
+- **to do:** the bench off the legacy routes so that they can go.
 
 ### Hardware controls
 
@@ -278,7 +279,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 3 | **Aliases:** done. The tab, the alias model's gaps and the RadioReference import's page in 097; the SDRTrunk playlist's import and export in 098, with Andy's own playlist imported on unit A | — |
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
-| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on. Left: SSH | SSH is Andy's to say. Unit A's password is his to set. The bench reading `/api/v1` so the legacy routes can go |
+| 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on; in 107 SSH by key only. The step is built | Unit A's password is Andy's to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
@@ -368,7 +369,8 @@ Each has a recommendation first. Short answers are enough.
   change to the gadget's script and to the bench. Asked "Build iiod's switch as recommended: off
   unless switched on, the bench turning it on?", Andy answered "Yes, build it" (2026-11-11).
   Built in 105: the gadget without its IIO function while the switch is off, and the bench
-  switching it on until the unit restarts. **Still open:** SSH, keys only or as it is?
+  switching it on until the unit restarts. SSH: asked "Make SSH on the units keys-only, with no
+  password login?", Andy answered "Yes, keys only" (2026-11-11). Built in 107.
 
 **Modes (steps 7 and 8)**
 

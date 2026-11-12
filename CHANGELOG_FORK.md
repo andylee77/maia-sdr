@@ -5,6 +5,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 107: SSH by key only
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the last part of step 6. The image's root password is in the firmware's repository
+  and its SSH server took password logins: whoever knew it had root over the network, past
+  every door of Access. Asked "Make SSH on the units keys-only, with no password login?", Andy
+  answered "Yes, keys only". Record: `doc/changes/107_ssh_keys_only.md`.
+- **The scanner image's SSH takes a key and no password** (tezuka_fw 009). The image carries
+  its key; the root password still opens the serial consoles, for whoever has the unit in hand.
+- **Step 6 is built:** what the network reaches on a unit is the scanner's two ports, SSH by
+  key, and libiio's port while it is switched on.
+
 ## [2026-11-11] 106: The image builds again, and the SD image with 096 to 105
 
 **Branch:** fishball-p25 (local)

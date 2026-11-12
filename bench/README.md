@@ -46,7 +46,9 @@ Before the first session:
    needs an administrator shell once, or add it yourself with `route -p add …`).
 3. Keys: a unit whose image does not authorize `~/.ssh/id_ed25519` yet (factory
    firmware) needs the root password once: `fbench setup keys --unit A --password-prompt`.
-   The key is stored on the SD card under `/mnt/sd/bench/keys/`.
+   The key is stored on the SD card under `/mnt/sd/bench/keys/`. A scanner image carries
+   that key and, from tezuka_fw 009, takes no password over SSH: there this step is neither
+   needed nor possible.
 4. Agent: `bench/scripts/build_agent.sh`, then `fbench setup agent`.
 5. Every boot (Tezuka's rootfs is a ramfs): `fbench setup session` re-links the key,
    enables `ip_forward` on unit A, marks the agent executable and reports leftover
