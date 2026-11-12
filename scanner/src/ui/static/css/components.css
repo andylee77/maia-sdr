@@ -733,9 +733,23 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* Data's Scan, as the module was drawn: the windows in a strip with what the mode is asked to do,
    the window as a map of its bursts (each a dash at its frequency, newest at the top), and the
    emitters heard in it. Captures is a card of its own. A table scrolls under its own header. */
-/* A page that is only its shell: it says what it will hold. */
-.shell-page { max-width: 60em; }
-.shell-will { margin: 12px 0 0; }
+/* The aircraft's map: its bar, the map filling what is left of the page (the tiles, when they
+   are on, under the drawing), and the picked aircraft's line. OpenStreetMap's tiles are light:
+   on the dark page they are turned dark. */
+.map-page { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 12px 14px; }
+.map-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.map-bar .spacer { flex: 1 1 auto; }
+.map-view { position: relative; flex: 1 1 auto; min-height: min(70vh, 640px); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-sunken); cursor: grab; touch-action: none; user-select: none; }
+body[data-fill] .map-view { min-height: 240px; }
+.map-view:active { cursor: grabbing; }
+.map-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.map-tiles, .map-canvas { position: absolute; inset: 0; }
+.map-canvas { width: 100%; height: 100%; }
+.map-tiles img { position: absolute; left: 0; top: 0; width: 256px; height: 256px; max-width: none; pointer-events: none; filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .map-tiles img { filter: none; } }
+:root[data-theme="light"] .map-tiles img { filter: none; }
+.map-credit { position: absolute; right: 6px; bottom: 4px; padding: 1px 6px; border-radius: 4px; background: var(--bg-raised); color: var(--text-dim); font-size: 0.75em; }
+.map-says { margin: 0; }
 
 /* The aircraft heard: a table that scrolls under its own header, each column's head a button
    that sorts by it. */

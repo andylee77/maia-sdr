@@ -23,7 +23,7 @@ import * as dataCaptures from './views/data_captures.js';
 import * as dataDevices from './views/data_devices.js';
 import * as analogListen from './views/analog_listen.js';
 import * as aircraftList from './views/aircraft.js';
-import * as aircraft from './views/aircraft_shell.js';
+import * as aircraftMap from './views/aircraft_map.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
 import * as settings from './views/settings.js';
@@ -148,11 +148,11 @@ export const MODULES = [
     icon: 'plane',
     pages: [
       { key: 'aircraft', label: 'Aircraft', view: aircraftList },
-      { key: 'plot', label: 'Plot', view: aircraft.plot },
+      { key: 'map', label: 'Map', view: aircraftMap, fill: true },
     ],
     line: aircraftLine,
     working: s => !!s.status.adsb && s.status.adsb.state === 'listening',
-    away: 'The Aircraft module lists the aircraft that send their positions (ADS-B) at 1090 MHz and at 978 MHz. It listens only while it has the radio: an aircraft stays listed for a minute after it was last heard.',
+    away: 'The Aircraft module lists the aircraft that send their positions (ADS-B) at 1090 MHz and at 978 MHz. It listens only while it has the radio: an aircraft stays listed, and on the map, for a minute after it was last heard.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

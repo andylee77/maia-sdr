@@ -4,8 +4,8 @@
 // place, how strong its last message was, how many were heard and when the last. A column's
 // head sorts by it. The switch over the table says which link the radio listens to, or both in
 // turn: it hears one at a time. The radio pushes the list once a second while it listens; it
-// listens only while this module has the radio. Nothing is plotted, and there are no
-// distances: the radio does not know where it is.
+// listens only while this module has the radio. The Map tab has them at their places. There
+// are no distances: the radio does not know where it is.
 
 import { h, card, toast, setText, setClass, keyedList } from '../dom.js';
 import { api } from '../api.js';

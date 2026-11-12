@@ -5,6 +5,24 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 115: The Aircraft module's Map
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy, as 114 was built: "can we add a map view". Record:
+  `doc/changes/115_aircraft_map.md`.
+- **The module's second tab is Map** (it was Plot, a card saying it was not built): every
+  aircraft that has said where it is, at its place, pointing along its track, with its callsign
+  and altitude where there is room, and the way it has come since the page was opened. A drag,
+  the wheel, the buttons and the keys move and zoom it; Fit keeps every aircraft in view; a
+  click picks one, and the line under the map says what it last said.
+- **The radio holds no map.** The page draws a grid of latitude and longitude and a scale.
+  "Map tiles" lays OpenStreetMap's under the aircraft: off until switched on, because the
+  browser then fetches them from the Internet. The choice is kept by the browser.
+- **No range rings and no distances:** the radio does not know where it is.
+- Nothing changes in the daemon or its API.
+
 ## [2026-11-12] 114: UAT at 978 MHz on the unit, and the Aircraft module's two links in turn
 
 **Branch:** fishball-p25 (local)

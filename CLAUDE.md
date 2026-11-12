@@ -101,7 +101,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (`adsb-listen`, 60 % of a core on unit A) finds the Mode S messages in it
   (`protocol::adsb::mode_s`: extended squitters and all-call replies whose parity is right, no
   bit corrected), reads them (`squitter`, `cpr`) and keeps the aircraft (`services::adsb`),
-  which the Aircraft page lists; Plot is not built (the radio does not know where it is). The
+  which the Aircraft page lists (no distances: the radio does not know where it is). The
   method is in whole numbers so that `tools/adsb_look.py` finds the same messages at the same
   samples: `ADSB_CAPTURE_DIR=<repo>/runs/adsb/look_20261112 cargo test --release adsb::` holds
   the scanner against the lists `tools/adsb_look.py FILE --messages` writes beside the
@@ -125,6 +125,14 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `aircraft_page.mjs` tries the switch (on a unit `--uat <seconds>` is how long it waits for
   an aircraft on 978 MHz: there may be none in the air). On a unit,
   `tools/adsb_listen.py --host <unit> listen --link 978 --seconds 60 --take-radio`.
+- **The aircraft's map (115, `doc/changes/115_aircraft_map.md`; Andy: "can we add a map
+  view"):** the Aircraft module's second tab, drawn by the page from `GET /api/v1/adsb`
+  (`js/views/aircraft_map.js`; nothing of it is in the daemon): the aircraft at their places
+  with their ways since the page was opened, a grid and a scale of the page's own, and
+  OpenStreetMap's tiles under them only when "Map tiles" is switched on, since the browser
+  then fetches them from the Internet. No range rings: the radio does not know where it is.
+  Check: `runs/ui_check/aircraft_map.mjs`, which answers the tiles' requests itself (a page
+  check never fetches a tile from the Internet).
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan
