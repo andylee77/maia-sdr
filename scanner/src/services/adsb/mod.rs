@@ -3,10 +3,12 @@
 //! each in turn (`Listen`; the radio hears one at a time): the window is read whole from the
 //! capture ring (`listen`), a thread of its own finds the messages in it (`protocol::adsb`),
 //! and the aircraft they are from are kept with what each last said (`table`), in memory.
-//! What it listens to is kept across restarts (the radio's state); nothing else is, and nothing
-//! is plotted yet.
+//! What it listens to is kept across restarts (the radio's state); nothing else is. Once the
+//! radio has been told where it is (a setting), each aircraft that has said its place has its
+//! distance and bearing from there (`range`).
 
 mod listen;
+mod range;
 mod table;
 
 use std::collections::VecDeque;
@@ -21,6 +23,7 @@ pub use table::Aircraft;
 use crate::protocol::adsb::uat::message;
 use crate::protocol::adsb::{mode_s, squitter, uat};
 use crate::radio::tuner::{RadioHw, Tuner};
+use crate::services::config::radio::Position;
 use crate::services::events::EventLog;
 use crate::services::mode::Hold;
 use crate::util::time::unix_ms;
@@ -142,6 +145,9 @@ pub struct View {
     /// Messages a second over the last ten, of whichever link was listened to.
     pub messages_per_s: f32,
     pub counts: Counts,
+    /// Where the radio is, once it has been told (the radio's settings): what each aircraft's
+    /// distance and bearing are from.
+    pub position: Option<Position>,
     /// The aircraft heard twice or more in the last minute, by their addresses.
     pub aircraft: Vec<Aircraft>,
 }
@@ -202,6 +208,8 @@ struct Inner {
     state: State,
     error: Option<String>,
     listen: Listen,
+    /// Where the radio is, once it has been told.
+    position: Option<Position>,
     on: Option<Link>,
     window: Option<Window>,
     since_unix_ms: Option<u64>,
@@ -344,17 +352,18 @@ pub struct Adsb {
 
 impl Default for Adsb {
     fn default() -> Self {
-        Adsb::new(Listen::default(), Replay::default())
+        Adsb::new(Listen::default(), None, Replay::default())
     }
 }
 
 impl Adsb {
-    /// The module as it was last asked to listen.
-    pub fn new(listen: Listen, replay: Replay) -> Adsb {
+    /// The module as it was last asked to listen, with the radio's place if it has one.
+    pub fn new(listen: Listen, position: Option<Position>, replay: Replay) -> Adsb {
         let inner = Inner {
             state: State::Off,
             error: None,
             listen,
+            position,
             on: None,
             window: None,
             since_unix_ms: None,
@@ -396,6 +405,15 @@ impl Adsb {
         }
     }
 
+    /// Where the radio is, or that it is not known any more: the distances follow at once.
+    pub fn set_position(&self, to: Option<Position>) {
+        let mut i = self.shared.lock();
+        if i.position != to {
+            i.position = to;
+            i.rev += 1;
+        }
+    }
+
     pub fn view(&self) -> View {
         self.view_at(unix_ms())
     }
@@ -417,7 +435,8 @@ impl Adsb {
             since_unix_ms: i.since_unix_ms,
             messages_per_s: i.rate.per_second(),
             counts: i.counts,
-            aircraft: i.table.list(),
+            position: i.position,
+            aircraft: i.table.list(i.position),
         }
     }
 
@@ -491,7 +510,7 @@ mod tests {
 
     #[test]
     fn the_other_link_s_messages_are_counted_and_its_aircraft_listed_with_the_first_s() {
-        let adsb = Adsb::new(Listen::Uat, Replay::default());
+        let adsb = Adsb::new(Listen::Uat, None, Replay::default());
         let shared = &adsb.shared;
         shared.tuned(Link::Uat, Window { lo_hz: 979_000_000, ..WINDOW }, 50_000);
         let since = adsb.view_at(50_000).since_unix_ms;
@@ -523,6 +542,19 @@ mod tests {
         adsb.set_link(Listen::Es);
         adsb.set_link(Listen::Es);
         assert_eq!((adsb.view_at(55_300).link, adsb.view_at(55_300).rev, adsb.summary_at(55_300).link), (Listen::Es, rev + 1, Listen::Es));
+        // The radio is told where it is: the aircraft that said its place is that far from it,
+        // at once, and the other has no distance. Told the same again, nothing moves; forgotten,
+        // the distances go.
+        assert_eq!((v.position, v.aircraft[1].distance_nm), (None, None));
+        let radio = Position { lat: 29.31514, lon: -81.81991 };
+        adsb.set_position(Some(radio));
+        adsb.set_position(Some(radio));
+        let v = adsb.view_at(55_300);
+        assert_eq!((v.rev, v.position), (rev + 2, Some(radio)));
+        assert_eq!(v.aircraft.iter().map(|a| (a.distance_nm, a.bearing_deg)).collect::<Vec<_>>(), [(None, None), (Some(60.0), Some(0.0))]);
+        adsb.set_position(None);
+        let v = adsb.view_at(55_300);
+        assert_eq!((v.rev, v.position, v.aircraft[1].distance_nm), (rev + 3, None, None));
         assert_eq!(serde_json::to_string(&(Link::Es, Link::Uat, Listen::Both)).unwrap(), r#"["1090","978","both"]"#);
     }
 }

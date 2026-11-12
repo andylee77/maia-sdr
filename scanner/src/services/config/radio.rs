@@ -22,6 +22,8 @@ pub struct RadioConfig {
     pub crystal: CrystalTracking,
     pub packet_data: PacketDataFollow,
     pub units: Units,
+    /// Where the radio is, once it has been told: what an aircraft's distance is taken from.
+    pub position: Option<Position>,
 }
 
 /// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
@@ -50,6 +52,9 @@ impl RadioConfig {
         if self.crystal.anchor_hz > 1_000 {
             return Err("crystal anchor_hz up to 1000 (0: no limit)".into());
         }
+        if let Some(position) = &self.position {
+            position.check()?;
+        }
         Ok(())
     }
 }
@@ -68,6 +73,7 @@ impl Default for RadioConfig {
             crystal: CrystalTracking::default(),
             packet_data: PacketDataFollow::default(),
             units: Units::default(),
+            position: None,
         }
     }
 }
@@ -77,6 +83,22 @@ impl Default for RadioConfig {
 #[serde(default)]
 pub struct Units {
     pub temperature: Temperature,
+}
+
+/// A place on the globe, degrees: north and east are positive.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl Position {
+    pub fn check(&self) -> Result<(), String> {
+        if !(-90.0..=90.0).contains(&self.lat) || !(-180.0..=180.0).contains(&self.lon) {
+            return Err("position: lat -90..=90, lon -180..=180 (degrees, north and east positive)".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

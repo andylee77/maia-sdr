@@ -48,6 +48,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let analog = Arc::new(crate::services::analog::Analog::new(config.state.value.analog, args.analog_replay.clone()));
     let adsb = Arc::new(crate::services::adsb::Adsb::new(
         config.state.value.aircraft,
+        config.radio.value.position,
         crate::services::adsb::Replay { es: args.adsb_replay.clone(), uat: args.uat_replay.clone() },
     ));
     let follow_data = config.radio.value.packet_data.follow;

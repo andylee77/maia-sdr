@@ -12,8 +12,9 @@ aircraft it lists. `link` sets the link: one of the two, or both in turn.
 `listen` watches it for `--seconds` and says what came in that time: Mode S messages whose
 parity was right (extended squitters and all-call replies) of the preambles tried, UAT messages
 their code put right of the places its synchronisation fitted, how many a second, the aircraft
-listed at the end by link and how many of them said a callsign, an altitude and a place, whether
-samples were lost (`gaps`) or blocks dropped, and the scanner's threads' share of the processor.
+listed at the end by link and how many of them said a callsign, an altitude and a place, how far
+the farthest is (once the radio's settings say where the radio is), whether samples were lost
+(`gaps`) or blocks dropped, and the scanner's threads' share of the processor.
 With `--link` it listens to that link for the stay and puts the link back as it was. With
 `--take-radio` it puts the scanner in ADS-B mode first and gives the radio back after: no call
 is followed meanwhile. `--aircraft` adds the list itself.
@@ -58,6 +59,8 @@ def summary(view):
         "with_an_altitude": sum(1 for a in aircraft if a["altitude_ft"] is not None),
         "with_a_speed": sum(1 for a in aircraft if a["speed_kt"] is not None),
         "with_a_place": sum(1 for a in aircraft if a["lat"] is not None),
+        # How far the farthest is from the radio; none until the radio is told where it is.
+        "farthest_nm": max((a["distance_nm"] for a in aircraft if a.get("distance_nm") is not None), default=None),
     }
     return out
 

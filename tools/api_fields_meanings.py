@@ -156,6 +156,9 @@ STRUCTS["radio_config"] = [
     ("packet_data.follow", "bool", "The last traffic lane waits on the site's data channel between calls; false: no lane waits there."),
     ("units", "object", "The units the pages show a reading in. The API's own fields stay as they are named."),
     ("units.temperature", "string", "`celsius` or `fahrenheit`."),
+    ("position", "object or null", "Where the radio is, once it has been told (`PUT /api/v1/radio/settings`); null until then. An aircraft's distance and bearing are taken from it."),
+    ("position.lat", "number", "Its latitude, degrees north; south of the equator is negative."),
+    ("position.lon", "number", "Its longitude, degrees east; west of Greenwich is negative."),
 ]
 
 STRUCTS["window_plan"] = [
@@ -1117,6 +1120,9 @@ ROUTES: dict[str, list] = {
         ("counts.aircraft", "number", "Times an aircraft came to be listed (at its second message); one heard again after a minute's silence counts again."),
         ("counts.gaps", "number", "Times the capture ring was read too late or the core lost words: the search began afresh, and a message on the air meanwhile is lost."),
         ("counts.dropped", "number", "Blocks of the window (a megabyte, 66 ms) dropped because the search was behind."),
+        ("position", "object or null", "Where the radio is, as its settings have it (`PUT /api/v1/radio/settings`); null until it has been told. Each aircraft's distance and bearing are from it."),
+        ("position.lat", "number", "The radio's latitude, degrees north."),
+        ("position.lon", "number", "The radio's longitude, degrees east."),
         ("aircraft", "array", "The aircraft heard twice or more, the last time within a minute, by their addresses. One message alone lists none: it may be noise that passed the parity."),
         ("aircraft[]", "object", "One aircraft, with what it last said of each thing."),
         ("aircraft[].icao", "string", "Its 24-bit address, six hexadecimal digits."),
@@ -1130,6 +1136,8 @@ ROUTES: dict[str, list] = {
         ("aircraft[].lat", "number or null", "Its latitude, degrees north. On 1090 MHz from an even and an odd half of an airborne position heard within ten seconds of each other; on 978 MHz a message says it whole."),
         ("aircraft[].lon", "number or null", "Its longitude, degrees east."),
         ("aircraft[].position_unix_ms", "number or null", "When its place was last worked out."),
+        ("aircraft[].distance_nm", "number or null", "How far its place is from the radio's over the ground, nautical miles, to a tenth: the great circle on a sphere of the Earth's mean radius. Null until the radio has been told where it is, and for an aircraft that has not said its place."),
+        ("aircraft[].bearing_deg", "number or null", "Which way it is from the radio, degrees clockwise from north, to a tenth. Null as the distance is."),
         ("aircraft[].level_dbfs", "number", "Its last message's pulses against the ADC's full scale, dB. The gain is fixed, so it compares from one aircraft to another; the nearest clip, at 0 to 3."),
         ("aircraft[].messages", "number", "Messages heard of it since it was first heard."),
         ("aircraft[].first_unix_ms", "number", "When it was first heard."),

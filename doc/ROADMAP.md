@@ -272,9 +272,11 @@ the same messages at the same samples as it does.
 | Page | Feature | State |
 |------|---------|-------|
 | **Aircraft** | Every aircraft heard in the last minute: address, callsign, category, altitude, speed, track, rate of climb, place, level, messages, last heard; sorted by any column | **exists** (113) |
-| | Its range and bearing; positions on the ground; squawks | **decided**, not built: they need to know where the radio is (a setting), or types not read yet |
+| | Its distance and bearing from the radio, once the radio's Settings say where the radio is | **exists** (116; Andy: "Yes, add it") |
+| | Positions on the ground; squawks | **decided**, not built: types not read yet |
 | **Map** | The aircraft that have said where they are, at their places, each pointing along its track with the way it has come since the page was opened; the map moved and zoomed, Fit, an aircraft picked for what it last said; the page's own grid and scale, or OpenStreetMap's tiles under it when switched on (the browser then fetches them from the Internet) | **exists** (115; Andy: "can we add a map view") |
-| | Range rings, and the map opening on the radio's own place; a way kept by the radio; a map of the radio's own for a unit with no Internet | **decided**, not built: the first needs where the radio is (a setting); the last needs map data on the unit |
+| | The radio marked at its place with range rings round it, and Fit keeping it in view | **exists** (116), once the radio's Settings say where it is |
+| | A way kept by the radio; a map of the radio's own for a unit with no Internet; the farthest heard by bearing, kept (what an antenna reaches) | **decided**, not built: the map needs map data on the unit |
 | 978 MHz (UAT) | The second ADS-B link: small aircraft, and the ground stations' weather | **the aircraft's messages are read** (114), held against `tools/uat_look.py` message for message. The radio hears one of the two links at a time: the link is 1090 MHz, 978 MHz or both in turn (Andy: "auto switch and maintain both"). What a ground station sends is not read: none is heard here |
 | Outputs | The messages in the Beast format on a port, for tar1090 or Virtual Radar on a PC | **open** (Q11) |
 
@@ -312,7 +314,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
 | 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on; in 107 SSH by key only. The step is built | Unit A's password is Andy's to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5). Begun in 108: the modes made general, the `packet_data` rename, and the mode's shell (the study's step 2). 109: it listens at 433.92 MHz and keeps bursts' IQ, a first slice of the study's steps 3 and 4 for one window, begun with a look at what unit A hears there (four devices, Andy's Oregon Scientific sensor among them). 110: the first of step 5, the pulse front end and the Oregon Scientific version 1 decoder, with Devices showing the sensor's temperature. 111: the table-driven decoder with its first two rows, an AcuRite 606TX and a Prologue sensor: three of the four devices heard there are read, the fourth is not identified | Wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
-| 8 | **ADS-B.** Begun in 112: the capture at 1090 MHz from unit A read on the PC, and the module's shell. 113: the decoder on the unit, held against the PC's reading of the same captures message for message, and the Aircraft page's table; and a look at 978 MHz (UAT), which the antenna hears. 114: UAT read on the unit, and the link a setting: 1090 MHz, 978 MHz or both in turn. 115: the Map page | Where the unit is (a setting), for ranges. The Beast output (Q11) |
+| 8 | **ADS-B.** Begun in 112: the capture at 1090 MHz from unit A read on the PC, and the module's shell. 113: the decoder on the unit, held against the PC's reading of the same captures message for message, and the Aircraft page's table; and a look at 978 MHz (UAT), which the antenna hears. 114: UAT read on the unit, and the link a setting: 1090 MHz, 978 MHz or both in turn. 115: the Map page. 116: where the radio is, as a setting, with each aircraft's distance and bearing and the map's range rings | The Beast output (Q11) |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
 
 What step 5 added is behind 102's guard like everything else: on a unit with a password an
@@ -419,9 +421,11 @@ Each has a recommendation first. Short answers are enough.
   right? every 5 or 10 seconds?": built in 114 as a setting of three, 1090 MHz, 978 MHz or both
   in turn (10 s and 5 s). He also asked "can we add a map view": built in 115, the page's own
   grid by default and OpenStreetMap's tiles a switch on the page, off until pressed (asked
-  whether the background should be on from the start: "we can leave off by default"). Still
-  open: where the unit is, for ranges and range rings (recommended: a latitude and longitude
-  in the module's Settings); the Beast output.
+  whether the background should be on from the start: "we can leave off by default"). Asked
+  "Add the unit's position as a setting, for range rings and distances?", he answered "Yes,
+  add it": built in 116 as a latitude and longitude in the radio's own Settings (it is the
+  radio's, not one module's), with each aircraft's distance and bearing and the map's range
+  rings. Unit A's place is his to enter. Still open: the Beast output.
 - **Q12. Which other modes are behind "etc.", and in what order?** Andy, 2026-11-12, asked for
   "a radio section ... that plays FM, Air, HAM WFM, NFM analog signals": built in 112 as the
   Analog module, which also hears NOAA weather radio and other conventional FM channels (Clay

@@ -1,6 +1,6 @@
 // The radio's own settings (the rail's Settings): who may reach it (access.js), where its clock
-// comes from, the crystal's correction, the units a reading is shown in, and the configuration
-// as a whole (export, import, factory reset). What belongs to one module is among that module's tabs: the Scanner's settings
+// comes from, the crystal's correction, the units a reading is shown in, where the radio is, and
+// the configuration as a whole (export, import, factory reset). What belongs to one module is among that module's tabs: the Scanner's settings
 // are scanner_settings.js.
 
 import { h, toast, switchInput } from '../dom.js';
@@ -148,6 +148,55 @@ function unitsCard() {
   };
 }
 
+// Where the radio is: what the Aircraft module takes an aircraft's distance from, and draws its
+// range rings round.
+function positionCard() {
+  const sec = section('Position');
+  const degrees = (label, most) => h('input', { class: 'input num position-in', type: 'number', min: -most, max: most, step: 'any', inputmode: 'decimal', 'aria-label': label });
+  const lat = degrees('Latitude', 90);
+  const lon = degrees('Longitude', 180);
+  sec.edits(lat, lon);
+  const save = h('button', { class: 'btn', type: 'button', text: 'Save' });
+  const forget = h('button', { class: 'btn', type: 'button', text: 'Forget' });
+  const keep = async (position, done) => {
+    try {
+      await api.saveRadioSettings({ position });
+      sec.saved();
+      if (!position) lat.value = lon.value = '';
+      forget.disabled = !position;
+      toast(done);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  save.addEventListener('click', () => {
+    let position;
+    try {
+      position = { lat: typed(lat, 'Latitude', { whole: false }), lon: typed(lon, 'Longitude', { whole: false }) };
+    } catch (e) {
+      toast(e.message, true);
+      return;
+    }
+    keep(position, 'Position saved');
+  });
+  forget.addEventListener('click', () => keep(null, 'Position forgotten'));
+  sec.body.append(
+    row('Latitude', [lat, unit('° north')], 'Degrees with their decimals, as a map gives them. South of the equator is negative.'),
+    row('Longitude', [lon, unit('° east')], 'West of Greenwich is negative.'),
+    foot('Where the radio is. Aircraft takes each aircraft\'s distance and bearing from it, and draws its range rings round it. It is kept on the radio, and whoever may open these pages can read it.', forget, save));
+  return {
+    el: sec.el,
+    show({ radio }) {
+      const p = radio.config.position;
+      forget.disabled = !p;
+      if (!sec.touched) {
+        lat.value = p ? p.lat : '';
+        lon.value = p ? p.lon : '';
+      }
+    },
+  };
+}
+
 // After an import or a reset the scanner restarts: reload once it is back (the store's socket
 // dropped and came back, or brings a status of less uptime than before).
 function reloadAfterRestart() {
@@ -220,8 +269,8 @@ export function mount(el) {
       const iiod = me.level === 'admin' ? await api.iiod().catch(() => null) : null;
       return { radio, crystal, me, access, certificate, iiod };
     },
-    build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), unitsCard(), configCard()]],
+    build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), unitsCard(), positionCard(), configCard()]],
     rev: s => `${s.radioRev}.${s.accessRev}`,
-    link: ['These are the radio\'s own: who may reach it, its clock, its crystal, its units, its configuration. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
+    link: ['These are the radio\'s own: who may reach it, its clock, its crystal, its units, where it is, its configuration. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
   });
 }

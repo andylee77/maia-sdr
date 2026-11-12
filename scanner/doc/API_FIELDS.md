@@ -96,18 +96,18 @@ Build, uptime, the live site, its control channel and the tuning.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `build` | string | `"2026-11-12-uat1"` | The scanner's build tag. |
-| `uptime_s` | number | `2405` | Since the scanner started, s. |
-| `now_unix_ms` | number | `1794513968125` | The board's clock. |
+| `build` | string | `"2026-11-12-range1"` | The scanner's build tag. |
+| `uptime_s` | number | `863` | Since the scanner started, s. |
+| `now_unix_ms` | number | `1794520956761` | The board's clock. |
 | `mode` | string | `"scanner"` | The unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands: it listens while it has the radio). In any but the scanner's the live site is paused. |
 | `data` | object |  | Data mode's listening in a line (`GET /api/v1/data` has the whole of it). |
 | `data.state` | string | `"off"` | `off` (another mode has the radio), `starting`, `listening` or `error`. |
 | `data.error` | string or null |  | Why it does not listen. |
 | `data.window` | string or null | `"433"` | The band plan's name for the window it listens to, or last did (`433`); null until it has listened. |
 | `data.spot_hz` | number or null | `433920000` | The frequency it listens around, or last did; null until it has listened. |
-| `data.emitters` | number | `4` | Emitters heard since the scanner started. |
+| `data.emitters` | number | `6` | Emitters heard since the scanner started. |
 | `data.devices` | number | `3` | Devices the decoders have read since the scanner started. |
-| `data.bursts` | number | `11` | Bursts heard since the scanner started. |
+| `data.bursts` | number | `10` | Bursts heard since the scanner started. |
 | `data.arm_left` | number or null |  | Bursts whose IQ is still to be kept; null when none is asked for. |
 | `analog` | object |  | The analog receiver in a line (`GET /api/v1/analog` has the whole of it). |
 | `analog.state` | string | `"off"` | `off` (another mode has the radio), `starting`, `listening` or `error`. |
@@ -119,7 +119,7 @@ Build, uptime, the live site, its control channel and the tuning.
 | `adsb.state` | string | `"off"` | `off` (another mode has the radio), `starting`, `listening` or `error`. |
 | `adsb.error` | string or null |  | Why it does not listen. |
 | `adsb.link` | string | `"both"` | The link it is asked to listen to: `1090` (Mode S), `978` (UAT) or `both` in turn. |
-| `adsb.aircraft` | number | `113` | Aircraft listed: heard twice or more, the last time within a minute. |
+| `adsb.aircraft` | number | `115` | Aircraft listed: heard twice or more, the last time within a minute. |
 | `adsb.messages_per_s` | number | `0.0` | Messages taken, a second, over the last ten seconds. |
 | `live` | object |  | The live site's state; `state` says which fields follow. |
 | `live.state` | string | `"live"` | `no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below). |
@@ -160,20 +160,20 @@ Build, uptime, the live site, its control channel and the tuning.
 | `live.window.sample_rate_hz` | number | `12000000` | Its sample rate. |
 | `live.window.lo_hz` | number | `855993750` | The window's centre. |
 | `live.window.usable_half_hz` | number | `5400000` | How far from the centre a channel can be received. |
-| `live.window.covered_weight` | number | `345863.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
-| `live.window.total_weight` | number | `345863.0` | The weight of all the site's channels. |
+| `live.window.covered_weight` | number | `346964.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
+| `live.window.total_weight` | number | `346964.0` | The weight of all the site's channels. |
 | `live.tuning` | object, absent unless live |  | The tuning (the same as `tuning`). |
 | `live.tuning.preset` | string or null | `"12M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `live.tuning.sample_rate_hz` | number | `12000000` | The AD9361's sample rate. |
 | `live.tuning.lo_hz` | number | `855993750` | The window's centre (the nominal LO). |
-| `live.tuning.lo_shift_hz` | number | `614` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `live.tuning.crystal_ppm` | number | `-0.7172219423331069` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `live.tuning.lo_shift_hz` | number | `618` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `live.tuning.crystal_ppm` | number | `-0.721578477257184` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `live.tuning.control_hz` | number | `860962500` | The channel the control chain is tuned to. |
 | `live.tuning.gain` | object or null |  | The receiver gain. |
 | `live.tuning.gain.mode` | string | `"manual"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `live.tuning.gain.db` | number or null | `55.0` | The manual gain in dB; null under AGC. |
-| `live.tuning.lanes` | array of 2 numbers or null | `[null, 857987500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `live.tuning.rev` | number | `113` | Counts tuning changes; a new value means something above moved. |
+| `live.tuning.lanes` | array of 2 numbers or null | `[null, 858437500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
+| `live.tuning.rev` | number | `70` | Counts tuning changes; a new value means something above moved. |
 | `control` | object |  | The control channel decoder. |
 | `control.running` | bool | `true` | The control channel decoder runs. |
 | `control.site` | string, absent when stopped | `"clay_county_public_safety_simulcast"` | The site it decodes. |
@@ -194,7 +194,7 @@ Build, uptime, the live site, its control channel and the tuning.
 | `control.tsbks_20s.c4fm` | number |  | By the C4FM demodulator. |
 | `control.msgs_per_s` | number or null |  | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null |  | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `60` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `94` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `0.0` | Share of one core the decode thread uses, %. |
 | `control.carrier_offset_hz` | number, absent until measured |  | The carrier's offset from the tuning, signal minus NCO, Hz: the DMR equaliser's, or the P25 LSM carrier loop's mean over the last second while a signal was on the channel (absent while the site decodes as C4FM). |
 | `control.loop` | object, absent at DMR sites and while the LSM decoder does not run |  | P25: the LSM decoder's carrier loop, each second. |
@@ -204,10 +204,10 @@ Build, uptime, the live site, its control channel and the tuning.
 | `control.loop.held` | bool |  | No signal on the channel: the loops hold. |
 | `control.channel_plan_entries` | number | `0` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
-| `control.grants` | number | `6` | Voice grants decoded since the site went live. |
+| `control.grants` | number | `4` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | The control channel's IQ delivered to the decoder (blocks of up to 1008 samples, 20 ms). |
-| `control.input.blocks` | number | `27` | Blocks delivered. |
+| `control.input.blocks` | number | `32` | Blocks delivered. |
 | `control.input.dropped` | number | `0` | Blocks dropped because the decoder was behind. |
 | `control.input.gaps` | number | `0` | Blocks after missing samples. |
 | `lease` | string | `"normal"` | What the radio is taken for: `normal` (the scanner's live site has it), `switching` (a site going live), `scan`, `diagnostic` or `mode` (a mode other than the scanner's: `mode` says which). |
@@ -215,19 +215,19 @@ Build, uptime, the live site, its control channel and the tuning.
 | `tuning.preset` | string or null | `"12M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `12000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `855993750` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `614` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.7172219423331069` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `618` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.721578477257184` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `860962500` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"manual"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `tuning.gain.db` | number or null | `55.0` | The manual gain in dB; null under AGC. |
-| `tuning.lanes` | array of 2 numbers or null | `[null, 857987500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `tuning.rev` | number | `113` | Counts tuning changes; a new value means something above moved. |
+| `tuning.lanes` | array of 2 numbers or null | `[null, 858437500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
+| `tuning.rev` | number | `70` | Counts tuning changes; a new value means something above moved. |
 | `clock` | object |  | The board clock. |
 | `clock.source` | string | `"site"` | `site`, `ntp` or `manual`. |
 | `clock.valid` | bool | `true` | The board clock has been set (otherwise it counts from 1970). |
 | `clock.site_precision` | string or null | `"precise"` | How precise the site's time is: `minute`, `second` or `precise`. |
-| `clock.site_offset_ms` | number or null | `16` | The site's time minus the board's. |
+| `clock.site_offset_ms` | number or null | `-22` | The site's time minus the board's. |
 | `clock.last_set` | string or null | `"clock set from the control channel: ...` | When and from what the clock was last set. |
 | `hold` | number or null |  | The talkgroup the live site is held on. |
 | `lane_holds` | array of 2 numbers or null | `[null, null]` | The talkgroup each traffic lane (1, 2) is held on; null when it follows what the aliases say. |
@@ -238,32 +238,32 @@ The live site's open calls and its newest closed ones (from its history after a 
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `open` | array | `[]` | Calls on the air now: followed first (by lane), then those not followed. |
+| `open` | array |  | Calls on the air now: followed first (by lane), then those not followed. |
 | `open[]` | object |  | One call. |
-| `open[].call` | number |  | The call's id (also its recording's id). |
-| `open[].site` | string |  | The site it was heard on. |
-| `open[].tg` | number |  | The talkgroup; for a private call, the called radio. |
-| `open[].tg_name` | string or null |  | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `open[].source` | number or null |  | The calling radio: the grant's, else the voice's. |
-| `open[].source_name` | string or null |  | The calling radio's name. |
+| `open[].call` | number | `347396` | The call's id (also its recording's id). |
+| `open[].site` | string | `"clay_county_public_safety_simulcast"` | The site it was heard on. |
+| `open[].tg` | number | `402` | The talkgroup; for a private call, the called radio. |
+| `open[].tg_name` | string or null | `"CCSO 402"` | The talkgroup's name in the site's system (the called radio's for a private call). |
+| `open[].source` | number or null | `1003` | The calling radio: the grant's, else the voice's. |
+| `open[].source_name` | string or null | `"CCSO Dispatcher"` | The calling radio's name. |
 | `open[].speaker` | number or null |  | The radio the voice link control named last (who is talking now). |
-| `open[].sources` | array of numbers |  | Every radio heard in the call, in order. |
-| `open[].freq_hz` | number or null |  | The traffic channel's downlink. |
-| `open[].channel` | string or null |  | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
+| `open[].sources` | array of numbers | `[]` | Every radio heard in the call, in order. |
+| `open[].freq_hz` | number or null | `857987500` | The traffic channel's downlink. |
+| `open[].channel` | string or null | `"0-1117"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `open[].slot` | number or null |  | DMR: the timeslot. |
-| `open[].encrypted` | bool |  | Encrypted (not followed). |
-| `open[].emergency` | bool |  | Granted as an emergency call. |
-| `open[].private` | bool |  | A unit-to-unit call. |
-| `open[].not_followed` | string or null |  | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
+| `open[].encrypted` | bool | `true` | Encrypted (not followed). |
+| `open[].emergency` | bool | `false` | Granted as an emergency call. |
+| `open[].private` | bool | `false` | A unit-to-unit call. |
+| `open[].not_followed` | string or null | `"ignored"` | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `open[].lane` | number or null |  | The lane that followed it (1 or 2). |
-| `open[].started_unix_ms` | number |  | The grant. |
+| `open[].started_unix_ms` | number | `1794520956506` | The grant. |
 | `open[].first_voice_unix_ms` | number or null |  | The first voice frame. |
 | `open[].ended_unix_ms` | number or null |  | The close; null while open. |
 | `open[].open_ms` | number or null |  | From the grant to the close; null while open. |
 | `open[].grant_ms` | number or null |  | From the grant to its last update on the control channel. |
 | `open[].close` | string or null |  | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
 | `open[].end_lc` | string or null |  | The end-of-transmission marker seen, if any. |
-| `open[].voice_frames` | number |  | Voice frames decoded (20 ms each). |
+| `open[].voice_frames` | number | `0` | Voice frames decoded (20 ms each). |
 | `open[].codec` | string or null |  | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `open[].frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 | `open[].recording` | object or null |  | Its recording (as an item of `GET /api/v1/recordings`), once saved. |
@@ -293,7 +293,7 @@ The live site's open calls and its newest closed ones (from its history after a 
 | `open[].recording.bookmarks[].kind` | string |  | The alert tone's kind (as an alert's `kind`). |
 | `open[].recording.bookmarks[].tones_hz` | array of numbers |  | The alert's tones, Hz. |
 | `open[].recording.locked` | bool |  | Kept for the locked days, in the card's locked tree (a call with alert tones, or locked by hand). |
-| `open[].alerts` | array |  | The alert tones heard in it, once it closed (a few seconds after). |
+| `open[].alerts` | array | `[]` | The alert tones heard in it, once it closed (a few seconds after). |
 | `open[].alerts[]` | object |  | One alert tone. |
 | `open[].alerts[].site` | string |  | The site. |
 | `open[].alerts[].call_id` | number |  | The call it was heard in. |
@@ -309,51 +309,51 @@ The live site's open calls and its newest closed ones (from its history after a 
 | `open[].alerts[].duration_ms` | number |  | From its first tone's start to its last tone's end. |
 | `recent` | array |  | The live site's newest 100 closed calls, newest first. |
 | `recent[]` | object |  | One call. |
-| `recent[].call` | number | `346294` | The call's id (also its recording's id). |
+| `recent[].call` | number | `347395` | The call's id (also its recording's id). |
 | `recent[].site` | string | `"clay_county_public_safety_simulcast"` | The site it was heard on. |
-| `recent[].tg` | number | `700` | The talkgroup; for a private call, the called radio. |
-| `recent[].tg_name` | string or null | `"Orange Park PD"` | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `recent[].source` | number or null | `3432011` | The calling radio: the grant's, else the voice's. |
-| `recent[].source_name` | string or null | `"CCFR Dispatcher"` | The calling radio's name. |
-| `recent[].speaker` | number or null | `3406000` | The radio the voice link control named last (who is talking now). |
-| `recent[].sources` | array of numbers | `[3432011]` | Every radio heard in the call, in order. |
-| `recent[].freq_hz` | number or null | `858437500` | The traffic channel's downlink. |
-| `recent[].channel` | string or null | `"0-1189"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
+| `recent[].tg` | number | `600` | The talkgroup; for a private call, the called radio. |
+| `recent[].tg_name` | string or null | `"GCSPD Main"` | The talkgroup's name in the site's system (the called radio's for a private call). |
+| `recent[].source` | number or null | `1021` | The calling radio: the grant's, else the voice's. |
+| `recent[].source_name` | string or null | `"CCSO Dispatcher"` | The calling radio's name. |
+| `recent[].speaker` | number or null | `3402099` | The radio the voice link control named last (who is talking now). |
+| `recent[].sources` | array of numbers | `[1021]` | Every radio heard in the call, in order. |
+| `recent[].freq_hz` | number or null | `857987500` | The traffic channel's downlink. |
+| `recent[].channel` | string or null | `"0-1117"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `recent[].slot` | number or null |  | DMR: the timeslot. |
 | `recent[].encrypted` | bool | `true` | Encrypted (not followed). |
 | `recent[].emergency` | bool | `false` | Granted as an emergency call. |
 | `recent[].private` | bool | `false` | A unit-to-unit call. |
 | `recent[].not_followed` | string or null | `"ignored"` | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `recent[].lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `recent[].started_unix_ms` | number | `1794513943550` | The grant. |
-| `recent[].first_voice_unix_ms` | number or null | `1794513855468` | The first voice frame. |
-| `recent[].ended_unix_ms` | number or null | `1794513944730` | The close; null while open. |
-| `recent[].open_ms` | number or null | `1180` | From the grant to the close; null while open. |
-| `recent[].grant_ms` | number or null | `1108` | From the grant to its last update on the control channel. |
-| `recent[].close` | string or null | `"site_switch"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
-| `recent[].end_lc` | string or null | `"channel_user"` | The end-of-transmission marker seen, if any. |
+| `recent[].started_unix_ms` | number | `1794520916842` | The grant. |
+| `recent[].first_voice_unix_ms` | number or null | `1794520763632` | The first voice frame. |
+| `recent[].ended_unix_ms` | number or null | `1794520918676` | The close; null while open. |
+| `recent[].open_ms` | number or null | `1834` | From the grant to the close; null while open. |
+| `recent[].grant_ms` | number or null | `1834` | From the grant to its last update on the control channel. |
+| `recent[].close` | string or null | `"timeout"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
+| `recent[].end_lc` | string or null | `"talk_complete"` | The end-of-transmission marker seen, if any. |
 | `recent[].voice_frames` | number | `0` | Voice frames decoded (20 ms each). |
 | `recent[].codec` | string or null | `"imbe"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `recent[].frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 | `recent[].recording` | object or null |  | Its recording (as an item of `GET /api/v1/recordings`), once saved. |
-| `recent[].recording.id` | number | `346281` | The call's id. |
+| `recent[].recording.id` | number | `347354` | The call's id. |
 | `recent[].recording.site` | string | `"clay_county_public_safety_simulcast"` | The site (empty for recordings older than sites). |
 | `recent[].recording.tg` | number | `300` | The talkgroup. |
-| `recent[].recording.source` | number or null | `1012` | The calling radio. |
-| `recent[].recording.started_unix_ms` | number | `1794513855271` | The call's start. |
-| `recent[].recording.duration_ms` | number | `1620` | The recording's length. |
-| `recent[].recording.bytes` | number | `25964` | The file's size. |
-| `recent[].recording.file` | string | `"rec_1794513855271_346281_tg300_from1...` | The file's name. |
+| `recent[].recording.source` | number or null | `3402099` | The calling radio. |
+| `recent[].recording.started_unix_ms` | number | `1794520763306` | The call's start. |
+| `recent[].recording.duration_ms` | number | `3060` | The recording's length. |
+| `recent[].recording.bytes` | number | `49004` | The file's size. |
+| `recent[].recording.file` | string | `"rec_1794520763306_347354_tg300_from3...` | The file's name. |
 | `recent[].recording.store` | string | `"sd"` | `sd` or `ram`. |
 | `recent[].recording.sd_pending` | bool | `false` | Still waiting to be written to the card (served from RAM meanwhile). |
-| `recent[].recording.sources` | array of numbers | `[1012]` | Every radio heard. |
+| `recent[].recording.sources` | array of numbers | `[3402099]` | Every radio heard. |
 | `recent[].recording.lane` | number, absent for earlier runs' recordings | `1` | The lane that recorded it. |
 | `recent[].recording.freq_hz` | number, absent for earlier runs' recordings | `858462500` | The traffic channel. |
 | `recent[].recording.channel` | string, absent for earlier runs' recordings | `"0-1193"` | The channel as announced. |
 | `recent[].recording.voice` | object, absent for earlier runs' recordings |  | The vocoder's counts. |
-| `recent[].recording.voice.frames` | number | `81` | Voice frames. |
-| `recent[].recording.voice.errors` | number | `4` | Frames with errors. |
-| `recent[].recording.voice.silent` | number | `18` | Frames decoded as silence. |
+| `recent[].recording.voice.frames` | number | `153` | Voice frames. |
+| `recent[].recording.voice.errors` | number | `0` | Frames with errors. |
+| `recent[].recording.voice.silent` | number | `153` | Frames decoded as silence. |
 | `recent[].recording.bookmarks` | array | `[]` | The alert tones heard in it; the WAV carries each as a cue point with a label and a region. |
 | `recent[].recording.bookmarks[]` | object |  | One bookmark. |
 | `recent[].recording.bookmarks[].offset_ms` | number |  | Where it is in the recording. |
@@ -429,14 +429,14 @@ One call, live while recent, else from the history; the same shape either way.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `call` | number | `346281` | The call's id (also its recording's id). |
+| `call` | number | `347354` | The call's id (also its recording's id). |
 | `site` | string | `"clay_county_public_safety_simulcast"` | The site it was heard on. |
 | `tg` | number | `300` | The talkgroup; for a private call, the called radio. |
 | `tg_name` | string or null | `"CCFR Primary"` | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `source` | number or null | `1012` | The calling radio: the grant's, else the voice's. |
-| `source_name` | string or null | `"CCFR Dispatcher"` | The calling radio's name. |
-| `speaker` | number or null |  | The radio the voice link control named last (who is talking now). |
-| `sources` | array of numbers | `[1012]` | Every radio heard in the call, in order. |
+| `source` | number or null | `3402099` | The calling radio: the grant's, else the voice's. |
+| `source_name` | string or null |  | The calling radio's name. |
+| `speaker` | number or null | `3402099` | The radio the voice link control named last (who is talking now). |
+| `sources` | array of numbers | `[3402099]` | Every radio heard in the call, in order. |
 | `freq_hz` | number or null | `858462500` | The traffic channel's downlink. |
 | `channel` | string or null | `"0-1193"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `slot` | number or null |  | DMR: the timeslot. |
@@ -445,35 +445,35 @@ One call, live while recent, else from the history; the same shape either way.
 | `private` | bool | `false` | A unit-to-unit call. |
 | `not_followed` | string or null |  | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `started_unix_ms` | number | `1794513855271` | The grant. |
-| `first_voice_unix_ms` | number or null | `1794513855468` | The first voice frame. |
-| `ended_unix_ms` | number or null | `1794513859300` | The close; null while open. |
-| `open_ms` | number or null | `4029` | From the grant to the close; null while open. |
-| `grant_ms` | number or null | `3024` | From the grant to its last update on the control channel. |
+| `started_unix_ms` | number | `1794520763306` | The grant. |
+| `first_voice_unix_ms` | number or null | `1794520763632` | The first voice frame. |
+| `ended_unix_ms` | number or null | `1794520768824` | The close; null while open. |
+| `open_ms` | number or null | `5518` | From the grant to the close; null while open. |
+| `grant_ms` | number or null | `4939` | From the grant to its last update on the control channel. |
 | `close` | string or null | `"call_end"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
-| `end_lc` | string or null | `"channel_user"` | The end-of-transmission marker seen, if any. |
-| `voice_frames` | number | `81` | Voice frames decoded (20 ms each). |
+| `end_lc` | string or null | `"talk_complete"` | The end-of-transmission marker seen, if any. |
+| `voice_frames` | number | `153` | Voice frames decoded (20 ms each). |
 | `codec` | string or null | `"imbe"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 | `recording` | object or null |  | Its recording (as an item of `GET /api/v1/recordings`), once saved. |
-| `recording.id` | number | `346281` | The call's id. |
+| `recording.id` | number | `347354` | The call's id. |
 | `recording.site` | string | `"clay_county_public_safety_simulcast"` | The site (empty for recordings older than sites). |
 | `recording.tg` | number | `300` | The talkgroup. |
-| `recording.source` | number or null | `1012` | The calling radio. |
-| `recording.started_unix_ms` | number | `1794513855271` | The call's start. |
-| `recording.duration_ms` | number | `1620` | The recording's length. |
-| `recording.bytes` | number | `25964` | The file's size. |
-| `recording.file` | string | `"rec_1794513855271_346281_tg300_from1...` | The file's name. |
+| `recording.source` | number or null | `3402099` | The calling radio. |
+| `recording.started_unix_ms` | number | `1794520763306` | The call's start. |
+| `recording.duration_ms` | number | `3060` | The recording's length. |
+| `recording.bytes` | number | `49004` | The file's size. |
+| `recording.file` | string | `"rec_1794520763306_347354_tg300_from3...` | The file's name. |
 | `recording.store` | string | `"sd"` | `sd` or `ram`. |
 | `recording.sd_pending` | bool | `false` | Still waiting to be written to the card (served from RAM meanwhile). |
-| `recording.sources` | array of numbers | `[1012]` | Every radio heard. |
+| `recording.sources` | array of numbers | `[3402099]` | Every radio heard. |
 | `recording.lane` | number, absent for earlier runs' recordings | `1` | The lane that recorded it. |
 | `recording.freq_hz` | number, absent for earlier runs' recordings | `858462500` | The traffic channel. |
 | `recording.channel` | string, absent for earlier runs' recordings | `"0-1193"` | The channel as announced. |
 | `recording.voice` | object, absent for earlier runs' recordings |  | The vocoder's counts. |
-| `recording.voice.frames` | number | `81` | Voice frames. |
-| `recording.voice.errors` | number | `4` | Frames with errors. |
-| `recording.voice.silent` | number | `18` | Frames decoded as silence. |
+| `recording.voice.frames` | number | `153` | Voice frames. |
+| `recording.voice.errors` | number | `0` | Frames with errors. |
+| `recording.voice.silent` | number | `153` | Frames decoded as silence. |
 | `recording.bookmarks` | array | `[]` | The alert tones heard in it; the WAV carries each as a cue point with a label and a region. |
 | `recording.bookmarks[]` | object |  | One bookmark. |
 | `recording.bookmarks[].offset_ms` | number |  | Where it is in the recording. |
@@ -571,57 +571,57 @@ Packet data of a site (`site`, default the live one; `all`): totals, radios and 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `site` | string or null | `"clay_county_public_safety_simulcast"` | The site the answer covers; null for every site. |
-| `data_channel_hz` | number or null | `857987500` | The data channel the site announces. |
-| `pdus` | number | `2663` | Packet data units read. |
-| `duplicates` | number | `400` | The same PDU read again by a second decoder (not counted twice). |
-| `totals` | map | `{"packet/ars": 133}` | PDUs by kind (`packet/lrrp`, `packet/ars`, `ambtc`, `response/...`). |
-| `totals{key}` | number | `133` | PDUs of that kind. |
+| `data_channel_hz` | number or null | `858437500` | The data channel the site announces. |
+| `pdus` | number | `602` | Packet data units read. |
+| `duplicates` | number | `130` | The same PDU read again by a second decoder (not counted twice). |
+| `totals` | map | `{"packet/ars": 29}` | PDUs by kind (`packet/lrrp`, `packet/ars`, `ambtc`, `response/...`). |
+| `totals{key}` | number | `29` | PDUs of that kind. |
 | `radios` | array |  | Radios with packet data, newest first (at most 200). |
 | `radios[]` | object |  | One radio at one site. |
 | `radios[].site` | string | `"clay_county_public_safety_simulcast"` | The site. |
-| `radios[].llid` | number | `3402103` | The radio (logical link id). |
-| `radios[].alias` | string or null | `"Engine 15"` | Its name. |
-| `radios[].packets` | number | `12` | Its PDUs. |
+| `radios[].llid` | number | `3412086` | The radio (logical link id). |
+| `radios[].alias` | string or null |  | Its name. |
+| `radios[].packets` | number | `1` | Its PDUs. |
 | `radios[].inbound` | number | `0` | From the radio. |
-| `radios[].outbound` | number | `12` | To the radio. |
-| `radios[].bytes` | number | `48` | User data bytes. |
-| `radios[].first_ms` | number | `1794512135470` | First heard (unix ms). |
-| `radios[].last_ms` | number | `1794513943649` | Last heard (unix ms). |
-| `radios[].kinds` | map | `{"response/all_blocks_received": 8}` | Its PDUs by kind. |
-| `radios[].kinds{key}` | number | `8` | PDUs of that kind. |
-| `radios[].ip` | string or null | `"10.71.192.57"` | Its IP address, once seen. |
+| `radios[].outbound` | number | `1` | To the radio. |
+| `radios[].bytes` | number | `0` | User data bytes. |
+| `radios[].first_ms` | number | `1794520930193` | First heard (unix ms). |
+| `radios[].last_ms` | number | `1794520930193` | Last heard (unix ms). |
+| `radios[].kinds` | map | `{"response/all_blocks_received": 1}` | Its PDUs by kind. |
+| `radios[].kinds{key}` | number | `1` | PDUs of that kind. |
+| `radios[].ip` | string or null | `"10.71.193.200"` | Its IP address, once seen. |
 | `recent` | array |  | PDUs newest first (`limit`). |
 | `recent[]` | object |  | One PDU. |
-| `recent[].at_ms` | number | `1794513943649` | When it was read (unix ms). |
+| `recent[].at_ms` | number | `1794520930193` | When it was read (unix ms). |
 | `recent[].site` | string | `"clay_county_public_safety_simulcast"` | The site. |
-| `recent[].chain` | string | `"lane 2"` | The decoder that read it: `control`, `lane 1`, `lane 2`. |
+| `recent[].chain` | string | `"lane 1"` | The decoder that read it: `control`, `lane 1`, `lane 2`. |
 | `recent[].nac` | number | `2209` | The NAC it carried. |
 | `recent[].outbound` | bool | `true` | From the site to the radio. |
 | `recent[].format` | string | `"response"` | PDU format: `packet`, `ambtc`, `response`, `unconfirmed`... |
-| `recent[].sap` | string | `"selective_retry"` | Service access point by name (for a response: the response class). |
-| `recent[].sap_id` | number | `2` | The SAP number. |
-| `recent[].llid` | number | `3402103` | The radio. |
-| `recent[].alias` | string or null | `"Engine 15"` | Its name. |
+| `recent[].sap` | string | `"all_blocks_received"` | Service access point by name (for a response: the response class). |
+| `recent[].sap_id` | number | `12` | The SAP number. |
+| `recent[].llid` | number | `3412086` | The radio. |
+| `recent[].alias` | string or null |  | Its name. |
 | `recent[].mfid` | number | `0` | Manufacturer id. |
 | `recent[].confirmed` | bool | `false` | Confirmed delivery. |
-| `recent[].blocks` | number | `1` | Data blocks read. |
-| `recent[].blocks_expected` | number | `1` | Data blocks the header announced. |
+| `recent[].blocks` | number | `0` | Data blocks read. |
+| `recent[].blocks_expected` | number | `0` | Data blocks the header announced. |
 | `recent[].bad_blocks` | number | `0` | Blocks that failed their CRC-9. |
 | `recent[].block_errors` | array of numbers | `[]` | Bit errors corrected per block. |
-| `recent[].crc_ok` | bool or null | `false` | The packet's CRC-32 passed (null: not a whole packet). |
-| `recent[].sndcp` | array of 4 numbers or null | `[0, 1, 7, 4]` | SNDCP header: type, NSAPI, IP compression, UDP compression. |
+| `recent[].crc_ok` | bool or null | `true` | The packet's CRC-32 passed (null: not a whole packet). |
+| `recent[].sndcp` | array of 4 numbers or null | `[5, 1, 0, 0]` | SNDCP header: type, NSAPI, IP compression, UDP compression. |
 | `recent[].ip` | object or null |  | The IP header, when it carries IP. |
 | `recent[].ip.src` | string | `"10.51.1.116"` | Source address. |
-| `recent[].ip.dst` | string | `"10.71.192.57"` | Destination address. |
+| `recent[].ip.dst` | string | `"10.71.193.200"` | Destination address. |
 | `recent[].ip.protocol` | number | `17` | IP protocol (17: UDP). |
-| `recent[].ip.total_len` | number | `37` | IP length. |
-| `recent[].ip.src_port` | number or null | `49516` | UDP source port. |
-| `recent[].ip.dst_port` | number or null | `4005` | UDP destination port. |
-| `recent[].service` | string or null | `"ars"` | The service its UDP port names (LRRP, ARS...). |
-| `recent[].bytes` | number | `12` | User data bytes. |
+| `recent[].ip.total_len` | number | `103` | IP length. |
+| `recent[].ip.src_port` | number or null | `4001` | UDP source port. |
+| `recent[].ip.dst_port` | number or null | `4001` | UDP destination port. |
+| `recent[].service` | string or null | `"lrrp"` | The service its UDP port names (LRRP, ARS...). |
+| `recent[].bytes` | number | `0` | User data bytes. |
 | `recent[].opcode` | number or null |  | AMBTC: the opcode. |
-| `recent[].response` | number or null | `130` | Response: the response octet. |
-| `recent[].hex` | string | `"f0ffffffffffffff03d74f22"` | The user data, hex (at most 64 bytes). |
+| `recent[].response` | number or null | `12` | Response: the response octet. |
+| `recent[].hex` | string | `""` | The user data, hex (at most 64 bytes). |
 
 ## `GET /api/v1/activity/sites`
 
@@ -635,13 +635,13 @@ Sites with history; where it is kept, its size and limits.
 | `sites[].site` | string | `"clay_county_public_safety_simulcast"` | The site. |
 | `sites[].label` | string | `"Simulcast"` | Its name. |
 | `sites[].system` | string or null | `"clay_county_public_safety"` | Its system. |
-| `sites[].calls` | number | `345865` | Calls kept. |
+| `sites[].calls` | number | `346966` | Calls kept. |
 | `sites[].first_ms` | number | `1790915468295` | The oldest call (unix ms). |
-| `sites[].last_ms` | number | `1794513943550` | The newest call (unix ms). |
+| `sites[].last_ms` | number | `1794520916842` | The newest call (unix ms). |
 | `database` | string | `"/mnt/sd/scanner-history.sqlite"` | The history file. |
 | `on_sd` | bool | `true` | On the card (else in RAM, lost on restart). |
-| `size_bytes` | number | `213781200` | The file's size. |
-| `used_bytes` | number | `209108992` | Space its data uses. |
+| `size_bytes` | number | `214280912` | The file's size. |
+| `used_bytes` | number | `209637376` | Space its data uses. |
 | `max_bytes` | number | `2147483648` | The limit; the oldest calls go past it. |
 | `retention_days` | number | `365` | Calls older than this go. |
 
@@ -654,21 +654,21 @@ Calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`)
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568389` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968389` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557035` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957035` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `summary` | object |  | Totals over the window. |
-| `summary.calls` | number | `6853` | Calls. |
-| `summary.followed` | number | `1683` | Calls a lane followed. |
-| `summary.encrypted` | number | `4168` | Encrypted calls. |
-| `summary.voice_s` | number | `5022.0` | Decoded voice, s. |
-| `summary.clear_grant_s` | number | `4687.523` | Grant time of clear calls, s. |
-| `summary.encrypted_grant_s` | number | `16894.704` | Grant time of encrypted calls, s. |
-| `summary.voice_per_grant` | number or null | `0.7112342293156814` | Voice time per grant time of the calls with voice; null without any. |
-| `summary.talkgroups` | number | `24` | Talkgroups heard. |
-| `summary.radios` | number | `519` | Radios heard. |
-| `summary.first_ms` | number or null | `1794427201818` | The first call (unix ms). |
-| `summary.last_ms` | number or null | `1794513943550` | The last call (unix ms). |
+| `summary.calls` | number | `7077` | Calls. |
+| `summary.followed` | number | `1599` | Calls a lane followed. |
+| `summary.encrypted` | number | `4097` | Encrypted calls. |
+| `summary.voice_s` | number | `4753.44` | Decoded voice, s. |
+| `summary.clear_grant_s` | number | `6480.202` | Grant time of clear calls, s. |
+| `summary.encrypted_grant_s` | number | `16725.794` | Grant time of encrypted calls, s. |
+| `summary.voice_per_grant` | number or null | `0.7131540666272991` | Voice time per grant time of the calls with voice; null without any. |
+| `summary.talkgroups` | number | `25` | Talkgroups heard. |
+| `summary.radios` | number | `537` | Radios heard. |
+| `summary.first_ms` | number or null | `1794434402911` | The first call (unix ms). |
+| `summary.last_ms` | number or null | `1794520916842` | The last call (unix ms). |
 
 ## `GET /api/v1/activity/talkgroups`
 
@@ -679,19 +679,19 @@ Talkgroups by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568420` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968420` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557044` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957044` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Talkgroups by time, most first (`limit`). |
 | `items[]` | object |  | One talkgroup. |
 | `items[].tg` | number | `402` | The talkgroup. |
-| `items[].calls` | number | `1631` | Calls. |
-| `items[].encrypted` | number | `1631` | Encrypted calls. |
+| `items[].calls` | number | `1429` | Calls. |
+| `items[].encrypted` | number | `1429` | Encrypted calls. |
 | `items[].voice_s` | number | `0.0` | Decoded voice, seconds. |
-| `items[].grant_s` | number | `6900.729` | Grant time of calls with no decoded voice, seconds. |
-| `items[].last_ms` | number | `1794513712984` | The newest call (unix ms). |
+| `items[].grant_s` | number | `6121.307` | Grant time of calls with no decoded voice, seconds. |
+| `items[].last_ms` | number | `1794520885192` | The newest call (unix ms). |
 | `items[].alias` | string or null | `"CCSO 402"` | The name in the system. |
-| `items[].radios` | number | `135` | Radios heard on it. |
+| `items[].radios` | number | `130` | Radios heard on it. |
 
 ## `GET /api/v1/activity/radios`
 
@@ -702,17 +702,17 @@ Radios by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568451` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968451` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557076` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957076` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Radios by time, most first (`limit`). |
 | `items[]` | object |  | One radio. |
 | `items[].unit` | number | `1003` | The radio. |
-| `items[].calls` | number | `758` | Calls. |
-| `items[].encrypted` | number | `758` | Encrypted calls. |
+| `items[].calls` | number | `662` | Calls. |
+| `items[].encrypted` | number | `662` | Encrypted calls. |
 | `items[].voice_s` | number | `0.0` | Decoded voice, seconds. |
-| `items[].grant_s` | number | `2394.581` | Grant time of calls with no decoded voice, seconds. |
-| `items[].last_ms` | number | `1794513712984` | The newest call (unix ms). |
+| `items[].grant_s` | number | `2116.353` | Grant time of calls with no decoded voice, seconds. |
+| `items[].last_ms` | number | `1794520885192` | The newest call (unix ms). |
 | `items[].alias` | string or null | `"CCSO Dispatcher"` | The name in the system. |
 | `items[].talkgroups` | number | `1` | Talkgroups it used. |
 
@@ -725,20 +725,20 @@ The talkgroups a radio used, its affiliations and registrations.
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568498` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968498` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557109` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957109` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `radio` | object |  | The radio. |
 | `radio.unit` | number | `1003` | The radio. |
 | `radio.alias` | string or null | `"CCSO Dispatcher"` | Its name. |
 | `radio.talkgroups` | array |  | Talkgroups it used. |
 | `radio.talkgroups[]` | object |  | One talkgroup. |
 | `radio.talkgroups[].tg` | number | `402` | The talkgroup. |
-| `radio.talkgroups[].calls` | number | `758` | Calls. |
-| `radio.talkgroups[].encrypted` | number | `758` | Encrypted calls. |
+| `radio.talkgroups[].calls` | number | `662` | Calls. |
+| `radio.talkgroups[].encrypted` | number | `662` | Encrypted calls. |
 | `radio.talkgroups[].voice_s` | number | `0.0` | Decoded voice, seconds. |
-| `radio.talkgroups[].grant_s` | number | `2394.581` | Grant time of calls with no decoded voice, seconds. |
-| `radio.talkgroups[].last_ms` | number | `1794513712984` | The newest call (unix ms). |
+| `radio.talkgroups[].grant_s` | number | `2116.353` | Grant time of calls with no decoded voice, seconds. |
+| `radio.talkgroups[].last_ms` | number | `1794520885192` | The newest call (unix ms). |
 | `radio.talkgroups[].alias` | string or null | `"CCSO 402"` | The name in the system. |
 | `radio.events` | array | `[]` | Affiliations and registrations. |
 | `radio.events[]` | object |  | One kind of event on one talkgroup. |
@@ -758,25 +758,25 @@ A talkgroup's radios and encryption history.
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568529` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968529` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557115` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957115` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `talkgroup` | object |  | The talkgroup. |
 | `talkgroup.tg` | number | `402` | The talkgroup. |
 | `talkgroup.alias` | string or null | `"CCSO 402"` | Its name. |
 | `talkgroup.radios` | array |  | Radios heard on it. |
 | `talkgroup.radios[]` | object |  | One radio. |
 | `talkgroup.radios[].unit` | number | `1003` | The radio. |
-| `talkgroup.radios[].calls` | number | `758` | Calls. |
-| `talkgroup.radios[].encrypted` | number | `758` | Encrypted calls. |
+| `talkgroup.radios[].calls` | number | `662` | Calls. |
+| `talkgroup.radios[].encrypted` | number | `662` | Encrypted calls. |
 | `talkgroup.radios[].voice_s` | number | `0.0` | Decoded voice, seconds. |
-| `talkgroup.radios[].grant_s` | number | `2394.581` | Grant time of calls with no decoded voice, seconds. |
-| `talkgroup.radios[].last_ms` | number | `1794513712984` | The newest call (unix ms). |
+| `talkgroup.radios[].grant_s` | number | `2116.353` | Grant time of calls with no decoded voice, seconds. |
+| `talkgroup.radios[].last_ms` | number | `1794520885192` | The newest call (unix ms). |
 | `talkgroup.radios[].alias` | string or null | `"CCSO Dispatcher"` | The name in the system. |
-| `talkgroup.calls` | number | `1631` | Calls. |
-| `talkgroup.encrypted` | number | `1631` | Encrypted calls. |
-| `talkgroup.first_encrypted_ms` | number or null | `1794427201818` | The first encrypted call (unix ms). |
-| `talkgroup.last_encrypted_ms` | number or null | `1794513712984` | The last encrypted call. |
+| `talkgroup.calls` | number | `1429` | Calls. |
+| `talkgroup.encrypted` | number | `1429` | Encrypted calls. |
+| `talkgroup.first_encrypted_ms` | number or null | `1794434402911` | The first encrypted call (unix ms). |
+| `talkgroup.last_encrypted_ms` | number or null | `1794520885192` | The last encrypted call. |
 | `talkgroup.last_clear_ms` | number or null |  | The last clear call. |
 | `talkgroup.affiliated_radios` | number | `875` | Radios that affiliated to it. |
 
@@ -789,19 +789,19 @@ Calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568591` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968591` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557171` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957171` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `bucket_ms` | number | `3600000` | The bucket's length (an hour or a day). |
 | `tz` | number | `0` | The time zone the days are cut in, minutes east of UTC. |
 | `buckets` | array |  | One per hour or day, oldest first (empty ones included). |
 | `buckets[]` | object |  | One bucket. |
-| `buckets[].t` | number | `1794427200000` | Its start (unix ms). |
-| `buckets[].calls` | number | `490` | Calls. |
-| `buckets[].encrypted` | number | `289` | Encrypted calls. |
-| `buckets[].voice_s` | number | `548.82` | Decoded voice, s. |
-| `buckets[].clear_grant_s` | number | `14.653` | Grant time of clear calls, s. |
-| `buckets[].encrypted_grant_s` | number | `1208.519` | Grant time of encrypted calls, s. |
+| `buckets[].t` | number | `1794434400000` | Its start (unix ms). |
+| `buckets[].calls` | number | `468` | Calls. |
+| `buckets[].encrypted` | number | `305` | Encrypted calls. |
+| `buckets[].voice_s` | number | `565.74` | Decoded voice, s. |
+| `buckets[].clear_grant_s` | number | `6.513` | Grant time of clear calls, s. |
+| `buckets[].encrypted_grant_s` | number | `1185.197` | Grant time of encrypted calls, s. |
 
 ## `GET /api/v1/activity/calls`
 
@@ -812,56 +812,56 @@ Calls newest first in `/calls`' shape with names, recordings and alert tones (`t
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568624` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968624` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557187` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957187` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
-| `items[].call` | number | `346294` | The call's id (also its recording's id). |
+| `items[].call` | number | `347395` | The call's id (also its recording's id). |
 | `items[].site` | string | `"clay_county_public_safety_simulcast"` | The site it was heard on. |
-| `items[].tg` | number | `700` | The talkgroup; for a private call, the called radio. |
-| `items[].tg_name` | string or null | `"Orange Park PD"` | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `items[].source` | number or null | `3432011` | The calling radio: the grant's, else the voice's. |
-| `items[].source_name` | string or null | `"CCFR Dispatcher"` | The calling radio's name. |
+| `items[].tg` | number | `600` | The talkgroup; for a private call, the called radio. |
+| `items[].tg_name` | string or null | `"GCSPD Main"` | The talkgroup's name in the site's system (the called radio's for a private call). |
+| `items[].source` | number or null | `1021` | The calling radio: the grant's, else the voice's. |
+| `items[].source_name` | string or null | `"CCSO Dispatcher"` | The calling radio's name. |
 | `items[].speaker` | number or null |  | The radio the voice link control named last (who is talking now). |
-| `items[].sources` | array of numbers | `[3432011]` | Every radio heard in the call, in order. |
-| `items[].freq_hz` | number or null | `858437500` | The traffic channel's downlink. |
-| `items[].channel` | string or null | `"0-1189"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
+| `items[].sources` | array of numbers | `[1021]` | Every radio heard in the call, in order. |
+| `items[].freq_hz` | number or null | `857987500` | The traffic channel's downlink. |
+| `items[].channel` | string or null | `"0-1117"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `items[].slot` | number or null |  | DMR: the timeslot. |
 | `items[].encrypted` | bool | `true` | Encrypted (not followed). |
 | `items[].emergency` | bool | `false` | Granted as an emergency call. |
 | `items[].private` | bool | `false` | A unit-to-unit call. |
 | `items[].not_followed` | string or null | `"ignored"` | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `items[].lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `items[].started_unix_ms` | number | `1794513943550` | The grant. |
-| `items[].first_voice_unix_ms` | number or null | `1794513855468` | The first voice frame. |
-| `items[].ended_unix_ms` | number or null | `1794513944730` | The close; null while open. |
-| `items[].open_ms` | number or null | `1180` | From the grant to the close; null while open. |
-| `items[].grant_ms` | number or null | `1108` | From the grant to its last update on the control channel. |
-| `items[].close` | string or null | `"site_switch"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
-| `items[].end_lc` | string or null | `"channel_user"` | The end-of-transmission marker seen, if any. |
+| `items[].started_unix_ms` | number | `1794520916842` | The grant. |
+| `items[].first_voice_unix_ms` | number or null | `1794520763632` | The first voice frame. |
+| `items[].ended_unix_ms` | number or null | `1794520918676` | The close; null while open. |
+| `items[].open_ms` | number or null | `1834` | From the grant to the close; null while open. |
+| `items[].grant_ms` | number or null | `1834` | From the grant to its last update on the control channel. |
+| `items[].close` | string or null | `"timeout"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
+| `items[].end_lc` | string or null | `"talk_complete"` | The end-of-transmission marker seen, if any. |
 | `items[].voice_frames` | number | `0` | Voice frames decoded (20 ms each). |
 | `items[].codec` | string or null | `"imbe"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `items[].frame_errors` | number or null | `0` | Voice frames the vocoder found errors in; known once the call is stored. |
 | `items[].recording` | object or null |  | Its recording (as an item of `GET /api/v1/recordings`), once saved. |
-| `items[].recording.id` | number | `346281` | The call's id. |
+| `items[].recording.id` | number | `347354` | The call's id. |
 | `items[].recording.site` | string | `"clay_county_public_safety_simulcast"` | The site (empty for recordings older than sites). |
 | `items[].recording.tg` | number | `300` | The talkgroup. |
-| `items[].recording.source` | number or null | `1012` | The calling radio. |
-| `items[].recording.started_unix_ms` | number | `1794513855271` | The call's start. |
-| `items[].recording.duration_ms` | number | `1620` | The recording's length. |
-| `items[].recording.bytes` | number | `25964` | The file's size. |
-| `items[].recording.file` | string | `"rec_1794513855271_346281_tg300_from1...` | The file's name. |
+| `items[].recording.source` | number or null | `3402099` | The calling radio. |
+| `items[].recording.started_unix_ms` | number | `1794520763306` | The call's start. |
+| `items[].recording.duration_ms` | number | `3060` | The recording's length. |
+| `items[].recording.bytes` | number | `49004` | The file's size. |
+| `items[].recording.file` | string | `"rec_1794520763306_347354_tg300_from3...` | The file's name. |
 | `items[].recording.store` | string | `"sd"` | `sd` or `ram`. |
 | `items[].recording.sd_pending` | bool | `false` | Still waiting to be written to the card (served from RAM meanwhile). |
-| `items[].recording.sources` | array of numbers | `[1012]` | Every radio heard. |
+| `items[].recording.sources` | array of numbers | `[3402099]` | Every radio heard. |
 | `items[].recording.lane` | number, absent for earlier runs' recordings | `1` | The lane that recorded it. |
 | `items[].recording.freq_hz` | number, absent for earlier runs' recordings | `858462500` | The traffic channel. |
 | `items[].recording.channel` | string, absent for earlier runs' recordings | `"0-1193"` | The channel as announced. |
 | `items[].recording.voice` | object, absent for earlier runs' recordings |  | The vocoder's counts. |
-| `items[].recording.voice.frames` | number | `81` | Voice frames. |
-| `items[].recording.voice.errors` | number | `4` | Frames with errors. |
-| `items[].recording.voice.silent` | number | `18` | Frames decoded as silence. |
+| `items[].recording.voice.frames` | number | `153` | Voice frames. |
+| `items[].recording.voice.errors` | number | `0` | Frames with errors. |
+| `items[].recording.voice.silent` | number | `153` | Frames decoded as silence. |
 | `items[].recording.bookmarks` | array | `[]` | The alert tones heard in it; the WAV carries each as a cue point with a label and a region. |
 | `items[].recording.bookmarks[]` | object |  | One bookmark. |
 | `items[].recording.bookmarks[].offset_ms` | number |  | Where it is in the recording. |
@@ -894,40 +894,40 @@ The alert tones heard in followed calls (console warbles and beeps, two-tone pag
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_county_public_safety_simulcast"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1794427568751` | Start (unix ms). |
-| `window.to_ms` | number | `1794513968751` | End (unix ms). |
-| `window.first_hour_ms` | number | `1794427200000` | The first whole hour the hourly totals use. |
+| `window.from_ms` | number | `1794434557315` | Start (unix ms). |
+| `window.to_ms` | number | `1794520957315` | End (unix ms). |
+| `window.first_hour_ms` | number | `1794434400000` | The first whole hour the hourly totals use. |
 | `groups` | array |  | Every alert in the window, grouped: one kind with the same tones (each within 2 %), most heard first. |
 | `groups[]` | object |  | One group. |
 | `groups[].kind` | string | `"warble"` | The kind (as an alert's `kind`). |
 | `groups[].tones_hz` | array of numbers | `[1506.1, 806.5]` | Its tones, highest first: the mean of its alerts', Hz. |
-| `groups[].count` | number | `72` | Alerts. |
-| `groups[].first_ms` | number | `1794427714587` | The first (unix ms). |
-| `groups[].last_ms` | number | `1794512493301` | The newest (unix ms). |
+| `groups[].count` | number | `71` | Alerts. |
+| `groups[].first_ms` | number | `1794435423484` | The first (unix ms). |
+| `groups[].last_ms` | number | `1794520518208` | The newest (unix ms). |
 | `groups[].sources` | array of numbers | `[1011, 1014, 1013]` | The radios that sent it, most first. |
 | `groups[].talkgroups` | array of numbers | `[300]` | The talkgroups it was on, most first. |
 | `items` | array |  | The newest alerts (`limit`), newest first. |
 | `items[]` | object |  | One alert tone. |
 | `items[]` | object |  | One alert tone. |
 | `items[].site` | string | `"clay_county_public_safety_simulcast"` | The site. |
-| `items[].call_id` | number | `346122` | The call it was heard in. |
-| `items[].call_started_ms` | number | `1794512492833` | That call's grant (with `call_id`, it names the call). |
-| `items[].at_ms` | number | `1794512493301` | When its first tone began (unix ms). |
+| `items[].call_id` | number | `347303` | The call it was heard in. |
+| `items[].call_started_ms` | number | `1794520517560` | That call's grant (with `call_id`, it names the call). |
+| `items[].at_ms` | number | `1794520518208` | When its first tone began (unix ms). |
 | `items[].tg` | number | `300` | The talkgroup. |
-| `items[].source` | number or null | `1011` | The radio that sent it (a dispatch console's ID for its alerts). |
+| `items[].source` | number or null | `1014` | The radio that sent it (a dispatch console's ID for its alerts). |
 | `items[].lane` | number | `1` | The lane that followed the call. |
 | `items[].kind` | string | `"warble"` | `warble` (two tones alternating), `pulsed` (one tone repeated), `steady` (one long tone), `two_tone` (a two-tone sequential page: tone A, then tone B) or `tones` (three or more). |
-| `items[].tones_hz` | array of numbers | `[806.5, 1506.2]` | Its distinct tones in the order first heard, Hz (the vocoder rebuilds a tone to within about 1 %). |
-| `items[].segments` | number | `6` | Its tones, counting each repeat. |
-| `items[].offset_ms` | number | `8` | From the call's first audio to its first tone: where it is in the recording. |
-| `items[].duration_ms` | number | `1200` | From its first tone's start to its last tone's end. |
+| `items[].tones_hz` | array of numbers | `[1506.2, 806.5]` | Its distinct tones in the order first heard, Hz (the vocoder rebuilds a tone to within about 1 %). |
+| `items[].segments` | number | `4` | Its tones, counting each repeat. |
+| `items[].offset_ms` | number | `68` | From the call's first audio to its first tone: where it is in the recording. |
+| `items[].duration_ms` | number | `820` | From its first tone's start to its last tone's end. |
 | `items[].tg_name` | string or null | `"CCFR Primary"` | The talkgroup's name. |
 | `items[].source_name` | string or null | `"CCFR Dispatcher"` | The sending radio's name. |
 | `items[].recorded` | bool | `true` | Its call's recording is kept (`/api/v1/recordings/{call_id}`). |
 | `items[].dispatch` | object or null |  | The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 10 s of its last; other radios' between are passed over), else the longest of those with 3 s; null when none, or not stored yet. |
-| `items[].dispatch.call_id` | number | `346124` | That call. |
-| `items[].dispatch.started_ms` | number | `1794512494587` | Its grant. |
-| `items[].dispatch.voice_ms` | number | `6840` | Its voice (past the tone when it is the alert's own call). |
+| `items[].dispatch.call_id` | number | `347304` | That call. |
+| `items[].dispatch.started_ms` | number | `1794520518789` | Its grant. |
+| `items[].dispatch.voice_ms` | number | `10440` | Its voice (past the tone when it is the alert's own call). |
 | `items[].dispatch.offset_ms` | number | `0` | Where its speech starts in its recording. |
 | `items[].dispatch.recorded` | bool | `true` | Its recording is kept. |
 
@@ -957,8 +957,8 @@ The receive window from the wideband spectrometer (`bins`), with the control cha
 | `lo_hz` | number | `855993750` | The window's centre. |
 | `sample_rate_hz` | number | `12000000` | Its width. |
 | `control_hz` | number | `860962500` | The control channel. |
-| `lanes_hz` | array of 2 numbers or null | `[null, 857987500]` | Each lane's channel. |
-| `db` | array of numbers | `[-106.8114, -106.8114, -106.58676, -1...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
+| `lanes_hz` | array of 2 numbers or null | `[null, 858437500]` | Each lane's channel. |
+| `db` | array of numbers | `[-107.15209, -107.15209, -107.15209, ...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
 | `fresh` | bool | `true` | A new frame (false: the last one again, during a scan or when none came in 300 ms). |
 
 ## `GET /api/v1/events`
@@ -969,17 +969,17 @@ The event log after `after` (newest `limit`; housekeeping too with `routine=true
 |-------|------|---------|---------|
 | `events` | array |  | Events after `after`, oldest first. |
 | `events[]` | object |  | One event. |
-| `events[].seq` | number | `82435` | Its sequence number (ask for those after it next). |
-| `events[].unix_ms` | number | `1794513887002` | When. |
+| `events[].seq` | number | `19739` | Its sequence number (ask for those after it next). |
+| `events[].unix_ms` | number | `1794520901360` | When. |
 | `events[].part` | string | `"scanner"` | Whose line it is: `scanner`, `tv` or `radio` (the radio's own: its start, clock, crystal, mode, the configuration replaced, a download of what is on the card). `part=` asks for one. |
 | `events[].source` | string | `"p25"` | `p25`, `dmr` (a control channel message) or `system` (what the radio or a service did). |
-| `events[].class` | string | `"U_DE_REG_ACK"` | The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...). |
-| `events[].text` | string | `"TSBK2 U_DE_REG_ACK WACN:BEE00 SYS:8A...` | The event. |
+| `events[].class` | string | `"GRP_VCH_GRANT"` | The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...). |
+| `events[].text` | string | `"TSBK1 GRP_VCH_GRANT TG:00600 SRC:342...` | The event. |
 | `events[].routine` | bool | `false` | Housekeeping (left out unless `routine=true`). |
 | `events[].valid` | bool | `true` | The message passed its checks. |
 | `events[].slot` | number, absent when none |  | DMR: the timeslot. |
-| `events[].tg` | number, absent when none | `700` | The talkgroup it names. |
-| `events[].unit` | number, absent when none | `3404027` | The radio it names. |
+| `events[].tg` | number, absent when none | `600` | The talkgroup it names. |
+| `events[].unit` | number, absent when none | `3422001` | The radio it names. |
 
 ## `GET /api/v1/system`
 
@@ -987,21 +987,21 @@ The board's health: load, memory, CPU per core and per scanner thread, temperatu
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `at_unix_ms` | number | `1794513967299` | When it was sampled (every 5 s). |
-| `board_uptime_s` | number or null | `33488.37` | Since the board booted. |
-| `load` | array of 3 numbers or null | `[0.51, 0.45, 0.43]` | Load average over 1, 5 and 15 minutes. |
+| `at_unix_ms` | number | `1794520956736` | When it was sampled (every 5 s). |
+| `board_uptime_s` | number or null | `40477.68` | Since the board booted. |
+| `load` | array of 3 numbers or null | `[0.49, 0.45, 0.39]` | Load average over 1, 5 and 15 minutes. |
 | `mem_total_kb` | number or null | `999600` | Memory. |
-| `mem_available_kb` | number or null | `764556` | Memory free for use. |
-| `core_cpu_pct` | array of numbers | `[32.1, 36.9]` | Each core's use, %. |
-| `rss_kb` | number or null | `104272` | The scanner's memory. |
-| `threads` | number or null | `14` | The scanner's threads. |
-| `cpu_pct` | number or null | `72.3` | The scanner's share of one core, %. |
+| `mem_available_kb` | number or null | `766764` | Memory free for use. |
+| `core_cpu_pct` | array of numbers | `[33.0, 32.0]` | Each core's use, %. |
+| `rss_kb` | number or null | `101548` | The scanner's memory. |
+| `threads` | number or null | `16` | The scanner's threads. |
+| `cpu_pct` | number or null | `65.0` | The scanner's share of one core, %. |
 | `thread_cpu` | array |  | The scanner's threads by use, busiest first. |
 | `thread_cpu[]` | object |  | One thread. |
-| `thread_cpu[].name` | string | `"adsb-listen"` | Its name. |
-| `thread_cpu[].cpu_pct` | number | `58.3` | Its share of one core, %. |
-| `ad9361_temp_c` | number or null | `26.316` | The AD9361's temperature, °C. |
-| `zynq_temp_c` | number or null | `51.4` | The Zynq's temperature, °C. |
+| `thread_cpu[].name` | string | `"tokio-rt-worker"` | Its name. |
+| `thread_cpu[].cpu_pct` | number | `16.4` | Its share of one core, %. |
+| `ad9361_temp_c` | number or null | `28.07` | The AD9361's temperature, °C. |
+| `zynq_temp_c` | number or null | `53.5` | The Zynq's temperature, °C. |
 
 ## `GET /api/v1/iq/control.wav`
 
@@ -1035,27 +1035,27 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.tsbks_20s.c4fm` | number | `0` | By the C4FM demodulator. |
 | `control.msgs_per_s` | number or null |  | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null |  | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `59` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `66` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `0.0` | Share of one core the decode thread uses, %. |
-| `control.carrier_offset_hz` | number, absent until measured | `0.0` | The carrier's offset from the tuning, signal minus NCO, Hz: the DMR equaliser's, or the P25 LSM carrier loop's mean over the last second while a signal was on the channel (absent while the site decodes as C4FM). |
+| `control.carrier_offset_hz` | number, absent until measured | `-0.0` | The carrier's offset from the tuning, signal minus NCO, Hz: the DMR equaliser's, or the P25 LSM carrier loop's mean over the last second while a signal was on the channel (absent while the site decodes as C4FM). |
 | `control.loop` | object, absent at DMR sites and while the LSM decoder does not run |  | P25: the LSM decoder's carrier loop, each second. |
-| `control.loop.pll` | number | `-0.014959434` | The loop's phase correction per symbol, radians. |
-| `control.loop.offset_hz` | number | `11.428165` | The carrier offset it tracks, signal minus NCO, Hz. |
+| `control.loop.pll` | number | `0.048976883` | The loop's phase correction per symbol, radians. |
+| `control.loop.offset_hz` | number | `-37.41558` | The carrier offset it tracks, signal minus NCO, Hz. |
 | `control.loop.limit` | number | `0.65` | The correction's limit, radians per symbol (half of it or more: the loop runs on noise). |
 | `control.loop.held` | bool | `false` | No signal on the channel: the loops hold. |
 | `control.channel_plan_entries` | number | `6` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
-| `control.grants` | number | `16` | Voice grants decoded since the site went live. |
+| `control.grants` | number | `8` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | The control channel's IQ delivered to the decoder (blocks of up to 1008 samples, 20 ms). |
-| `control.input.blocks` | number | `77` | Blocks delivered. |
+| `control.input.blocks` | number | `78` | Blocks delivered. |
 | `control.input.dropped` | number | `0` | Blocks dropped because the decoder was behind. |
 | `control.input.gaps` | number | `0` | Blocks after missing samples. |
 | `control.counters` | object or null |  | The decoders' counters; `protocol` says which. |
 | `control.counters.protocol` | string | `"p25"` | `p25` (with `lsm` and `c4fm`) or `dmr` (with `messages` and `demod`). |
 | `control.counters.lsm` | object |  | P25: the LSM demodulator's framer. |
-| `control.counters.lsm.dibits` | number | `4833` | Dibits framed. |
-| `control.counters.lsm.dibit_hist` | array of 4 numbers | `[1430, 865, 1528, 1010]` | Dibits by value (0 to 3). |
+| `control.counters.lsm.dibits` | number | `4736` | Dibits framed. |
+| `control.counters.lsm.dibit_hist` | array of 4 numbers | `[1374, 849, 1509, 1004]` | Dibits by value (0 to 3). |
 | `control.counters.lsm.sync_hits` | number | `13` | Frame syncs found. |
 | `control.counters.lsm.sync_distance_hist` | array of 25 numbers | `[13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,...` | Correlator distance per dibit while hunting for sync (the last bucket: 24 or more). |
 | `control.counters.lsm.nid_bch_failures` | number | `0` | NIDs the BCH code could not correct. |
@@ -1070,12 +1070,12 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.counters.lsm.tsbk_ok_by_pos` | array of 3 numbers | `[13, 13, 12]` | TSBKs that passed, by position. |
 | `control.counters.lsm.tsbk_trellis_failures` | number | `0` | TSBKs the trellis decoder could not decode. |
 | `control.counters.lsm.tsbk_crc_failures` | number | `0` | TSBKs that failed their CRC. |
-| `control.counters.lsm.tsbk_crc_plain` | number | `22` | TSBKs whose CRC matched the standard convention. |
-| `control.counters.lsm.tsbk_crc_xored` | number | `16` | TSBKs whose CRC matched with the final XOR left out (some sites send this). |
+| `control.counters.lsm.tsbk_crc_plain` | number | `20` | TSBKs whose CRC matched the standard convention. |
+| `control.counters.lsm.tsbk_crc_xored` | number | `18` | TSBKs whose CRC matched with the final XOR left out (some sites send this). |
 | `control.counters.lsm.tsbk_unknown_opcode` | number | `0` | TSBKs that passed but have an opcode the decoder does not parse. |
-| `control.counters.lsm.tsbk_opcodes_ok` | array of 64 numbers | `[1, 0, 4, 0, 0, 2, 0, 0, 0, 3, 0, 1, ...` | TSBKs passed, by opcode (0 to 63). |
+| `control.counters.lsm.tsbk_opcodes_ok` | array of 64 numbers | `[2, 0, 2, 0, 0, 3, 0, 0, 0, 3, 0, 2, ...` | TSBKs passed, by opcode (0 to 63). |
 | `control.counters.lsm.tsbk_opcodes_failed` | array of 64 numbers | `[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...` | TSBKs failed, by opcode. |
-| `control.counters.lsm.tsbk_mfid_ok` | array of 4 numbers | `[30, 8, 0, 0]` | TSBKs passed by manufacturer: standard, Motorola (0x90), Harris (0xA4), other. |
+| `control.counters.lsm.tsbk_mfid_ok` | array of 4 numbers | `[27, 11, 0, 0]` | TSBKs passed by manufacturer: standard, Motorola (0x90), Harris (0xA4), other. |
 | `control.counters.lsm.hdus` | number | `0` | Header data units (a call's start). |
 | `control.counters.lsm.ldu1s` | number | `0` | Logical data units 1 (voice, link control). |
 | `control.counters.lsm.ldu2s` | number | `0` | Logical data units 2 (voice, encryption sync). |
@@ -1133,7 +1133,7 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `lanes` | array |  | Each traffic lane of the live site (empty when none is live). |
 | `lanes[]` | object |  | One lane. |
 | `lanes[].lane` | number | `1` | 1 or 2. |
-| `lanes[].tuned_hz` | number or null | `857987500` | The channel it is tuned to. |
+| `lanes[].tuned_hz` | number or null | `858437500` | The channel it is tuned to. |
 | `lanes[].call` | number or null |  | The call it carries. |
 | `lanes[].following_tg` | number or null |  | The talkgroup the follower keeps it for. |
 | `lanes[].on_data_channel` | bool | `false` | Waiting on the site's data channel between calls. |
@@ -1179,8 +1179,8 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `lanes[].counters.demod.fine_syncs` | number |  | Syncs confirmed where the next burst was expected. |
 | `lanes[].counters.demod.fine_sync_losses` | number |  | Expected syncs that were not there (fine sync dropped). |
 | `lanes[].loop` | object, absent unless the lane runs the LSM |  | P25: its LSM carrier loop. |
-| `lanes[].loop.pll` | number | `0.008085169` | The loop's phase correction per symbol, radians. |
-| `lanes[].loop.offset_hz` | number | `-6.176614` | The carrier offset it tracks, signal minus NCO, Hz. |
+| `lanes[].loop.pll` | number | `0.03609836` | The loop's phase correction per symbol, radians. |
+| `lanes[].loop.offset_hz` | number | `-27.577114` | The carrier offset it tracks, signal minus NCO, Hz. |
 | `lanes[].loop.limit` | number | `0.65` | The correction's limit, radians per symbol (half of it or more: the loop runs on noise). |
 | `lanes[].loop.held` | bool | `false` | No signal on the channel: the loops hold. |
 
@@ -1192,8 +1192,8 @@ The whole configuration as one document: radio settings, systems with their alia
 |-------|------|---------|---------|
 | `format` | string | `"scanner-config"` | `scanner-config`. |
 | `version` | number | `1` | The document's version. |
-| `build` | string | `"2026-11-12-uat1"` | The build that exported it. |
-| `exported_unix_ms` | number | `1794513969147` | When. |
+| `build` | string | `"2026-11-12-range1"` | The build that exported it. |
+| `exported_unix_ms` | number | `1794520957696` | When. |
 | `radio` | object |  | The radio settings. |
 | `radio.version` | number | `1` | The file format's version. |
 | `radio.gain` | object |  | The receiver gain setting. |
@@ -1226,6 +1226,9 @@ The whole configuration as one document: radio settings, systems with their alia
 | `radio.packet_data.follow` | bool | `true` | The last traffic lane waits on the site's data channel between calls; false: no lane waits there. |
 | `radio.units` | object |  | The units the pages show a reading in. The API's own fields stay as they are named. |
 | `radio.units.temperature` | string | `"fahrenheit"` | `celsius` or `fahrenheit`. |
+| `radio.position` | object or null |  | Where the radio is, once it has been told (`PUT /api/v1/radio/settings`); null until then. An aircraft's distance and bearing are taken from it. |
+| `radio.position.lat` | number | `30.0` | Its latitude, degrees north; south of the equator is negative. |
+| `radio.position.lon` | number | `-81.0` | Its longitude, degrees east; west of Greenwich is negative. |
 | `systems` | object |  | The systems file. |
 | `systems.version` | number | `1` | Its format's version. |
 | `systems.systems` | array |  | Every system. |
@@ -1338,6 +1341,9 @@ Radio configuration, hardware and tuning.
 | `config.packet_data.follow` | bool | `true` | The last traffic lane waits on the site's data channel between calls; false: no lane waits there. |
 | `config.units` | object |  | The units the pages show a reading in. The API's own fields stay as they are named. |
 | `config.units.temperature` | string | `"fahrenheit"` | `celsius` or `fahrenheit`. |
+| `config.position` | object or null |  | Where the radio is, once it has been told (`PUT /api/v1/radio/settings`); null until then. An aircraft's distance and bearing are taken from it. |
+| `config.position.lat` | number | `30.0` | Its latitude, degrees north; south of the equator is negative. |
+| `config.position.lon` | number | `-81.0` | Its longitude, degrees east; west of Greenwich is negative. |
 | `state` | object |  | What the radio keeps between runs. |
 | `state.version` | number | `1` | The file's version. |
 | `state.mode` | string | `"scanner"` | The unit's mode at start: `scanner`, `atsc`, `data`, `analog` or `adsb`. |
@@ -1348,12 +1354,12 @@ Radio configuration, hardware and tuning.
 | `state.aircraft` | string | `"both"` | The link the aircraft module listens to: `1090`, `978` or `both` in turn (`PUT /api/v1/adsb/link`). |
 | `state.live_site` | string or null | `"clay_county_public_safety_simulcast"` | The site made live at start. |
 | `state.crystal` | object or null |  | The stored crystal correction. |
-| `state.crystal.ppm` | number | `-0.714724844661541` | The correction. |
+| `state.crystal.ppm` | number | `-0.721578477257184` | The correction. |
 | `state.crystal.measured_at_lo_hz` | number | `855993750` | The LO it was measured at. |
-| `state.crystal.lo_shift_hz` | number | `612` | The shift it gave there. |
+| `state.crystal.lo_shift_hz` | number | `618` | The shift it gave there. |
 | `state.crystal.control_freq_hz` | number or null | `860962500` | The control channel it was measured on. |
 | `state.crystal.method` | string | `"calibration"` | How: `calibration` or `tracker`. |
-| `state.crystal.at_unix_ms` | number | `1794511666308` | When. |
+| `state.crystal.at_unix_ms` | number | `1794520505954` | When. |
 | `hardware` | object |  | What the scanner found at start. |
 | `hardware.core_version` | string or null | `"2.1.0"` | The radio core's version (the FPGA). |
 | `hardware.lanes` | number | `2` | Traffic lanes running. |
@@ -1361,58 +1367,58 @@ Radio configuration, hardware and tuning.
 | `tuning.preset` | string or null | `"12M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `12000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `855993750` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `614` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.7172219423331069` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `618` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.721578477257184` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `860962500` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"manual"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `tuning.gain.db` | number or null | `55.0` | The manual gain in dB; null under AGC. |
-| `tuning.lanes` | array of 2 numbers or null | `[null, 857987500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `tuning.rev` | number | `113` | Counts tuning changes; a new value means something above moved. |
+| `tuning.lanes` | array of 2 numbers or null | `[null, 858437500]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
+| `tuning.rev` | number | `70` | Counts tuning changes; a new value means something above moved. |
 | `readback` | object |  | Values read back from the hardware. |
-| `readback.lo_hz` | number or null | `855994364` | The AD9361's LO. |
+| `readback.lo_hz` | number or null | `855994366` | The AD9361's LO. |
 | `readback.gain_db` | number or null | `55.0` | The AD9361's gain. |
-| `readback.rssi_db` | number or null | `81.25` | The AD9361's RSSI (dB below full scale). |
+| `readback.rssi_db` | number or null | `84.25` | The AD9361's RSSI (dB below full scale). |
 | `readback.gain_mode` | string or null | `"manual"` | The AD9361's gain mode. |
 | `readback.control` | object or null |  | The control channel's lane (the radio core's lane 0). |
 | `readback.control.nco_hz` | number or null | `4968750.0` | Its NCO offset from the LO. |
 | `readback.control.packets` | bool | `true` | Its packets are on. |
-| `readback.control.tag` | number | `32` | The tag of its current tuning. |
+| `readback.control.tag` | number | `21` | The tag of its current tuning. |
 | `readback.lanes` | array of 2 objects or null |  | Each traffic lane (lane 1, lane 2). |
 | `readback.lanes[]` | object |  | One element. |
 | `readback.lanes[].nco_hz` | number or null | `0.0` | Its NCO offset from the LO. |
 | `readback.lanes[].packets` | bool | `false` | Its packets are on. |
-| `readback.lanes[].tag` | number | `46` | The tag of its current tuning. |
+| `readback.lanes[].tag` | number | `36` | The tag of its current tuning. |
 | `readback.ring` | object or null |  | The lane ring. |
 | `readback.ring.enabled` | bool | `true` | It is on. |
-| `readback.ring.last_buffer` | number | `486` | The last sub-buffer completed (0-127). |
-| `readback.ring.next_address` | number | `427417600` | The bus address of its next burst. |
-| `readback.sample_count` | number or null | `369346594179` | AD9361 samples since the radio core's reset (the clock of the packets' air times). |
-| `readback.adc_clips` | number or null | `2456791` | AD9361 samples at full scale since the core's reset. |
+| `readback.ring.last_buffer` | number | `70` | The last sub-buffer completed (0-127). |
+| `readback.ring.next_address` | number | `420597760` | The bus address of its next burst. |
+| `readback.sample_count` | number or null | `447425647470` | AD9361 samples since the radio core's reset (the clock of the packets' air times). |
+| `readback.adc_clips` | number or null | `4587893` | AD9361 samples at full scale since the core's reset. |
 | `readback.lane_counters` | array |  | Each core lane's packets since start (the control lane first). |
 | `readback.lane_counters[]` | object |  | One element. |
-| `readback.lane_counters[].packets` | number | `117916` | Packets read. |
-| `readback.lane_counters[].stale` | number | `100` | Packets of an older tuning, dropped. |
-| `readback.lane_counters[].settling` | number | `1754` | Samples dropped while the DDC settled after a retune. |
+| `readback.lane_counters[].packets` | number | `41487` | Packets read. |
+| `readback.lane_counters[].stale` | number | `60` | Packets of an older tuning, dropped. |
+| `readback.lane_counters[].settling` | number | `1150` | Samples dropped while the DDC settled after a retune. |
 | `readback.lane_counters[].lost` | number | `0` | Packets after samples the core dropped (its buffer full). |
 | `readback.lane_counters[].missed` | number | `0` | Packets missing between two of the lane's (the ring lapped the reader). |
 | `readback.packet_faults` | number | `0` | Packets that failed their checks (never written, or stale in the cache). |
 | `readback.spectrum` | object or null |  | The spectrum frames' reader, since boot. |
-| `readback.spectrum.frames` | number | `24604` | Frames read and checked. |
+| `readback.spectrum.frames` | number | `7012` | Frames read and checked. |
 | `readback.spectrum.missed` | number | `0` | Frames missing between two read (the ring lapped the reader). |
 | `readback.spectrum.faults` | number | `0` | Frames that failed their checks (never written, or stale in the cache). |
 | `readback.spectrum.last` | object or null |  | The newest frame's header. |
 | `readback.spectrum.last.peak` | bool | `false` | Peak hold; else average power. |
 | `readback.spectrum.last.aborted` | bool | `false` | An abort ended the frame before its integrations were done. |
 | `readback.spectrum.last.transforms` | number | `256` | Transforms integrated. |
-| `readback.spectrum.last.sample_index` | number | `369345219233` | The AD9361 sample index (since the core's reset) of its first transform's first sample. |
-| `readback.spectrum.last.sequence` | number | `352236` | Frames since the core's reset (wraps). |
-| `readback.spectrum.last.adc_clips` | number | `2456791` | AD9361 samples at full scale since the core's reset, at that first sample. |
+| `readback.spectrum.last.sample_index` | number | `447424285345` | The AD9361 sample index (since the core's reset) of its first transform's first sample. |
+| `readback.spectrum.last.sequence` | number | `426698` | Frames since the core's reset (wraps). |
+| `readback.spectrum.last.adc_clips` | number | `4587893` | AD9361 samples at full scale since the core's reset, at that first sample. |
 | `readback.capture` | object or null |  | The wideband capture ring. |
 | `readback.capture.enabled` | bool | `false` | It is capturing. |
-| `readback.capture.buffers` | number | `104` | Sub-buffers completed since the enable. |
+| `readback.capture.buffers` | number | `150` | Sub-buffers completed since the enable. |
 | `readback.capture.stopped` | bool | `false` | It stopped itself after a trigger. |
-| `readback.capture.start_index` | number | `369298400016` | The AD9361 sample index of its first sample (valid once a sub-buffer is done). |
+| `readback.capture.start_index` | number | `447364811182` | The AD9361 sample index of its first sample (valid once a sub-buffer is done). |
 | `readback.capture.overflow` | bool | `false` | Words were lost since it started: its samples are no longer contiguous. |
 
 ## `GET /api/v1/radio/crystal`
@@ -1421,28 +1427,28 @@ The crystal correction: applied, calibrated and tracked.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `ppm` | number | `-0.7172219423331069` | The correction applied. |
-| `lo_shift_hz` | number | `614` | The shift it gives at the current LO. |
+| `ppm` | number | `-0.721578477257184` | The correction applied. |
+| `lo_shift_hz` | number | `618` | The shift it gives at the current LO. |
 | `tracking` | bool | `true` | Tracking is on. |
 | `anchor_hz` | number | `50` | How far tracking may move from this run's calibration, Hz (0: no limit). |
-| `anchor_ppm` | number or null | `-0.714724844661541` | The calibration tracking is anchored to. |
+| `anchor_ppm` | number or null | `-0.721578477257184` | The calibration tracking is anchored to. |
 | `source` | string or null | `"p25_loop"` | What tracking measures now: `p25_loop`, `dmr_equaliser` or `spectrum`. |
-| `estimate_ppm` | number or null | `-0.7190424384913252` | Tracking's current estimate (applied each minute within the anchor). |
+| `estimate_ppm` | number or null | `-0.7209894932059918` | Tracking's current estimate (applied each minute within the anchor). |
 | `samples` | number | `300` | Readings in the estimate. |
-| `last_decision` | string or null | `"estimate -0.7189 ppm held: within 2 Hz"` | Tracking's last move. |
+| `last_decision` | string or null | `"estimate -0.7209 ppm held: within 2 Hz"` | Tracking's last move. |
 | `calibrating` | bool | `false` | A calibration runs now. |
 | `calibration` | object or null |  | This run's calibration. |
-| `calibration.at_unix_ms` | number | `1794511666308` | When it was measured. |
+| `calibration.at_unix_ms` | number | `1794520505953` | When it was measured. |
 | `calibration.lo_hz` | number | `855993750` | The LO at the time. |
 | `calibration.control_hz` | number | `860962500` | The control channel it measured. |
 | `calibration.source` | string | `"p25_loop"` | What it measured with: `p25_loop`, `dmr_equaliser` or `spectrum`. |
-| `calibration.spectrum_offset_hz` | number | `68.43126703985035` | The carrier's offset in the wideband spectrum. |
-| `calibration.spectrum_db` | number | `-58.887245` | The carrier's level in the spectrum, dB. |
-| `calibration.residual_hz` | number or null | `-70.2` | The decoder's mean carrier offset after the spectrum step. |
+| `calibration.spectrum_offset_hz` | number | `-21.03375176433474` | The carrier's offset in the wideband spectrum. |
+| `calibration.spectrum_db` | number | `-56.709145` | The carrier's level in the spectrum, dB. |
+| `calibration.residual_hz` | number or null | `18.666666666666668` | The decoder's mean carrier offset after the spectrum step. |
 | `calibration.residual_samples` | number | `30` | Readings averaged for it. |
-| `calibration.ppm_before` | number | `-0.7167351786544389` | The correction before. |
-| `calibration.ppm` | number | `-0.714724844661541` | The correction it set. |
-| `calibration.duration_ms` | number | `7007` | How long it took. |
+| `calibration.ppm_before` | number | `-0.7246937648006582` | The correction before. |
+| `calibration.ppm` | number | `-0.721578477257184` | The correction it set. |
+| `calibration.duration_ms` | number | `6931` | How long it took. |
 
 ## `GET /api/v1/recordings`
 
@@ -1450,34 +1456,34 @@ Recordings newest first (`limit`: 200 when not given, 2,000 at most; `site`), wi
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `total` | number | `99411` | Recordings of the listed site (all, without `site`). |
+| `total` | number | `99272` | Recordings of the listed site (all, without `site`). |
 | `items` | array |  | Recordings newest first (`limit`, `site`). |
 | `items[]` | object |  | One recording. |
-| `items[].id` | number | `346281` | The call's id. |
+| `items[].id` | number | `347354` | The call's id. |
 | `items[].site` | string | `"clay_county_public_safety_simulcast"` | The site (empty for recordings older than sites). |
 | `items[].tg` | number | `300` | The talkgroup. |
-| `items[].source` | number or null | `1012` | The calling radio. |
-| `items[].started_unix_ms` | number | `1794513855271` | The call's start. |
-| `items[].duration_ms` | number | `1620` | The recording's length. |
-| `items[].bytes` | number | `25964` | The file's size. |
-| `items[].file` | string | `"rec_1794513855271_346281_tg300_from1...` | The file's name. |
+| `items[].source` | number or null | `3402099` | The calling radio. |
+| `items[].started_unix_ms` | number | `1794520763306` | The call's start. |
+| `items[].duration_ms` | number | `3060` | The recording's length. |
+| `items[].bytes` | number | `49004` | The file's size. |
+| `items[].file` | string | `"rec_1794520763306_347354_tg300_from3...` | The file's name. |
 | `items[].store` | string | `"sd"` | `sd` or `ram`. |
 | `items[].sd_pending` | bool | `false` | Still waiting to be written to the card (served from RAM meanwhile). |
-| `items[].sources` | array of numbers | `[1012]` | Every radio heard. |
+| `items[].sources` | array of numbers | `[3402099]` | Every radio heard. |
 | `items[].lane` | number, absent for earlier runs' recordings | `1` | The lane that recorded it. |
 | `items[].freq_hz` | number, absent for earlier runs' recordings | `858462500` | The traffic channel. |
 | `items[].channel` | string, absent for earlier runs' recordings | `"0-1193"` | The channel as announced. |
 | `items[].voice` | object, absent for earlier runs' recordings |  | The vocoder's counts. |
-| `items[].voice.frames` | number | `81` | Voice frames. |
-| `items[].voice.errors` | number | `4` | Frames with errors. |
-| `items[].voice.silent` | number | `18` | Frames decoded as silence. |
+| `items[].voice.frames` | number | `153` | Voice frames. |
+| `items[].voice.errors` | number | `0` | Frames with errors. |
+| `items[].voice.silent` | number | `153` | Frames decoded as silence. |
 | `items[].bookmarks` | array | `[]` | The alert tones heard in it; the WAV carries each as a cue point with a label and a region. |
 | `items[].bookmarks[]` | object |  | One bookmark. |
-| `items[].bookmarks[].offset_ms` | number | `8` | Where it is in the recording. |
-| `items[].bookmarks[].duration_ms` | number | `1200` | How long the marked audio lasts. |
-| `items[].bookmarks[].label` | string | `"warble 806.5/1506.2 Hz"` | What it marks, like `warble 806.5/1506.2 Hz` (also the WAV's cue label). |
+| `items[].bookmarks[].offset_ms` | number | `68` | Where it is in the recording. |
+| `items[].bookmarks[].duration_ms` | number | `820` | How long the marked audio lasts. |
+| `items[].bookmarks[].label` | string | `"warble 1506.2/806.5 Hz"` | What it marks, like `warble 806.5/1506.2 Hz` (also the WAV's cue label). |
 | `items[].bookmarks[].kind` | string | `"warble"` | The alert tone's kind (as an alert's `kind`). |
-| `items[].bookmarks[].tones_hz` | array of numbers | `[806.5, 1506.2]` | The alert's tones, Hz. |
+| `items[].bookmarks[].tones_hz` | array of numbers | `[1506.2, 806.5]` | The alert's tones, Hz. |
 | `items[].locked` | bool | `false` | Kept for the locked days, in the card's locked tree (a call with alert tones, or locked by hand). |
 | `storage` | object |  | The stores. |
 | `storage.enabled` | bool | `true` | Recording is on. |
@@ -1487,11 +1493,11 @@ Recordings newest first (`limit`: 200 when not given, 2,000 at most; `site`), wi
 | `storage.ram.bytes` | number | `0` | Their size. |
 | `storage.ram_max_count` | number | `40` | The most RAM keeps. |
 | `storage.sd` | object |  | The card's recordings. |
-| `storage.sd.count` | number | `99411` | Recordings. |
-| `storage.sd.bytes` | number | `5009303698` | Their size. |
+| `storage.sd.count` | number | `99272` | Recordings. |
+| `storage.sd.bytes` | number | `4999656686` | Their size. |
 | `storage.locked` | object |  | The card's locked recordings (in `sd` too). |
-| `storage.locked.count` | number | `3927` | Recordings. |
-| `storage.locked.bytes` | number | `162999042` | Their size. |
+| `storage.locked.count` | number | `3939` | Recordings. |
+| `storage.locked.bytes` | number | `163574034` | Their size. |
 | `storage.sd_keep_days` | number | `30` | Days the card keeps a recording. |
 | `storage.locked_keep_days` | number | `365` | Days it keeps a locked one. |
 | `storage.sd_max_bytes` | number | `8589934592` | The space they may use. |
@@ -1501,24 +1507,24 @@ Recordings newest first (`limit`: 200 when not given, 2,000 at most; `site`), wi
 | `storage.sd_status.detail` | string or null |  | More on the state. |
 | `storage.sd_status.dir` | string | `"/mnt/sd/p25_recordings"` | The recordings' directory. |
 | `storage.sd_status.total_bytes` | number or null | `62209884160` | The card's size. |
-| `storage.sd_status.free_bytes` | number or null | `54391013376` | Free space. |
-| `storage.sd_status.writes_ok` | number | `27` | Recordings written. |
+| `storage.sd_status.free_bytes` | number or null | `54402383872` | Free space. |
+| `storage.sd_status.writes_ok` | number | `24` | Recordings written. |
 | `storage.sd_status.writes_failed` | number | `0` | Writes that failed. |
 | `storage.sd_status.fallbacks_to_ram` | number | `0` | Recordings kept in RAM because the card could not take them. |
-| `storage.sd_status.deletes` | number | `275` | Files deleted (retention, or by hand). |
-| `storage.sd_status.last_write_ms` | number or null | `30` | The last write's duration. |
-| `storage.sd_status.max_write_ms` | number | `102` | The longest write. |
+| `storage.sd_status.deletes` | number | `23` | Files deleted (retention, or by hand). |
+| `storage.sd_status.last_write_ms` | number or null | `37` | The last write's duration. |
+| `storage.sd_status.max_write_ms` | number | `61` | The longest write. |
 | `storage.sd_status.last_error` | string or null |  | The last error. |
-| `storage.sd_status.last_probe_unix_ms` | number or null | `1794513952132` | When the card was last checked. |
-| `storage.sd_status.indexed_at_boot` | number | `99659` | Recordings found on the card at start. |
-| `storage.sd_status.index_note` | string | `"indexed 99659 recording(s) in /mnt/s...` | What the start found. |
+| `storage.sd_status.last_probe_unix_ms` | number or null | `1794520951243` | When the card was last checked. |
+| `storage.sd_status.indexed_at_boot` | number | `99271` | Recordings found on the card at start. |
+| `storage.sd_status.index_note` | string | `"indexed 99271 recording(s) in /mnt/s...` | What the start found. |
 | `storage.sd_status.queue_jobs` | number | `0` | Writes and deletes waiting. |
 | `storage.sd_status.queue_bytes` | number | `0` | Bytes waiting. |
 | `storage.sd_status.writing_for_ms` | number or null |  | How long the current write has taken. |
 | `storage.sd_status.writer_running` | bool | `true` | The card's writer runs. |
 | `storage.recording_now` | number | `0` | Calls being recorded now. |
 | `storage.counters` | object |  | Since start. |
-| `storage.counters.saved` | number | `27` | Recordings saved. |
+| `storage.counters.saved` | number | `24` | Recordings saved. |
 | `storage.counters.no_audio` | number | `0` | Followed calls with no audio (not saved). |
 | `storage.counters.off` | number | `0` | Calls not recorded because recording was off. |
 | `storage.counters.failed` | number | `0` | Recordings that could not be saved. |
@@ -1758,7 +1764,7 @@ What a site taught the radio: band plan, grants, encrypted talkgroups, neighbour
 | `neighbours[].control_hz` | number or null |  | Its control channel, once the band plan names it. |
 | `neighbours[].last_heard_unix_ms` | number |  | Last announced. |
 | `secondary_control_hz` | array of numbers | `[859437500, 860437500]` | The site's other control channels. |
-| `data_channel_hz` | number or null | `858462500` | The data channel it announces. |
+| `data_channel_hz` | number or null | `858437500` | The data channel it announces. |
 | `lcn_hz` | object |  | DMR: logical channel numbers and the downlinks the radio learned for them (a call followed there whose voice header named the granted talkgroup); the configured plan wins over them. |
 | `lcn_hz{key}` | number |  | One channel's downlink, Hz. |
 | `lcns_granted` | array of numbers | `[]` | DMR: every logical channel a grant named: the channel table's rows, their frequency known or not. |
@@ -1793,15 +1799,15 @@ The live site's receive window against its channels, and the planner's choice.
 | `channels[].listed` | bool | `false` | In the site's configuration. |
 | `channels[].weight` | number | `9.0` | Its weight in the plan. |
 | `channels[].covered` | bool | `true` | Inside the window now. |
-| `covered_weight` | number | `345864.0` | The weight inside the window. |
-| `total_weight` | number | `345864.0` | The weight of all channels. |
+| `covered_weight` | number | `346965.0` | The weight inside the window. |
+| `total_weight` | number | `346965.0` | The weight of all channels. |
 | `best` | object or null |  | The planner's choice now. |
 | `best.preset` | string | `"12M"` | The DDC preset. |
 | `best.sample_rate_hz` | number | `12000000` | Its sample rate. |
 | `best.lo_hz` | number | `855993750` | The window's centre. |
 | `best.usable_half_hz` | number | `5400000` | How far from the centre a channel can be received. |
-| `best.covered_weight` | number | `345864.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
-| `best.total_weight` | number | `345864.0` | The weight of all the site's channels. |
+| `best.covered_weight` | number | `346965.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
+| `best.total_weight` | number | `346965.0` | The weight of all the site's channels. |
 | `better` | bool | `false` | The choice covers more than the window does. |
 | `last_recentre_unix_ms` | number | `1791480310770` | The window's last move. |
 
@@ -1910,7 +1916,7 @@ The analog receiver: its state (`off` while another mode has the radio), what it
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `rev` | number | `8` | Moves when anything here changes: at a tuning, when the squelch opens or shuts, and a few times a second with the meter while it listens. |
+| `rev` | number | `163` | Moves when anything here changes: at a tuning, when the squelch opens or shuts, and a few times a second with the meter while it listens. |
 | `state` | string | `"off"` | `off` (another mode has the radio), `starting`, `listening` or `error`. |
 | `error` | string or null |  | Why it does not listen. |
 | `tuned` | object |  | What the receiver is tuned to, kept across restarts. The body of `PUT /api/v1/analog/tune`. |
@@ -1930,7 +1936,7 @@ The analog receiver: its state (`off` while another mode has the radio), what it
 | `counts` | object |  | Since the scanner started. |
 | `counts.gaps` | number | `0` | Times samples were lost between the radio and the receiver: the audio breaks there. |
 | `counts.dropped` | number | `0` | Blocks of the window dropped because the receiver was behind. |
-| `counts.frames` | number | `65` | Frames of audio made (20 ms each). |
+| `counts.frames` | number | `2088` | Frames of audio made (20 ms each). |
 | `bands` | array |  | The bands a page offers. |
 | `bands[]` | object |  | One band. |
 | `bands[].id` | string | `"fm"` | Its short name. |
@@ -1944,11 +1950,11 @@ The analog receiver: its state (`off` while another mode has the radio), what it
 
 ## `GET /api/v1/adsb`
 
-The aircraft module: its state (`off` while another mode has the radio), the link it is asked to listen to (`link`: `1090`, Mode S; `978`, UAT; `both`, each in turn) and the one it is on now (`on`), the radio's window (4 MSPS, its gain), the messages a second, the counts (Mode S extended squitters and all-call replies whose parity was right and the preambles tried; UAT messages their code put right and the places its synchronisation fitted; the gaps) and the aircraft heard twice or more in the last minute, each with the link it was last heard on, what it last said (callsign, altitude, speed, track, rate of climb, place) and how strong it was; pushed on `/ws/live` to a page that subscribes to `adsb`; the aircraft are not kept across a restart.
+The aircraft module: its state (`off` while another mode has the radio), the link it is asked to listen to (`link`: `1090`, Mode S; `978`, UAT; `both`, each in turn) and the one it is on now (`on`), the radio's window (4 MSPS, its gain), the messages a second, the counts (Mode S extended squitters and all-call replies whose parity was right and the preambles tried; UAT messages their code put right and the places its synchronisation fitted; the gaps) and the aircraft heard twice or more in the last minute, each with the link it was last heard on, what it last said (callsign, altitude, speed, track, rate of climb, place), how strong it was, and its distance (nautical miles) and bearing from the radio once the radio has been told where it is (`position`, a setting: `PUT /api/v1/radio/settings`); pushed on `/ws/live` to a page that subscribes to `adsb`; the aircraft are not kept across a restart.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `rev` | number | `324` | Moves when anything here changes: once a second while it listens, and when it starts or stops. |
+| `rev` | number | `275` | Moves when anything here changes: once a second while it listens, and when it starts or stops. |
 | `state` | string | `"off"` | `off` (another mode has the radio), `starting`, `listening` or `error`. |
 | `error` | string or null |  | Why it does not listen. |
 | `link` | string | `"both"` | The link it is asked to listen to: `1090` (Mode S extended squitters), `978` (UAT) or `both`, each in turn (10 s on 1090 MHz, then 5 s on 978 MHz): the radio hears one at a time. Set by `PUT /api/v1/adsb/link`; kept across restarts. |
@@ -1958,35 +1964,40 @@ The aircraft module: its state (`off` while another mode has the radio), the lin
 | `window.sample_rate_hz` | number |  | Its sample rate: 4 MSPS, two samples to a Mode S pulse and 3.84 to a bit of UAT. |
 | `window.gain_db` | number or null |  | The receiver's gain, fixed at 73 dB; null for a replayed file. |
 | `window.source` | string |  | `radio`, or `replay` on a development host playing a capture in the radio's place. |
-| `since_unix_ms` | number or null | `1794513945050` | When it last began to listen. |
+| `since_unix_ms` | number or null | `1794520930581` | When it last began to listen. |
 | `messages_per_s` | number | `0.0` | Messages taken, a second: the mean of the last ten whole seconds, of whichever link was listened to. |
 | `counts` | object |  | Since the scanner started. |
-| `counts.squitters` | number | `29527` | Mode S extended squitters (formats 17 and 18: ADS-B) whose parity was right. No bit is corrected. |
-| `counts.all_call` | number | `9435` | Mode S all-call replies (format 11) whose parity was right: an aircraft's address alone. |
-| `counts.tried` | number | `20739089` | Mode S preambles found and read: most are noise, and a few thousand a second are checked against the parity, which one in 16.7 million passes by chance. |
-| `counts.uat` | number | `156` | UAT messages from aircraft that their Reed-Solomon code could put right (up to 6 wrong bytes of a short message's 30, 7 of a long one's 48). |
-| `counts.mended` | number | `52` | Of them, those that had wrong bytes to put right. |
-| `counts.fitted` | number | `875` | Places UAT's synchronisation fitted (36 bits, four of them wrong at most): a handful a second are chance. |
-| `counts.aircraft` | number | `530` | Times an aircraft came to be listed (at its second message); one heard again after a minute's silence counts again. |
+| `counts.squitters` | number | `27616` | Mode S extended squitters (formats 17 and 18: ADS-B) whose parity was right. No bit is corrected. |
+| `counts.all_call` | number | `8258` | Mode S all-call replies (format 11) whose parity was right: an aircraft's address alone. |
+| `counts.tried` | number | `21976087` | Mode S preambles found and read: most are noise, and a few thousand a second are checked against the parity, which one in 16.7 million passes by chance. |
+| `counts.uat` | number | `62` | UAT messages from aircraft that their Reed-Solomon code could put right (up to 6 wrong bytes of a short message's 30, 7 of a long one's 48). |
+| `counts.mended` | number | `29` | Of them, those that had wrong bytes to put right. |
+| `counts.fitted` | number | `321` | Places UAT's synchronisation fitted (36 bits, four of them wrong at most): a handful a second are chance. |
+| `counts.aircraft` | number | `396` | Times an aircraft came to be listed (at its second message); one heard again after a minute's silence counts again. |
 | `counts.gaps` | number | `0` | Times the capture ring was read too late or the core lost words: the search began afresh, and a message on the air meanwhile is lost. |
 | `counts.dropped` | number | `0` | Blocks of the window (a megabyte, 66 ms) dropped because the search was behind. |
+| `position` | object or null |  | Where the radio is, as its settings have it (`PUT /api/v1/radio/settings`); null until it has been told. Each aircraft's distance and bearing are from it. |
+| `position.lat` | number | `30.0` | The radio's latitude, degrees north. |
+| `position.lon` | number | `-81.0` | The radio's longitude, degrees east. |
 | `aircraft` | array |  | The aircraft heard twice or more, the last time within a minute, by their addresses. One message alone lists none: it may be noise that passed the parity. |
 | `aircraft[]` | object |  | One aircraft, with what it last said of each thing. |
-| `aircraft[].icao` | string | `"0C4155"` | Its 24-bit address, six hexadecimal digits. |
+| `aircraft[].icao` | string | `"0C21DF"` | Its 24-bit address, six hexadecimal digits. |
 | `aircraft[].link` | string | `"1090"` | The link it was last heard on: `1090` or `978`. |
-| `aircraft[].callsign` | string or null | `"BAW43C"` | Its callsign (types 1 to 4), trimmed. |
-| `aircraft[].category` | string or null | `"A5"` | Its category, a set and a number as `A3`; null when it gives none. |
-| `aircraft[].altitude_ft` | number or null | `43000` | Its altitude by pressure, feet, where it is sent in steps of 25 ft (types 9 to 18). |
-| `aircraft[].speed_kt` | number or null | `388.5` | Its speed over the ground, knots (type 19, its first two kinds). |
-| `aircraft[].track_deg` | number or null | `324.4` | Its track over the ground, degrees from north. |
+| `aircraft[].callsign` | string or null | `"CMP819"` | Its callsign (types 1 to 4), trimmed. |
+| `aircraft[].category` | string or null | `"A3"` | Its category, a set and a number as `A3`; null when it gives none. |
+| `aircraft[].altitude_ft` | number or null | `35000` | Its altitude by pressure, feet, where it is sent in steps of 25 ft (types 9 to 18). |
+| `aircraft[].speed_kt` | number or null | `464.5` | Its speed over the ground, knots (type 19, its first two kinds). |
+| `aircraft[].track_deg` | number or null | `357.4` | Its track over the ground, degrees from north. |
 | `aircraft[].vertical_fpm` | number or null | `0` | Its rate of climb, feet a minute; down is negative. |
-| `aircraft[].lat` | number or null | `28.46498` | Its latitude, degrees north. On 1090 MHz from an even and an odd half of an airborne position heard within ten seconds of each other; on 978 MHz a message says it whole. |
-| `aircraft[].lon` | number or null | `-80.20954` | Its longitude, degrees east. |
-| `aircraft[].position_unix_ms` | number or null | `1794513961899` | When its place was last worked out. |
-| `aircraft[].level_dbfs` | number | `-31.3` | Its last message's pulses against the ADC's full scale, dB. The gain is fixed, so it compares from one aircraft to another; the nearest clip, at 0 to 3. |
-| `aircraft[].messages` | number | `16` | Messages heard of it since it was first heard. |
-| `aircraft[].first_unix_ms` | number | `1794513946816` | When it was first heard. |
-| `aircraft[].last_unix_ms` | number | `1794513966016` | When it was last heard. |
+| `aircraft[].lat` | number or null | `30.66005` | Its latitude, degrees north. On 1090 MHz from an even and an odd half of an airborne position heard within ten seconds of each other; on 978 MHz a message says it whole. |
+| `aircraft[].lon` | number or null | `-81.40395` | Its longitude, degrees east. |
+| `aircraft[].position_unix_ms` | number or null | `1794520955023` | When its place was last worked out. |
+| `aircraft[].distance_nm` | number or null | `44.8` | How far its place is from the radio's over the ground, nautical miles, to a tenth: the great circle on a sphere of the Earth's mean radius. Null until the radio has been told where it is, and for an aircraft that has not said its place. |
+| `aircraft[].bearing_deg` | number or null | `332.3` | Which way it is from the radio, degrees clockwise from north, to a tenth. Null as the distance is. |
+| `aircraft[].level_dbfs` | number | `-12.8` | Its last message's pulses against the ADC's full scale, dB. The gain is fixed, so it compares from one aircraft to another; the nearest clip, at 0 to 3. |
+| `aircraft[].messages` | number | `97` | Messages heard of it since it was first heard. |
+| `aircraft[].first_unix_ms` | number | `1794520930711` | When it was first heard. |
+| `aircraft[].last_unix_ms` | number | `1794520955801` | When it was last heard. |
 
 ## `GET /api/v1/data`
 
@@ -2006,11 +2017,11 @@ Data mode's listening: its state (`off` while another mode has the radio), the w
 | `window.channel_rate_hz` | number | `250000` | The rate of the channel cut around the spot in software, and of a capture's samples. |
 | `window.gain_db` | number or null | `55.0` | The receiver's manual gain (the radio's own when that is manual, else 55 dB); null for a replayed file. |
 | `window.source` | string | `"radio"` | `radio`, or `replay`: a raw capture's file in the radio's place (a development host). |
-| `since_unix_ms` | number or null | `1794513547430` | When it last began to listen. |
-| `floor_dbfs` | number or null | `-51.61976` | The noise in what is heard (196 kHz), against the ADC's full scale; null in the first quarter second. |
+| `since_unix_ms` | number or null | `1794520352435` | When it last began to listen. |
+| `floor_dbfs` | number or null | `-48.672485` | The noise in what is heard (196 kHz), against the ADC's full scale; null in the first quarter second. |
 | `counts` | object |  | What was counted. |
-| `counts.bursts` | number | `11` | Bursts heard since the scanner started. |
-| `counts.clicks` | number | `4334` | Milliseconds left out as broadband clicks (the channel rose all over, as from a switching supply) since it last began to listen. |
+| `counts.bursts` | number | `10` | Bursts heard since the scanner started. |
+| `counts.clicks` | number | `5682` | Milliseconds left out as broadband clicks (the channel rose all over, as from a switching supply) since it last began to listen. |
 | `counts.slight` | number | `72` | Bursts too short (under 8 ms on) or too thin to count, since it last began to listen. |
 | `counts.gaps` | number | `0` | Times the capture ring was read too late or the core lost words: the listening began afresh, and what was on the air meanwhile is lost. |
 | `counts.dropped` | number | `0` | Megabytes of the window dropped because the listening thread was behind. |
@@ -2018,16 +2029,16 @@ Data mode's listening: its state (`off` while another mode has the radio), the w
 | `counts.capture_errors` | number | `0` | Captures that could not be written (the radio's log says why). |
 | `emitters` | array |  | The bursts by frequency, lowest first: bursts within 3 kHz are one emitter's. Not kept across a restart. |
 | `emitters[]` | object |  | One emitter. |
-| `emitters[].id` | number | `4` | Its number since the scanner started. |
-| `emitters[].freq_hz` | number | `433870073` | Its frequency: it follows the device as it drifts. |
+| `emitters[].id` | number | `5` | Its number since the scanner started. |
+| `emitters[].freq_hz` | number | `433824285` | Its frequency: it follows the device as it drifts. |
 | `emitters[].bursts` | number | `2` | Bursts heard of it. |
-| `emitters[].first_unix_ms` | number | `1794513477935` | When its first burst began. |
-| `emitters[].last_unix_ms` | number | `1794513583929` | When its newest began. |
-| `emitters[].every_ms` | number or null | `30996` | From one burst's start to the next: the median of its last 16; null until it was heard twice. |
-| `emitters[].length_ms` | number | `795` | The median length of its last 16 bursts. |
+| `emitters[].first_unix_ms` | number | `1794520371800` | When its first burst began. |
+| `emitters[].last_unix_ms` | number | `1794520378714` | When its newest began. |
+| `emitters[].every_ms` | number or null | `6914` | From one burst's start to the next: the median of its last 16; null until it was heard twice. |
+| `emitters[].length_ms` | number | `454` | The median length of its last 16 bursts. |
 | `emitters[].width_hz` | number | `7813` | The median of their `width_hz`. |
-| `emitters[].over_db` | number | `13.950177` | The median of their `over_db`. |
-| `emitters[].level_dbfs` | number | `-50.883846` | The median of their `level_dbfs`. |
+| `emitters[].over_db` | number | `16.97398` | The median of their `over_db`. |
+| `emitters[].level_dbfs` | number | `-46.75744` | The median of their `level_dbfs`. |
 | `emitters[].device` | string or null | `"prologue_th.86.2"` | The device its bursts were read as (its `key` among `devices`); null while no decoder has read one. |
 | `devices` | array |  | The devices the decoders have read, by their keys: a device is its bursts by what it is, wherever it is heard. Not kept across a restart. |
 | `devices[]` | object |  | One device. |
@@ -2036,49 +2047,49 @@ Data mode's listening: its state (`off` while another mode has the radio), the w
 | `devices[].model` | string | `"AcuRite 606TX"` | The decoder's name for it. |
 | `devices[].id` | number | `181` | Its id as its messages give it. |
 | `devices[].channel` | number or null | `1` | Its channel. |
-| `devices[].freq_hz` | number | `433915174` | Where its last burst was. |
-| `devices[].emitter` | number | `1` | The emitter there. |
-| `devices[].messages` | number | `4` | Bursts read as it since the scanner started. |
-| `devices[].first_unix_ms` | number | `1794513457242` | When its first read burst began. |
-| `devices[].last_unix_ms` | number | `1794513581230` | When its newest began. |
-| `devices[].every_ms` | number or null | `30996` | From one of its bursts to the next: the median of its last 16; null until it was read twice. |
-| `devices[].over_db` | number | `43.935234` | Its last burst's strongest bin over the floor. |
+| `devices[].freq_hz` | number | `433915172` | Where its last burst was. |
+| `devices[].emitter` | number | `2` | The emitter there. |
+| `devices[].messages` | number | `2` | Bursts read as it since the scanner started. |
+| `devices[].first_unix_ms` | number | `1794520276794` | When its first read burst began. |
+| `devices[].last_unix_ms` | number | `1794520369786` | When its newest began. |
+| `devices[].every_ms` | number or null |  | From one of its bursts to the next: the median of its last 16; null until it was read twice. |
+| `devices[].over_db` | number | `39.87388` | Its last burst's strongest bin over the floor. |
 | `devices[].latest` | object |  | What it last said. |
 | `devices[].latest.model` | string | `"AcuRite 606TX"` | The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`. |
 | `devices[].latest.kind` | string | `"weather"` | What kind of device it is: `weather`. |
 | `devices[].latest.id` | number | `181` | The device's id as its message gives it. |
 | `devices[].latest.channel` | number or null | `1` | Its channel (a switch on the device); null for a device that has none. |
 | `devices[].latest.temperature_c` | number or null | `24.5` | The temperature it sent, in °C whatever unit the pages show; null for a device that sends none. |
-| `devices[].latest.humidity_pct` | number or null | `53` | The relative humidity it sent, per cent; null for a device that sends none. |
+| `devices[].latest.humidity_pct` | number or null | `58` | The relative humidity it sent, per cent; null for a device that sends none. |
 | `devices[].latest.battery_low` | bool or null | `false` | Its battery is low; null for a device that does not say. |
 | `devices[].latest.repeats` | number | `6` | How many times the burst held the message (a sensor sends it two to seven times, by its make). |
 | `bursts` | array |  | The newest 100 bursts, newest first. A burst is one transmission: a message and its repeats, until 200 ms pass without it. |
 | `bursts[]` | object |  | One burst. |
-| `bursts[].seq` | number | `11` | Its number since the scanner started. |
-| `bursts[].unix_ms` | number | `1794513583929` | When it began (to about 20 ms: the capture ring's samples are timed by when they are read). |
-| `bursts[].freq_hz` | number | `433869776` | Its centre, by power. |
+| `bursts[].seq` | number | `10` | Its number since the scanner started. |
+| `bursts[].unix_ms` | number | `1794520388603` | When it began (to about 20 ms: the capture ring's samples are timed by when they are read). |
+| `bursts[].freq_hz` | number | `433831124` | Its centre, by power. |
 | `bursts[].width_hz` | number | `7813` | How wide it is 10 dB under its strongest bin, in whole 3.9 kHz bins. |
-| `bursts[].length_ms` | number | `795` | From its first to its last millisecond on. |
-| `bursts[].on_ms` | number | `203` | The time it was on between them. |
-| `bursts[].over_db` | number | `13.950177` | Its strongest 3.9 kHz bin over that bin's floor, at its strongest millisecond. |
-| `bursts[].level_dbfs` | number | `-50.883846` | Its power at its strongest millisecond, against the ADC's full scale. |
-| `bursts[].emitter` | number | `4` | The emitter it is of. |
+| `bursts[].length_ms` | number | `181` | From its first to its last millisecond on. |
+| `bursts[].on_ms` | number | `37` | The time it was on between them. |
+| `bursts[].over_db` | number | `13.069159` | Its strongest 3.9 kHz bin over that bin's floor, at its strongest millisecond. |
+| `bursts[].level_dbfs` | number | `-50.887943` | Its power at its strongest millisecond, against the ADC's full scale. |
+| `bursts[].emitter` | number | `6` | The emitter it is of. |
 | `bursts[].capture` | string or null |  | The id of its IQ on the card, when it was kept. |
 | `bursts[].reading` | object or null |  | What it said, when a decoder read it (a moment after the burst is listed); null for a burst none reads. |
-| `bursts[].reading.model` | string | `"Prologue TH"` | The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`. |
+| `bursts[].reading.model` | string | `"Oregon Scientific v1"` | The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`. |
 | `bursts[].reading.kind` | string | `"weather"` | What kind of device it is: `weather`. |
-| `bursts[].reading.id` | number | `86` | The device's id as its message gives it. |
-| `bursts[].reading.channel` | number or null | `2` | Its channel (a switch on the device); null for a device that has none. |
-| `bursts[].reading.temperature_c` | number or null | `25.2` | The temperature it sent, in °C whatever unit the pages show; null for a device that sends none. |
-| `bursts[].reading.humidity_pct` | number or null | `53` | The relative humidity it sent, per cent; null for a device that sends none. |
-| `bursts[].reading.battery_low` | bool or null | `true` | Its battery is low; null for a device that does not say. |
-| `bursts[].reading.repeats` | number | `6` | How many times the burst held the message (a sensor sends it two to seven times, by its make). |
+| `bursts[].reading.id` | number | `3` | The device's id as its message gives it. |
+| `bursts[].reading.channel` | number or null | `1` | Its channel (a switch on the device); null for a device that has none. |
+| `bursts[].reading.temperature_c` | number or null | `22.1` | The temperature it sent, in °C whatever unit the pages show; null for a device that sends none. |
+| `bursts[].reading.humidity_pct` | number or null | `58` | The relative humidity it sent, per cent; null for a device that sends none. |
+| `bursts[].reading.battery_low` | bool or null | `false` | Its battery is low; null for a device that does not say. |
+| `bursts[].reading.repeats` | number | `2` | How many times the burst held the message (a sensor sends it two to seven times, by its make). |
 | `arm` | object or null |  | The bursts whose IQ is to be kept; null when none is asked for. |
 | `arm.left` | number |  | Bursts still to keep. |
 | `arm.freq_hz` | number or null |  | Only bursts around this frequency; null: any burst. |
 | `arm.span_hz` | number |  | How wide "around" is, edge to edge. |
 | `captures` | bool | `true` | Captures can be kept (false on a unit with no folder for them). |
-| `rev` | number | `112` | Goes up with each change of the above; the counts that change all the time move it once a second. |
+| `rev` | number | `109` | Goes up with each change of the above; the counts that change all the time move it once a second. |
 
 ## `GET /api/v1/data/devices/{key}`
 
@@ -2092,13 +2103,13 @@ One device the decoders have read, by its `key`: what it is, how often it sends,
 | `device.model` | string | `"AcuRite 606TX"` | The decoder's name for it. |
 | `device.id` | number | `181` | Its id as its messages give it. |
 | `device.channel` | number or null |  | Its channel. |
-| `device.freq_hz` | number | `433915174` | Where its last burst was. |
-| `device.emitter` | number | `1` | The emitter there. |
-| `device.messages` | number | `4` | Bursts read as it since the scanner started. |
-| `device.first_unix_ms` | number | `1794513457242` | When its first read burst began. |
-| `device.last_unix_ms` | number | `1794513581230` | When its newest began. |
-| `device.every_ms` | number or null | `30996` | From one of its bursts to the next: the median of its last 16; null until it was read twice. |
-| `device.over_db` | number | `43.935234` | Its last burst's strongest bin over the floor. |
+| `device.freq_hz` | number | `433915172` | Where its last burst was. |
+| `device.emitter` | number | `2` | The emitter there. |
+| `device.messages` | number | `2` | Bursts read as it since the scanner started. |
+| `device.first_unix_ms` | number | `1794520276794` | When its first read burst began. |
+| `device.last_unix_ms` | number | `1794520369786` | When its newest began. |
+| `device.every_ms` | number or null |  | From one of its bursts to the next: the median of its last 16; null until it was read twice. |
+| `device.over_db` | number | `39.87388` | Its last burst's strongest bin over the floor. |
 | `device.latest` | object |  | What it last said. |
 | `device.latest.model` | string | `"AcuRite 606TX"` | The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`. |
 | `device.latest.kind` | string | `"weather"` | What kind of device it is: `weather`. |
@@ -2110,11 +2121,11 @@ One device the decoders have read, by its `key`: what it is, how often it sends,
 | `device.latest.repeats` | number | `6` | How many times the burst held the message (a sensor sends it two to seven times, by its make). |
 | `log` | array |  | The last 200 things it said, newest first; kept in memory since the scanner started. |
 | `log[]` | object |  | One burst read as it. |
-| `log[].seq` | number | `10` | The burst's number. |
-| `log[].unix_ms` | number | `1794513581230` | When it began. |
-| `log[].freq_hz` | number | `433915174` | Its centre. |
-| `log[].over_db` | number | `43.935234` | Its strongest bin over the floor. |
-| `log[].level_dbfs` | number | `-24.138515` | Its power at its strongest millisecond, against the ADC's full scale. |
+| `log[].seq` | number | `5` | The burst's number. |
+| `log[].unix_ms` | number | `1794520369786` | When it began. |
+| `log[].freq_hz` | number | `433915172` | Its centre. |
+| `log[].over_db` | number | `39.87388` | Its strongest bin over the floor. |
+| `log[].level_dbfs` | number | `-24.041336` | Its power at its strongest millisecond, against the ADC's full scale. |
 | `log[].reading` | object |  | What it said. |
 | `log[].reading.model` | string | `"AcuRite 606TX"` | The decoder's name for the device: `Oregon Scientific v1`, `AcuRite 606TX` or `Prologue TH`. |
 | `log[].reading.kind` | string | `"weather"` | What kind of device it is: `weather`. |
@@ -2295,27 +2306,27 @@ What is on the card as files to take away: the card's state and space, the recor
 | `card.state` | string | `"ok"` | `ok`, `absent` (not mounted), `read_only`, `full`, `error`, `failing` (the last write failed) or `unknown` (not probed yet). |
 | `card.detail` | string or null |  | What is wrong with it. |
 | `card.total_bytes` | number or null | `62209884160` | Its size (null where the daemon cannot ask: a PC). |
-| `card.free_bytes` | number or null | `54391013376` | Free space. |
+| `card.free_bytes` | number or null | `54402383872` | Free space. |
 | `recordings` | object |  | The call recordings. |
 | `recordings.sd` | object |  | Those on the card. |
-| `recordings.sd.count` | number | `99411` | Recordings. |
-| `recordings.sd.bytes` | number | `5009303698` | Their size. |
+| `recordings.sd.count` | number | `99272` | Recordings. |
+| `recordings.sd.bytes` | number | `4999656686` | Their size. |
 | `recordings.locked` | object |  | The card's locked ones (in `sd` too). |
-| `recordings.locked.count` | number | `3927` | Recordings. |
-| `recordings.locked.bytes` | number | `162999042` | Their size. |
+| `recordings.locked.count` | number | `3939` | Recordings. |
+| `recordings.locked.bytes` | number | `163574034` | Their size. |
 | `recordings.ram` | object |  | Those in RAM. |
 | `recordings.ram.count` | number | `0` | Recordings. |
 | `recordings.ram.bytes` | number | `0` | Their size. |
 | `recordings.span_ms` | number | `3600000` | How long each span below is (`span` minutes). |
 | `recordings.spans` | array |  | The recordings by the span of time their calls started in, the newest first; a span with none is left out. A reader adds them up into its own zone's days. |
 | `recordings.spans[]` | object |  | One span. |
-| `recordings.spans[].from_ms` | number | `1794513600000` | Where it starts (unix ms; spans are counted from 1970 UTC). `from` of a selection that takes it, with `to` = `from_ms + span_ms`. |
-| `recordings.spans[].count` | number | `6` | Recordings. |
-| `recordings.spans[].bytes` | number | `262344` | Their size. |
-| `recordings.spans[].locked` | number | `0` | How many of them are locked. |
+| `recordings.spans[].from_ms` | number | `1794517200000` | Where it starts (unix ms; spans are counted from 1970 UTC). `from` of a selection that takes it, with `to` = `from_ms + span_ms`. |
+| `recordings.spans[].count` | number | `143` | Recordings. |
+| `recordings.spans[].bytes` | number | `5819028` | Their size. |
+| `recordings.spans[].locked` | number | `8` | How many of them are locked. |
 | `history` | object |  | The history's database. |
 | `history.name` | string | `"scanner-history.sqlite"` | The file a download of it is saved as. |
-| `history.bytes` | number | `213781200` | Its size on disk, with its write-ahead log. |
+| `history.bytes` | number | `214280912` | Its size on disk, with its write-ahead log. |
 | `history.on_sd` | bool | `true` | On the card (false: in RAM, with no card). |
 | `tv` | array |  | The TV recordings (as `GET /api/v1/atsc/recordings`). |
 | `tv[]` | object |  | One recording, `tv/rf<N>.ts`. |
@@ -2339,8 +2350,8 @@ How many recordings a selection takes and their size (`from`, `to`: unix ms of t
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `count` | number | `99411` | Recordings the selection takes. |
-| `bytes` | number | `5009303698` | Their size (the archive adds about 150 bytes a recording and its table). |
+| `count` | number | `99272` | Recordings the selection takes. |
+| `bytes` | number | `4999656686` | Their size (the archive adds about 150 bytes a recording and its table). |
 
 ## `GET /api/v1/files/recordings.zip`
 
@@ -2473,8 +2484,8 @@ Legacy, for the bench: the build.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `build` | string | `"2026-11-12-uat1"` | The build tag. |
-| `uptime_s` | number | `2406` | Since start, s. |
+| `build` | string | `"2026-11-12-range1"` | The build tag. |
+| `uptime_s` | number | `865` | Since start, s. |
 
 ## `GET /api/ui/state`
 
@@ -2483,8 +2494,8 @@ Legacy, for the bench: the unit's wall clock.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `v` | number | `1` | The shape's version (1). |
-| `build` | string | `"2026-11-12-uat1"` | The build tag. |
-| `now_unix_ms` | number | `1794513970024` | The board's clock. |
+| `build` | string | `"2026-11-12-range1"` | The build tag. |
+| `now_unix_ms` | number | `1794520958562` | The board's clock. |
 | `clock_valid` | bool | `true` | The clock has been set. |
 
 ## `GET /api/imbe_dump`
@@ -2498,7 +2509,7 @@ Legacy, for the bench: the newest raw IMBE frames.
 | `frames[]` | object |  | One frame. |
 | `frames[].talkgroup` | number | `0` | The talkgroup. |
 | `frames[].encrypted` | bool | `true` | Encrypted. |
-| `frames[].hex` | string | `"7a84f4c0e5404d91efe91a099d1a51f0115e"` | The 18-byte frame, hex. |
+| `frames[].hex` | string | `"07cbb6179614b490aebbd6da8f87b7b7e8f5"` | The 18-byte frame, hex. |
 
 ## `GET /api/ui/calls`
 
@@ -2506,23 +2517,23 @@ Legacy, for the bench: the newest calls with their voice frame counts (`limit`, 
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `now_unix_ms` | number | `1794513970057` | The board's clock. |
+| `now_unix_ms` | number | `1794520958594` | The board's clock. |
 | `items` | array |  | Open and recent calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
-| `items[].call_id` | number | `346295` | The call. |
-| `items[].tg` | number | `437` | The talkgroup. |
-| `items[].source` | number or null | `3416352` | The calling radio. |
+| `items[].call_id` | number | `347396` | The call. |
+| `items[].tg` | number | `402` | The talkgroup. |
+| `items[].source` | number or null | `1003` | The calling radio. |
 | `items[].sources` | array of numbers | `[]` | Every radio heard. |
-| `items[].freq_hz` | number or null | `856437500` | The channel. |
-| `items[].started_unix_ms` | number | `1794513968508` | The grant. |
-| `items[].ended_unix_ms` | number or null | `1794513944730` | The close. |
-| `items[].open_ms` | number | `1549` | From the grant to the close (to now while open). |
-| `items[].first_voice_ms` | number or null | `197` | From the grant to the first voice. |
+| `items[].freq_hz` | number or null | `857987500` | The channel. |
+| `items[].started_unix_ms` | number | `1794520956506` | The grant. |
+| `items[].ended_unix_ms` | number or null | `1794520918676` | The close. |
+| `items[].open_ms` | number | `2088` | From the grant to the close (to now while open). |
+| `items[].first_voice_ms` | number or null |  | From the grant to the first voice. |
 | `items[].imbe` | number | `0` | Voice frames. |
 | `items[].voice_ms` | number | `0` | Voice, ms. |
 | `items[].encrypted` | bool | `true` | Encrypted. |
 | `items[].not_followed` | string or null | `"ignored"` | Why not followed. |
-| `items[].close_reason` | string or null | `"site_switch"` | Why it closed. |
+| `items[].close_reason` | string or null | `"timeout"` | Why it closed. |
 
 ## `GET /api/ui/settings`
 

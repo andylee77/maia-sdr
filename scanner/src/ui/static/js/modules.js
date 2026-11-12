@@ -78,7 +78,8 @@ function aircraftLine(s) {
   if (a.state === 'starting') return 'starting…';
   if (a.state === 'error') return 'not listening: an error';
   const where = a.link === 'both' ? '1090 and 978 MHz' : `${a.link} MHz`;
-  return `${where} · ${a.aircraft} aircraft · ${Math.round(a.messages_per_s)} messages a second · Scanner paused`;
+  const rate = Math.round(a.messages_per_s);
+  return `${where} · ${a.aircraft} aircraft · ${rate} ${rate === 1 ? 'message' : 'messages'} a second · Scanner paused`;
 }
 
 export const MODULES = [

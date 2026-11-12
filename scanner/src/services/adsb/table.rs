@@ -6,10 +6,11 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use super::Link;
+use super::{range, Link};
 use crate::protocol::adsb::cpr;
 use crate::protocol::adsb::squitter::{Half, Says, Squitter};
 use crate::protocol::adsb::uat::message::Message;
+use crate::services::config::radio::Position;
 
 /// An aircraft not heard for this long is gone.
 pub const SILENT_MS: u64 = 60_000;
@@ -34,6 +35,10 @@ pub struct Aircraft {
     pub lon: Option<f64>,
     /// When its place was last worked out.
     pub position_unix_ms: Option<u64>,
+    /// How far its place is from the radio's, nautical miles over the ground, and which way
+    /// from the radio, degrees from north: none until the radio has been told where it is.
+    pub distance_nm: Option<f32>,
+    pub bearing_deg: Option<f32>,
     /// Its last message's pulses against the ADC's full scale, dB.
     pub level_dbfs: f32,
     pub messages: u64,
@@ -73,6 +78,8 @@ impl Table {
                 lat: None,
                 lon: None,
                 position_unix_ms: None,
+                distance_nm: None,
+                bearing_deg: None,
                 level_dbfs: 0.0,
                 messages: 0,
                 first_unix_ms: now_ms,
@@ -150,9 +157,17 @@ impl Table {
         self.count() != listed
     }
 
-    /// The aircraft heard twice or more, by their addresses.
-    pub fn list(&self) -> Vec<Aircraft> {
+    /// The aircraft heard twice or more, by their addresses, each that has said its place with
+    /// how far and which way that is from `radio`.
+    pub fn list(&self, radio: Option<Position>) -> Vec<Aircraft> {
         let mut list: Vec<Aircraft> = self.by.values().filter(|e| e.aircraft.messages >= LISTED).map(|e| e.aircraft.clone()).collect();
+        for a in &mut list {
+            if let (Some(radio), Some(lat), Some(lon)) = (radio, a.lat, a.lon) {
+                let (distance, bearing) = range::to(radio, lat, lon);
+                a.distance_nm = Some(tenths(distance as f32));
+                a.bearing_deg = Some(tenths(bearing as f32));
+            }
+        }
         list.sort_by(|a, b| a.icao.cmp(&b.icao));
         list
     }
@@ -179,9 +194,9 @@ mod tests {
         let mut table = Table::default();
         let hear = |table: &mut Table, hex: &str, at: u64| table.heard(&read(&frame(hex)), -21.24, at);
         hear(&mut table, "8D40621D58C382D690C8AC2863A7", 1_000);
-        assert_eq!((table.list(), table.count(), table.listed()), (vec![], 0, 0));
+        assert_eq!((table.list(None), table.count(), table.listed()), (vec![], 0, 0));
         hear(&mut table, "8D40621D58C386435CC412692AD6", 1_400);
-        let list = table.list();
+        let list = table.list(None);
         assert_eq!((list.len(), table.count(), table.listed()), (1, 1, 1));
         let a = &list[0];
         assert_eq!((a.icao.as_str(), a.link, a.altitude_ft, a.messages, a.first_unix_ms, a.last_unix_ms, a.level_dbfs), ("40621D", Link::Es, Some(38_000), 2, 1_000, 1_400, -21.2));
@@ -192,13 +207,13 @@ mod tests {
         hear(&mut table, "8D485020994409940838175B284F", 2_100);
         hear(&mut table, "5DA1BAC2892941", 2_200);
         hear(&mut table, "5DA1BAC2892941", 2_300);
-        let list = table.list();
+        let list = table.list(None);
         assert_eq!(list.iter().map(|a| a.icao.as_str()).collect::<Vec<_>>(), ["40621D", "A1BAC2"]);
         hear(&mut table, "8D4840D6202CC371C32CE0576098", 2_400);
-        let klm = table.list().into_iter().find(|a| a.icao == "4840D6").unwrap();
+        let klm = table.list(None).into_iter().find(|a| a.icao == "4840D6").unwrap();
         assert_eq!((klm.callsign.as_deref(), klm.category, klm.speed_kt, klm.lat), (Some("KLM1023"), None, None, None));
         hear(&mut table, "8D485020994409940838175B284F", 2_500);
-        let other = table.list().into_iter().find(|a| a.icao == "485020").unwrap();
+        let other = table.list(None).into_iter().find(|a| a.icao == "485020").unwrap();
         assert_eq!((other.speed_kt, other.track_deg, other.vertical_fpm), (Some(159.2), Some(182.9), Some(-832)));
     }
 
@@ -210,17 +225,40 @@ mod tests {
         table.said(&read_uat(&bytes(SHORT_HEARD)).unwrap(), -37.66, 5_000);
         assert_eq!(table.count(), 0);
         table.said(&read_uat(&bytes(LONG_CALLSIGN)).unwrap(), -37.66, 6_000);
-        let a = table.list().remove(0);
+        let a = table.list(None).remove(0);
         assert_eq!((a.icao.as_str(), a.link, a.callsign.as_deref(), a.category.as_deref(), a.altitude_ft, a.messages), ("A82090", Link::Uat, Some("N6224A"), Some("A1"), Some(4_400), 2));
         // Its place whole from one message, its velocity and its climb.
         assert_eq!((a.lat, a.lon, a.position_unix_ms, a.speed_kt, a.track_deg, a.vertical_fpm, a.level_dbfs), (Some(30.31514), Some(-81.81991), Some(6_000), Some(53.1), Some(250.2), Some(832), -37.7));
         // A message with its squawk in the callsign's place leaves the callsign as it was.
         table.said(&read_uat(&bytes(LONG_SQUAWK)).unwrap(), -37.0, 7_000);
-        assert_eq!(table.list()[0].callsign.as_deref(), Some("N6224A"));
+        assert_eq!(table.list(None)[0].callsign.as_deref(), Some("N6224A"));
         // Heard on the other link, it is the one aircraft, last heard there.
         table.heard(&read(&frame("5DA820909C9F8F")), -20.0, 8_000);
-        let a = table.list().remove(0);
+        let a = table.list(None).remove(0);
         assert_eq!((table.count(), a.link, a.messages, a.callsign.as_deref()), (1, Link::Es, 4, Some("N6224A")));
+    }
+
+    #[test]
+    fn an_aircraft_s_distance_and_bearing_are_from_the_radio_s_place_once_it_has_one() {
+        use crate::protocol::adsb::uat::message::read as read_uat;
+        use crate::protocol::adsb::uat::message::tests::{bytes, LONG_CALLSIGN, SHORT_HEARD};
+        let mut table = Table::default();
+        // One that says where it is (30.31514, -81.81991), and one that does not.
+        table.said(&read_uat(&bytes(SHORT_HEARD)).unwrap(), -30.0, 5_000);
+        table.said(&read_uat(&bytes(LONG_CALLSIGN)).unwrap(), -30.0, 6_000);
+        table.heard(&read(&frame("5DA1BAC2892941")), -20.0, 6_100);
+        table.heard(&read(&frame("5DA1BAC2892941")), -20.0, 6_200);
+        // The radio has not been told where it is: no distances.
+        assert!(table.list(None).iter().all(|a| a.distance_nm.is_none() && a.bearing_deg.is_none()));
+        // A degree of latitude south of the aircraft, on its meridian: 60 miles due north.
+        let list = table.list(Some(Position { lat: 29.31514, lon: -81.81991 }));
+        assert_eq!(list.iter().map(|a| (a.icao.as_str(), a.distance_nm, a.bearing_deg)).collect::<Vec<_>>(), [("A1BAC2", None, None), ("A82090", Some(60.0), Some(0.0))]);
+        // East of it at its latitude: a little north of west, and nearer than a degree at the equator.
+        let a = table.list(Some(Position { lat: 30.31514, lon: -80.81991 })).remove(1);
+        assert_eq!((a.distance_nm, a.bearing_deg), (Some(51.8), Some(270.3)));
+        // At the aircraft's own place.
+        let a = table.list(Some(Position { lat: 30.31514, lon: -81.81991 })).remove(1);
+        assert_eq!((a.distance_nm, a.bearing_deg), (Some(0.0), Some(0.0)));
     }
 
     #[test]
@@ -228,10 +266,10 @@ mod tests {
         let mut table = Table::default();
         table.heard(&read(&frame("8D40621D58C382D690C8AC2863A7")), -20.0, 1_000);
         table.heard(&read(&frame("8D40621D58C386435CC412692AD6")), -20.0, 12_000);
-        assert_eq!(table.list()[0].lat, None);
+        assert_eq!(table.list(None)[0].lat, None);
         // The even half again, within ten seconds of the odd one: its place.
         table.heard(&read(&frame("8D40621D58C382D690C8AC2863A7")), -20.0, 13_000);
-        assert_eq!((table.list()[0].lat, table.list()[0].lon), (Some(52.2572), Some(3.91937)));
+        assert_eq!((table.list(None)[0].lat, table.list(None)[0].lon), (Some(52.2572), Some(3.91937)));
         table.tidy(72_999);
         assert_eq!(table.count(), 1);
         table.tidy(73_000);

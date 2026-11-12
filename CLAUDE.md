@@ -101,7 +101,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (`adsb-listen`, 60 % of a core on unit A) finds the Mode S messages in it
   (`protocol::adsb::mode_s`: extended squitters and all-call replies whose parity is right, no
   bit corrected), reads them (`squitter`, `cpr`) and keeps the aircraft (`services::adsb`),
-  which the Aircraft page lists (no distances: the radio does not know where it is). The
+  which the Aircraft page lists. The
   method is in whole numbers so that `tools/adsb_look.py` finds the same messages at the same
   samples: `ADSB_CAPTURE_DIR=<repo>/runs/adsb/look_20261112 cargo test --release adsb::` holds
   the scanner against the lists `tools/adsb_look.py FILE --messages` writes beside the
@@ -130,9 +130,16 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (`js/views/aircraft_map.js`; nothing of it is in the daemon): the aircraft at their places
   with their ways since the page was opened, a grid and a scale of the page's own, and
   OpenStreetMap's tiles under them only when "Map tiles" is switched on, since the browser
-  then fetches them from the Internet. No range rings: the radio does not know where it is.
-  Check: `runs/ui_check/aircraft_map.mjs`, which answers the tiles' requests itself (a page
-  check never fetches a tile from the Internet).
+  then fetches them from the Internet. Check: `runs/ui_check/aircraft_map.mjs`, which answers
+  the tiles' requests itself (a page check never fetches a tile from the Internet).
+- **Where the radio is (116, `doc/changes/116_radio_position.md`; Andy: "Yes, add it"):** a
+  setting of the radio's own, `position` (`lat`, `lon`, or null) in `radio.json` and
+  `PUT /api/v1/radio/settings`, typed in Settings, Position. With it `GET /api/v1/adsb` gives
+  each aircraft that said its place a `distance_nm` and a `bearing_deg` from the radio
+  (`services::adsb::range`, the great circle on a sphere), the Aircraft page shows them, and
+  the map marks the radio with range rings round it. A unit's place is Andy's to enter: the
+  checks that need one (`aircraft_page.mjs`, `aircraft_map.mjs`) put a made one through the
+  API and put back what the unit had. Never write a real place of his into the repository.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan

@@ -5,6 +5,25 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 116: Where the radio is: distances, bearings and range rings
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** asked "Add the unit's position as a setting, for range rings and distances?", Andy
+  answered "Yes, add it". Record: `doc/changes/116_radio_position.md`.
+- **The radio's place is a setting:** a latitude and a longitude, in Settings, Position (the
+  radio's own settings), `position` in `PUT /api/v1/radio/settings` and in `radio.json`; null
+  forgets it. Nothing finds it: it is typed.
+- **Each aircraft that has said where it is has its distance and bearing from there**
+  (`distance_nm`, `bearing_deg` in `GET /api/v1/adsb`): the great circle over the ground, in
+  nautical miles. The Aircraft page has the two columns; Distance sorts the farthest first.
+- **The map** marks the radio and draws range rings round it, named in nautical miles; Fit
+  keeps the radio in view; a picked aircraft's line says how far it is and which way.
+- Until the radio has a place the cells are empty, there are no rings, and both pages say
+  where it is set.
+- The header's line says "1 message a second", not "1 messages".
+
 ## [2026-11-12] 115: The Aircraft module's Map
 
 **Branch:** fishball-p25 (local)

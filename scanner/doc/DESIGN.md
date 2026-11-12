@@ -231,8 +231,10 @@ scanner/src/         the fresh crate (D13)
                      to its listeners)
     adsb/            the aircraft module: the link it listens to (1090 MHz, 978 MHz or both
                      in turn), listen (the radio on the link whose turn it is, its window
-                     read from the capture ring, the search's thread) and table (the
-                     aircraft heard on either, each with what it last said)
+                     read from the capture ring, the search's thread), table (the
+                     aircraft heard on either, each with what it last said) and range (how
+                     far each is from the radio and which way, once the radio's settings say
+                     where the radio is)
     data/            data mode: listen (the window read from the capture ring, the bursts and
                      the emitters), the devices the decoders read with their logs, captures
                      (bursts' IQ on the card, cs16 and SigMF)
@@ -310,7 +312,7 @@ understands is read but never written, so a downgrade cannot drop fields.
 
 | File | Owner | Holds | Written |
 |------|-------|-------|---------|
-| `/mnt/jffs2/scanner/radio.json` | `services::config::radio` | Gain mode, presets allowed, traffic chains, call hang/grace, recording policy (every call, or only aliases that say record) and storage, history limits, clock source | On a user change |
+| `/mnt/jffs2/scanner/radio.json` | `services::config::radio` | Gain mode, presets allowed, traffic chains, call hang/grace, recording policy (every call, or only aliases that say record) and storage, history limits, clock source, the units a reading is shown in, where the radio is | On a user change |
 | `/mnt/jffs2/scanner/systems.json` | `services::config::systems` | Systems: protocol, identity, label, details (location, county, type, voice: descriptive only), aliases and listening settings (`services::config::aliases`), and their sites (identity, control channels, alternates, known channels, channel plan, window policy, modulation) | On a user change or a scan "Add" |
 | `/mnt/jffs2/scanner/state/radio.json` | `services::config::state` | Live site; crystal calibration | On a switch; on a calibration |
 | `/mnt/jffs2/scanner/state/sites/<id>.json` | `services::config::state` | Learned per site: identity seen, IDEN bands or LCNs, neighbours, secondary CCs, grant counts per channel, known-encrypted talkgroups, last recentre | Every 10 min if changed, on a switch, at shutdown |

@@ -6,8 +6,9 @@
 //
 // The map's own drawing is a grid of latitude and longitude and a scale: the radio holds no
 // map. "Map tiles" lays OpenStreetMap's tiles under it, which this browser then fetches from
-// the Internet; it is off until switched on, and the choice is this browser's. There are no
-// range rings: the radio does not know where it is.
+// the Internet; it is off until switched on, and the choice is this browser's. Once the radio's
+// Settings say where the radio is, it is marked, range rings are drawn round it, and Fit keeps
+// it in view with the aircraft.
 
 import { h, toast, setText, setClass, icon } from '../dom.js';
 import { api } from '../api.js';
@@ -26,11 +27,31 @@ const KEPT = { tiles: 'aircraft.map.tiles', view: 'aircraft.map.view' };
 const GRID = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20];
 // The scale's lengths, nautical miles.
 const SCALE = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500];
+// What the range rings may be apart, nautical miles: the first that puts them 70 pixels apart
+// or more is used. No more than this many are drawn.
+const RINGS = [1, 2, 5, 10, 25, 50, 100, 250, 500];
+const MOST_RINGS = 24;
+// The Earth as the radio's distances have it: a sphere of its mean radius, nautical miles.
+const EARTH_NM = 6371.0088 / 1.852;
+const RAD = Math.PI / 180;
 
 // Web Mercator: a place in pixels of the whole world at a zoom, and back.
 const world = zoom => TILE * 2 ** zoom;
 const toPx = (lat, lon, zoom) => [(lon + 180) / 360 * world(zoom), (1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * world(zoom)];
 const toPlace = (x, y, zoom) => [Math.atan(Math.sinh(Math.PI * (1 - 2 * y / world(zoom)))) * 180 / Math.PI, x / world(zoom) * 360 - 180];
+
+// How far it is from one place to another over the ground, nautical miles.
+function apart(lat1, lon1, lat2, lon2) {
+  const half = Math.sin((lat2 - lat1) * RAD / 2) ** 2 + Math.cos(lat1 * RAD) * Math.cos(lat2 * RAD) * Math.sin((lon2 - lon1) * RAD / 2) ** 2;
+  return 2 * EARTH_NM * Math.asin(Math.min(1, Math.sqrt(half)));
+}
+// The place `nm` nautical miles from a place on a bearing.
+function away(lat, lon, nm, bearing) {
+  const [here, far, way] = [lat * RAD, nm / EARTH_NM, bearing * RAD];
+  const there = Math.asin(Math.sin(here) * Math.cos(far) + Math.cos(here) * Math.sin(far) * Math.cos(way));
+  const east = Math.atan2(Math.sin(way) * Math.sin(far) * Math.cos(here), Math.cos(far) - Math.sin(here) * Math.sin(there));
+  return [there / RAD, lon + east / RAD];
+}
 
 function kept(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -47,6 +68,7 @@ function details(a) {
     a.speed_kt === null ? null : `${num(Math.round(a.speed_kt))} kt on ${String(Math.round(a.track_deg) % 360).padStart(3, '0')}°`,
     a.vertical_fpm ? `${a.vertical_fpm > 0 ? '+' : '−'}${num(Math.abs(a.vertical_fpm))} ft/min` : null,
     a.lat === null ? 'no place said' : `${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}`,
+    a.distance_nm === null ? null : `${a.distance_nm.toFixed(1)} NM from the radio, on ${String(Math.round(a.bearing_deg) % 360).padStart(3, '0')}°`,
     `heard ${ago(Math.max(0, boardNow() - a.last_unix_ms))}`];
   return parts.filter(Boolean).join(' · ');
 }
@@ -76,10 +98,12 @@ export function mount(el) {
   const fitBtn = h('button', { class: 'btn small', type: 'button', title: 'Bring every aircraft into view, and keep them there', text: 'Fit' });
   const outBtn = h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom out', title: 'Zoom out', text: '−' });
   const inBtn = h('button', { class: 'btn small', type: 'button', 'aria-label': 'Zoom in', title: 'Zoom in', text: '+' });
+  // Shown until the radio has been told where it is.
+  const where = h('a', { class: 'dim map-where', href: '#settings', hidden: true, text: 'No range rings: set where the radio is in Settings' });
   const tilesBtn = h('button', { class: 'btn small', type: 'button', 'aria-pressed': 'false',
     title: 'Lay OpenStreetMap\'s map under the aircraft. This browser fetches it from the Internet (tile.openstreetmap.org), which learns what part of the map is looked at.' },
   icon('card', 14), h('span', { text: 'Map tiles' }));
-  const bar = h('div', { class: 'map-bar' }, count, h('div', { class: 'spacer' }), fitBtn, outBtn, inBtn, tilesBtn);
+  const bar = h('div', { class: 'map-bar' }, count, where, h('div', { class: 'spacer' }), fitBtn, outBtn, inBtn, tilesBtn);
 
   // ── The map: the tiles when they are on, the drawing over them ──
   const tiles = h('div', { class: 'map-tiles', 'aria-hidden': 'true' });
@@ -118,12 +142,19 @@ export function mount(el) {
     keepView();
   }
 
-  // Every aircraft in view: the closest zoom that holds them all with a margin.
+  // Every aircraft in view, and the radio once it is known where it is: the closest zoom that
+  // holds them all with a margin. The radio alone is shown with the country round it.
   function fit() {
-    const all = placed();
-    if (!all.length || !width) return;
-    const lats = all.map(a => a.lat);
-    const lons = all.map(a => a.lon);
+    const radio = view && view.position;
+    const all = placed().map(a => [a.lat, a.lon]);
+    if (!width) return;
+    if (!all.length) {
+      if (radio) moveTo(radio.lat, radio.lon, 8);
+      return;
+    }
+    if (radio) all.push([radio.lat, radio.lon]);
+    const lats = all.map(p => p[0]);
+    const lons = all.map(p => p[1]);
     const [south, north, west, east] = [Math.min(...lats), Math.max(...lats), Math.min(...lons), Math.max(...lons)];
     let z = MAX_ZOOM;
     for (; z > MIN_ZOOM; z--) {
@@ -237,6 +268,51 @@ export function mount(el) {
     ctx.stroke();
     ctx.fillText(`${miles} NM`, 18, height - 20);
 
+    // The radio, once it is known where it is, and the range rings round it: as many as cross
+    // the view, each named where it is nearest the map's top (or, failing that, another side).
+    const radio = view && view.position;
+    let rings = 0;
+    let ringStep = 0;
+    if (radio) {
+      const perNm = 1852 / metres * Math.cos(center.lat * RAD) / Math.cos(radio.lat * RAD);
+      ringStep = RINGS.find(nm => nm * perNm >= 70) || RINGS[RINGS.length - 1];
+      const [midLat, midLon] = atScreen(width / 2, height / 2);
+      const [cornerLat, cornerLon] = atScreen(0, 0);
+      const toMiddle = apart(radio.lat, radio.lon, midLat, midLon);
+      const reach = apart(midLat, midLon, cornerLat, cornerLon);
+      const first = Math.max(1, Math.ceil((toMiddle - reach) / ringStep));
+      const last = Math.min(Math.floor((toMiddle + reach) / ringStep), first + MOST_RINGS - 1);
+      ctx.strokeStyle = line;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      for (let k = first; k <= last; k++) {
+        ctx.beginPath();
+        for (let b = 0; b <= 360; b += 5) {
+          const [x, y] = onScreen(...away(radio.lat, radio.lon, k * ringStep, b));
+          if (b) ctx.lineTo(x, y);
+          else ctx.moveTo(x, y);
+        }
+        ctx.stroke();
+        rings++;
+      }
+      ctx.setLineDash([]);
+      ctx.fillStyle = dim;
+      for (let k = first; k <= last; k++) {
+        const at = [0, 180, 90, 270].map(b => onScreen(...away(radio.lat, radio.lon, k * ringStep, b))).find(([x, y]) => x > 30 && y > 24 && x < width - 60 && y < height - 40);
+        if (at) ctx.fillText(`${k * ringStep} NM`, at[0] + 4, at[1] - 4);
+      }
+      const [rx, ry] = onScreen(radio.lat, radio.lon);
+      ctx.strokeStyle = text;
+      ctx.fillStyle = text;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(rx, ry, 6, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(rx, ry, 2, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
     // Each aircraft's way, then the aircraft over the ways.
     const all = placed();
     ctx.lineWidth = 1.5;
@@ -301,8 +377,9 @@ export function mount(el) {
     const one = view && view.aircraft.find(a => a.icao === picked);
     setText(says, one ? details(one) : all.length ? 'Click an aircraft for what it last said. A name\'s number is its altitude in hundreds of feet; a name is left out where another is in its way. A way is drawn from when this page was opened.' : 'No aircraft has said where it is yet.');
     setClass(tilesBtn, 'lit', tilesOn);
+    where.hidden = !view || !!radio;
     tilesBtn.setAttribute('aria-pressed', String(tilesOn));
-    Object.assign(map.dataset, { zoom: String(zoom), center: `${center.lat.toFixed(4)},${center.lon.toFixed(4)}`, aircraft: String(drawn), placed: String(all.length), fitting: String(fitting), tiles: String(tiles.children.length), picked: picked || '' });
+    Object.assign(map.dataset, { zoom: String(zoom), center: `${center.lat.toFixed(4)},${center.lon.toFixed(4)}`, aircraft: String(drawn), placed: String(all.length), fitting: String(fitting), tiles: String(tiles.children.length), picked: picked || '', radio: radio ? `${radio.lat},${radio.lon}` : '', rings: String(rings), ringStep: String(ringStep) });
   }
 
   // What the radio pushed: each aircraft's way grows where it moved, and the gone are dropped.

@@ -13,7 +13,7 @@ use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
 use crate::services::config::radio::{
-    Clock, CrystalTracking, Gain, GainMode, PacketDataFollow, RadioConfig, Recording, Storage, Temperature, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+    Clock, CrystalTracking, Gain, GainMode, PacketDataFollow, Position, RadioConfig, Recording, Storage, Temperature, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
 };
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
@@ -132,6 +132,16 @@ pub struct SettingsEdit {
     pub calls: Option<CallsEdit>,
     pub history: Option<HistoryEdit>,
     pub units: Option<UnitsEdit>,
+    /// Where the radio is; null: forgotten.
+    #[serde(default, with = "crate::api::double_option")]
+    pub position: Option<Option<PositionEdit>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PositionEdit {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Deserialize, Default)]
@@ -186,20 +196,30 @@ impl SettingsEdit {
         if let Some(units) = self.units {
             c.units.temperature = units.temperature.unwrap_or(c.units.temperature);
         }
+        if let Some(position) = self.position {
+            c.position = position.map(|p| Position { lat: p.lat, lon: p.lon });
+            if let Some(position) = &c.position {
+                position.check()?;
+            }
+        }
         Ok(c)
     }
 }
 
-/// Keep the settings given. The history's limits and the units apply at once; the presets and
-/// call timings at the next site activation; the lanes at the next start.
+/// Keep the settings given. The history's limits, the units and the radio's place apply at
+/// once; the presets and call timings at the next site activation; the lanes at the next start.
 pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<SettingsEdit>) -> ApiResult<RadioConfig> {
     let mut c = s.config.lock().await;
     let next = req.onto(c.radio.value.clone()).map_err(ApiError::bad_request)?;
     let history = (next.history != c.radio.value.history).then(|| next.history.clone());
+    let position = (next.position != c.radio.value.position).then_some(next.position);
     c.radio.value = next;
     config::save(&s.paths.radio(), &c.radio)?;
     if let Some(limits) = history {
         s.history.set_limits(&limits);
+    }
+    if let Some(position) = position {
+        s.adsb.set_position(position);
     }
     Ok(Json(c.radio.value.clone()))
 }
@@ -314,5 +334,29 @@ mod tests {
         // A radio.json written before the setting was: the default.
         let old: RadioConfig = serde_json::from_str(r#"{"version": 1, "gain": {"mode": "manual", "manual_db": 55}}"#).unwrap();
         assert_eq!(old.units.temperature, Temperature::Celsius);
+    }
+
+    #[test]
+    fn where_the_radio_is_is_given_forgotten_or_left() {
+        let before = RadioConfig::default();
+        assert_eq!(before.position, None);
+        let edit = |c: &RadioConfig, json: &str| serde_json::from_str::<SettingsEdit>(json).unwrap().onto(c.clone());
+        let got = edit(&before, r#"{"position": {"lat": 30.25, "lon": -81.5}}"#).unwrap();
+        assert_eq!(got.position, Some(Position { lat: 30.25, lon: -81.5 }));
+        assert_eq!(RadioConfig { position: None, ..got.clone() }, before, "nothing else moved");
+        assert_eq!(serde_json::to_value(&got).unwrap()["position"], serde_json::json!({ "lat": 30.25, "lon": -81.5 }));
+        // Another setting leaves it; null forgets it.
+        assert_eq!(edit(&got, r#"{"units": {"temperature": "fahrenheit"}}"#).unwrap().position, got.position);
+        assert_eq!(edit(&got, r#"{"position": null}"#).unwrap().position, None);
+        assert_eq!(serde_json::to_value(&before).unwrap()["position"], serde_json::Value::Null);
+        // A place off the globe, half a place, or more than a place.
+        for bad in [r#"{"position": {"lat": 91, "lon": 0}}"#, r#"{"position": {"lat": 0, "lon": -180.5}}"#] {
+            assert!(edit(&before, bad).is_err(), "{bad}");
+        }
+        for bad in [r#"{"position": {"lat": 30}}"#, r#"{"position": {"lat": 30, "lon": -81, "height": 5}}"#, r#"{"position": "home"}"#] {
+            assert!(serde_json::from_str::<SettingsEdit>(bad).is_err(), "{bad}");
+        }
+        // The poles and the date line are places.
+        assert!(edit(&before, r#"{"position": {"lat": -90, "lon": 180}}"#).is_ok());
     }
 }

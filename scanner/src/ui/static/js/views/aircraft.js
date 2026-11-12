@@ -1,11 +1,11 @@
 // The Aircraft module's Aircraft page: every aircraft heard in the last minute on either of its
 // two links (1090 MHz, Mode S; 978 MHz, UAT), a row each with what it last said: its address,
 // the link, its callsign and category, its altitude, speed, track and rate of climb, its
-// place, how strong its last message was, how many were heard and when the last. A column's
+// place, how far that is from the radio and which way (once the radio's Settings say where the
+// radio is), how strong its last message was, how many were heard and when the last. A column's
 // head sorts by it. The switch over the table says which link the radio listens to, or both in
 // turn: it hears one at a time. The radio pushes the list once a second while it listens; it
-// listens only while this module has the radio. The Map tab has them at their places. There
-// are no distances: the radio does not know where it is.
+// listens only while this module has the radio. The Map tab has them at their places.
 
 import { h, card, toast, setText, setClass, keyedList } from '../dom.js';
 import { api } from '../api.js';
@@ -28,6 +28,8 @@ const COLUMNS = [
   { head: 'Track', unit: '°', show: a => shown(a.track_deg, v => String(Math.round(v) % 360).padStart(3, '0')), by: a => a.track_deg },
   { head: 'Climb', unit: 'ft/min', show: a => shown(a.vertical_fpm, climb), by: a => a.vertical_fpm, down: true },
   { head: 'Place', show: a => (a.lat === null ? DASH : `${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}`), by: a => a.lat },
+  { head: 'Distance', unit: 'NM', show: a => shown(a.distance_nm, v => v.toFixed(1)), by: a => a.distance_nm, down: true },
+  { head: 'Bearing', unit: '°', show: a => shown(a.bearing_deg, v => String(Math.round(v) % 360).padStart(3, '0')), by: a => a.bearing_deg },
   { head: 'Level', unit: 'dBFS', show: a => a.level_dbfs.toFixed(1), by: a => a.level_dbfs, down: true },
   { head: 'Messages', show: a => num(a.messages), by: a => a.messages, down: true },
   { head: 'Heard', show: a => ago(Math.max(0, boardNow() - a.last_unix_ms)), by: a => a.last_unix_ms, down: true },
@@ -80,9 +82,11 @@ export function mount(el) {
   const body = h('tbody');
   const none = h('p', { class: 'dim' });
   const state = h('p', { class: 'card-note aircraft-state' });
+  // Shown until the radio has been told where it is.
+  const where = h('p', { class: 'card-note aircraft-where', hidden: true }, 'No distances or bearings: the radio has not been told where it is. Its place is set in ', h('a', { href: '#settings', text: 'Settings' }), ', under Position.');
   list.body.append(
     h('div', { class: 'table-wrap aircraft-table' }, h('table', { class: 'table' }, h('thead', null, h('tr', null, ...heads)), body)),
-    none, state,
+    none, state, where,
     h('p', { class: 'card-note', text: 'An aircraft is listed once two of its messages were heard, and for a minute after its last. The radio hears one link at a time: with both, each misses what is sent while the other has its turn. Altitudes are by pressure. Not read yet: positions on the ground, squawk codes, and what a ground station sends on 978 MHz.' }));
   el.append(h('div', { class: 'aircraft-page' }, list.el));
 
@@ -116,6 +120,7 @@ export function mount(el) {
     setText(none, view.state === 'listening' ? 'No aircraft heard yet.' : 'No aircraft heard in the last minute.');
     setText(state, stateLine(view));
     setClass(state, 'warn', view.state === 'error');
+    where.hidden = !!view.position;
   }
 
   const stop = want({ adsb: true }, m => {

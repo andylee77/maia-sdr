@@ -750,6 +750,8 @@ body[data-fill] .map-view { min-height: 240px; }
 :root[data-theme="light"] .map-tiles img { filter: none; }
 .map-credit { position: absolute; right: 6px; bottom: 4px; padding: 1px 6px; border-radius: 4px; background: var(--bg-raised); color: var(--text-dim); font-size: 0.75em; }
 .map-says { margin: 0; }
+.map-where { font-size: 0.9em; }
+.position-in { width: 9.5em; }
 
 /* The aircraft heard: a table that scrolls under its own header, each column's head a button
    that sorts by it. */
