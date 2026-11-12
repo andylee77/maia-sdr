@@ -142,8 +142,9 @@ def main() -> int:
     radios = (maybe(args.host, "/api/v1/activity/radios?limit=1") or {}).get("items", [])
     tgs = (maybe(args.host, "/api/v1/activity/talkgroups?limit=1") or {}).get("items", [])
     tv = (maybe(args.host, "/api/v1/atsc/scan") or {}).get("found", [])
+    devices = (maybe(args.host, "/api/v1/data") or {}).get("devices", [])
     ctx = {"site": site, "unit": radios[0]["unit"] if radios else None, "tg": tgs[0]["tg"] if tgs else None,
-           "n": tv[0]["number"] if tv else None}
+           "n": tv[0]["number"] if tv else None, "key": devices[0]["key"] if devices else None}
 
     out = ["# API fields", "",
            "Every GET route's response, field by field, with an example from a unit's own answer.",

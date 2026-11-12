@@ -62,6 +62,12 @@ export function clockMs(unixMs) {
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
 }
 
+// A temperature in the unit the radio's Settings picks: "58.1 °F" or "14.5 °C".
+export function temperature(celsius, unit) {
+  if (celsius === null || celsius === undefined) return DASH;
+  return unit === 'fahrenheit' ? `${(celsius * 9 / 5 + 32).toFixed(1)} °F` : `${celsius.toFixed(1)} °C`;
+}
+
 export function bytes(n) {
   if (n === null || n === undefined) return DASH;
   if (n < 1024) return n + ' B';

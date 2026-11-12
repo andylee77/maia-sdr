@@ -190,8 +190,9 @@ scanner/src/         the fresh crate (D13)
                      receiver (demod, fec: trellis, deinterleaver, Reed-Solomon) and PSIP
                      (ts, psip) and its programs' streams (streams: codec, bitrate, format),
                      together in receiver: a capture to its station's names and contents
-    ism/             the data bands: channel (a 250 kSPS channel cut from the window's raw IQ)
-                     and bursts (the transmissions in it, broadband clicks left out)
+    ism/             the data bands: channel (a 250 kSPS channel cut from the window's raw IQ),
+                     bursts (the transmissions in it, broadband clicks left out), pulses (a
+                     burst sliced into on and off) and the decoders that read them: oregon_v1
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -217,7 +218,8 @@ scanner/src/         the fresh crate (D13)
     mode.rs          the unit's mode: the scanner, ATSC TV or data (a mode other than the
                      scanner's holds the lease with the site paused, and hands it on)
     data/            data mode: listen (the window read from the capture ring, the bursts and
-                     the emitters), captures (bursts' IQ on the card, cs16 and SigMF)
+                     the emitters), the devices the decoders read with their logs, captures
+                     (bursts' IQ on the card, cs16 and SigMF)
     atsc/            ATSC mode's TV scan, each channel's spectrum, and its station named;
                      the TV stream (a channel's recording served as it plays, one programme or all)
     clock/           site clock, internet time, the board clock

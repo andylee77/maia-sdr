@@ -730,8 +730,6 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 
 /* ── Files: what is on the card. The recordings (the selection, then the days as a table that
    scrolls) beside the card, the history and TV; the download running across the top. ── */
-.data-shell { display: grid; gap: var(--gap); align-items: start; max-width: 760px; }
-.data-will { margin: 8px 0 0; }
 /* Data's Scan, as the module was drawn: the windows in a strip with what the mode is asked to do,
    the window as a map of its bursts (each a dash at its frequency, newest at the top), and the
    emitters heard in it. Captures is a card of its own. A table scrolls under its own header. */
@@ -767,6 +765,16 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .data-table .data-mhz { font-family: var(--mono); }
 .data-table + .dim { margin: 10px 0 0; }
 .data-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.data-acts { white-space: nowrap; }
+.data-acts .btn + .btn { margin-left: 6px; }
+/* Devices: a row is picked for its data log; the log's temperature is drawn as a line. */
+.data-pick tbody tr { cursor: pointer; }
+.data-pick tbody tr.sel td { background: var(--bg-control); }
+.data-pick tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.data-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 12px; }
+.data-line:empty { display: none; }
+.data-spark { width: 200px; height: 28px; }
+.data-spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
 .files { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
 .files-where { margin: 0; }
 @media (min-width: 1100px) {

@@ -1,5 +1,5 @@
-//! `/api/v1/data`: data mode's listening (`services::data`): what it hears, the bursts whose IQ
-//! it is to keep, and the captures on the card.
+//! `/api/v1/data`: data mode's listening (`services::data`): what it hears, the devices its
+//! decoders have read, the bursts whose IQ it is to keep, and the captures on the card.
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::services::data::captures::Listing;
-use crate::services::data::{ArmError, View};
+use crate::services::data::{ArmError, DeviceLog, View};
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<View> {
     Json(s.data.view())
@@ -43,6 +43,11 @@ pub async fn put_arm(State(s): State<Arc<AppState>>, Json(b): Json<ArmBody>) -> 
 pub async fn delete_arm(State(s): State<Arc<AppState>>) -> Json<View> {
     s.data.disarm();
     Json(s.data.view())
+}
+
+/// A device the decoders have read, with the last things it said.
+pub async fn device(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> ApiResult<DeviceLog> {
+    s.data.device(&key).map(Json).ok_or_else(|| ApiError::not_found(format!("device {key}")))
 }
 
 fn no_captures() -> ApiError {

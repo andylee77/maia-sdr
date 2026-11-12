@@ -55,16 +55,22 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   the mode listens while it has the radio: one window, 433.92 MHz, read whole from the capture
   ring (`services::data`), a 250 kSPS channel cut in software and its bursts found
   (`protocol::ism`), the emitters by frequency on Scan, and the IQ of the next bursts kept on
-  the card when asked (`data_captures/`, cs16 and SigMF; `tools/data_captures.py`). Nothing is
-  decoded on the unit. Its steps 0 and 1 wait for Andy (the RTL-SDR's ground truth; the wide
-  lanes on the bench). Andy's Oregon Scientific sensor (version 1, 433.880 MHz, every 30 s) is
-  the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the three modes) and
+  the card when asked (`data_captures/`, cs16 and SigMF; `tools/data_captures.py`). Since 110
+  (`doc/changes/110_oregon_v1_decoder.md`) each burst that ends is sliced into its pulses and
+  read by the decoders (`protocol::ism::pulses`, `oregon_v1`, the one so far), and a read
+  burst is a device's, on Devices with its last readings (in memory). A decoder is written
+  from its protocol's facts, never from rtl_433's code; rtl_433 is the reference a decoder is
+  to be held against and is not on this PC. Its steps 0 and 1 wait for Andy (the RTL-SDR's
+  ground truth; the wide lanes on the bench). Andy's Oregon Scientific sensor (version 1,
+  433.880 MHz, every 30 s, id 3 on channel 1) is the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the three modes) and
   `data_listen.mjs` (the listening pages) take the radio and give it back; against the PC
   daemon start it with `--data-replay <repo>/runs/data/look_20261112/look1_434.42M_2500k.cs16`
-  too, the radio's stand-in. The detector is held against unit A's first captures with
-  `DATA_CAPTURE_DIR=<repo>/runs/data/look_20261112 cargo test --release the_first_captures`.
-  Temperatures are shown in the unit Settings picks (`units.temperature`, Andy: "°C/°F in
-  settings"); no page shows one yet.
+  too, the radio's stand-in. The detector and the decoder are held against unit A's captures
+  with `DATA_CAPTURE_DIR=<repo>/runs/data/look_20261112 cargo test --release ism::`. On a unit,
+  `tools/data_captures.py --host <unit> keep --count 2 --freq 433880000 --span 6000 --wait 110
+  --take-radio --oregon-v1` holds the scanner's reading of the sensor against the PC's of its
+  capture. Temperatures are shown in the unit Settings picks (`units.temperature`, Andy:
+  "°C/°F in settings"; unit A's is °F); the API's fields stay in °C.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan

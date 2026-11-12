@@ -123,8 +123,11 @@ export const api = {
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
   // Data mode's listening: its state, window, emitters, newest bursts and what is armed.
   data: () => request('GET', '/api/v1/data'),
-  // Keep the IQ of the next `count` bursts: any, or only those near `freq_hz`.
-  dataArm: (count, freq_hz) => request('PUT', '/api/v1/data/arm', freq_hz ? { count, freq_hz } : { count }),
+  // Keep the IQ of the next `count` bursts: any, or only those within `span_hz` / 2 of
+  // `freq_hz`.
+  dataArm: (count, freq_hz, span_hz) => request('PUT', '/api/v1/data/arm', freq_hz ? { count, freq_hz, span_hz } : { count }),
+  // A device the decoders have read, with the last things it said: { device, log }.
+  dataDevice: key => request('GET', `/api/v1/data/devices/${encodeURIComponent(key)}`),
   dataDisarm: () => request('DELETE', '/api/v1/data/arm'),
   // The bursts' IQ kept on the card: { count, bytes, max_count, max_bytes, items }.
   dataCaptures: () => request('GET', '/api/v1/data/captures'),

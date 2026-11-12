@@ -138,7 +138,7 @@ function unitsCard() {
     }
   });
   sec.body.append(row('Temperature', temperature,
-    'The unit the pages show a temperature in, saved as it is picked. The API\'s own fields stay in °C. No page shows a temperature yet: a sensor\'s decoded reading will be the first.'));
+    'The unit the pages show a temperature in, saved as it is picked. The API\'s own fields stay in °C. Data shows a sensor\'s reading in it.'));
   return {
     el: sec.el,
     show({ radio }) {

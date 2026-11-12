@@ -1,15 +1,16 @@
 //! Data mode: the unit watching the open-protocol data bands (315, 345, 433.92 and 902 to
 //! 928 MHz) for the devices that transmit nearby (`doc/DATA_MODE.md`). While it has the radio it
 //! listens on one window, 433.92 MHz (`listen`): each burst heard is listed with its frequency,
-//! length and level, the bursts of one frequency are an emitter with how often it sends, and
-//! the IQ of the next bursts is kept on the card when asked (`captures`). Nothing is decoded
-//! yet, and what was heard is not kept across a restart: the band plan, the scan, the devices
-//! and their data log come with the study's later steps.
+//! length and level, and the bursts of one frequency are an emitter with how often it sends.
+//! Each burst that ends is then read by the decoders, on a thread of its own: one that reads is
+//! a device's, with what it said and a log of its last readings; and its IQ is kept on the card
+//! when asked (`captures`). What was heard is in memory and not kept across a restart: the band
+//! plan, the scan, the names and the data log on the card come with the study's later steps.
 
 pub mod captures;
 mod listen;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -17,8 +18,11 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use rustfft::num_complex::Complex32;
+
 use crate::protocol::ism::bursts::{Burst, Counters};
 use crate::protocol::ism::channel::{PASS_HZ, RATE_HZ};
+use crate::protocol::ism::Reading;
 use crate::radio::tuner::{RadioHw, Tuner};
 use crate::services::config::radio::{Gain, GainMode};
 use crate::services::events::EventLog;
@@ -40,6 +44,9 @@ const EMITTERS: usize = 200;
 const EMITTER_HZ: f64 = 3_000.0;
 /// An emitter's interval, length and level are the medians of its last bursts.
 const RECENT: usize = 16;
+/// The devices kept (the one not heard for longest goes), and the readings kept of each.
+const DEVICES: usize = 200;
+const LOGGED: usize = 200;
 /// The most bursts a capture can be armed for, and the widest it can listen for them.
 const ARM_MOST: u32 = 100;
 const ARM_SPAN_HZ: u32 = 20_000;
@@ -115,6 +122,8 @@ pub struct Heard {
     pub emitter: u32,
     /// Its IQ on the card, when it was kept.
     pub capture: Option<String>,
+    /// What it said, when a decoder read it.
+    pub reading: Option<Reading>,
 }
 
 /// The bursts of one frequency.
@@ -133,6 +142,9 @@ pub struct Emitter {
     pub width_hz: u32,
     pub over_db: f32,
     pub level_dbfs: f32,
+    /// The device its bursts were read as: its key among the devices; none while no decoder
+    /// has read one.
+    pub device: Option<String>,
     #[serde(skip)]
     recent: VecDeque<(u64, u32, u32, f32, f32)>,
 }
@@ -162,6 +174,56 @@ impl Emitter {
         self.over_db = median(self.recent.iter().map(|r| r.3)).unwrap_or(h.over_db);
         self.level_dbfs = median(self.recent.iter().map(|r| r.4)).unwrap_or(h.level_dbfs);
     }
+}
+
+/// A device a decoder has read: its bursts by what it is, wherever it is heard.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Device {
+    /// `<model>.<id>.<channel>`, as the routes name it.
+    pub key: String,
+    /// `weather`, so far.
+    pub kind: String,
+    pub model: String,
+    /// Its id as its messages give it, and its channel (a switch on the device).
+    pub id: u32,
+    pub channel: Option<u8>,
+    /// Where its last burst was, and the emitter there.
+    pub freq_hz: u64,
+    pub emitter: u32,
+    /// Bursts read as it.
+    pub messages: u64,
+    pub first_unix_ms: u64,
+    pub last_unix_ms: u64,
+    /// From one of its bursts to the next: the median of its last ones; none until it was read
+    /// twice.
+    pub every_ms: Option<u64>,
+    /// Its last burst's strongest bin over the floor.
+    pub over_db: f32,
+    /// What it last said.
+    pub latest: Reading,
+    #[serde(skip)]
+    recent: VecDeque<u64>,
+}
+
+/// One burst of a device, in its log.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Said {
+    /// The burst's number, time, frequency and level.
+    pub seq: u64,
+    pub unix_ms: u64,
+    pub freq_hz: u64,
+    pub over_db: f32,
+    pub level_dbfs: f32,
+    pub reading: Reading,
+    /// Its IQ on the card, when it was kept.
+    pub capture: Option<String>,
+}
+
+/// A device with the last things it said, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeviceLog {
+    pub device: Device,
+    pub log: Vec<Said>,
 }
 
 /// Why nothing was armed: what was asked is not valid, or the mode cannot keep it now.
@@ -213,6 +275,8 @@ pub struct View {
     pub counts: Counts,
     /// By frequency.
     pub emitters: Vec<Emitter>,
+    /// The devices the decoders have read, by their keys.
+    pub devices: Vec<Device>,
     /// The newest first.
     pub bursts: Vec<Heard>,
     pub arm: Option<Arm>,
@@ -231,6 +295,7 @@ pub struct Summary {
     pub window: Option<&'static str>,
     pub spot_hz: Option<u64>,
     pub emitters: usize,
+    pub devices: usize,
     pub bursts: u64,
     pub arm_left: Option<u32>,
 }
@@ -244,6 +309,9 @@ struct Inner {
     counts: Counts,
     emitters: Vec<Emitter>,
     next_emitter: u32,
+    devices: Vec<Device>,
+    /// Each device's last readings, newest first.
+    logs: HashMap<String, VecDeque<Said>>,
     bursts: VecDeque<Heard>,
     arm: Option<Arm>,
     rev: u64,
@@ -256,11 +324,26 @@ pub(self) struct Keep {
     id: String,
 }
 
+/// A burst that ended, with its IQ: to be read by the decoders, and kept when asked.
+pub(self) struct Ended {
+    seq: u64,
+    /// Its centre from the channel's.
+    offset_hz: f32,
+    /// The channel's samples as a capture keeps them: from `lead_samples` before the burst,
+    /// taken at `unix_ms`.
+    iq: Vec<u8>,
+    lead_samples: u32,
+    unix_ms: u64,
+    keep: Option<Keep>,
+    window: Window,
+}
+
 /// What the listening and the API share.
 pub(self) struct Shared {
     inner: Mutex<Inner>,
     captures: Option<Arc<Captures>>,
-    writer: Mutex<Option<mpsc::Sender<Job>>>,
+    /// To the thread that reads and keeps the bursts that ended.
+    after: Mutex<Option<mpsc::Sender<Ended>>>,
 }
 
 fn db(ratio: f32) -> f32 {
@@ -279,13 +362,15 @@ impl Shared {
                 counts: Counts::default(),
                 emitters: Vec::new(),
                 next_emitter: 1,
+                devices: Vec::new(),
+                logs: HashMap::new(),
                 bursts: VecDeque::new(),
                 arm: None,
                 rev: 0,
                 told: Instant::now(),
             }),
             captures,
-            writer: Mutex::new(None),
+            after: Mutex::new(None),
         }
     }
 
@@ -314,8 +399,9 @@ impl Shared {
             i.floor_dbfs = None;
             i.counts.clicks = 0;
             i.counts.slight = 0;
-            // The time it did not listen is no emitter's interval.
+            // The time it did not listen is no emitter's interval, and no device's.
             i.emitters.iter_mut().for_each(|e| e.recent.clear());
+            i.devices.iter_mut().for_each(|d| d.recent.clear());
         });
     }
 
@@ -344,8 +430,9 @@ impl Shared {
         }
     }
 
-    /// A burst ended: it is listed, and its emitter with it. `Some` when its IQ is to be kept.
-    fn heard(&self, window: &Window, b: &Burst, unix_ms: u64) -> Option<Keep> {
+    /// A burst ended: it is listed, and its emitter with it. Its number, and `Some` when its
+    /// IQ is to be kept.
+    fn heard(&self, window: &Window, b: &Burst, unix_ms: u64) -> (u64, Option<Keep>) {
         let keeping = self.captures.is_some();
         self.change(|i| {
             i.counts.bursts += 1;
@@ -360,7 +447,7 @@ impl Shared {
                     }
                     let id = i.next_emitter;
                     i.next_emitter += 1;
-                    i.emitters.push(Emitter { id, freq_hz, bursts: 0, first_unix_ms: unix_ms, last_unix_ms: unix_ms, every_ms: None, length_ms: 0, width_hz: 0, over_db: 0.0, level_dbfs: 0.0, recent: VecDeque::new() });
+                    i.emitters.push(Emitter { id, freq_hz, bursts: 0, first_unix_ms: unix_ms, last_unix_ms: unix_ms, every_ms: None, length_ms: 0, width_hz: 0, over_db: 0.0, level_dbfs: 0.0, device: None, recent: VecDeque::new() });
                     i.emitters.len() - 1
                 }
             };
@@ -375,6 +462,7 @@ impl Shared {
                 level_dbfs: db(b.power / (FULL_SCALE * FULL_SCALE)),
                 emitter: i.emitters[at].id,
                 capture: None,
+                reading: None,
             };
             i.emitters[at].heard(&heard);
             let wanted = keeping && i.arm.is_some_and(|a| a.freq_hz.is_none_or(|f| (f as f64 - freq_hz as f64).abs() <= f64::from(a.span_hz) / 2.0));
@@ -387,47 +475,87 @@ impl Shared {
                 i.arm = i.arm.filter(|a| a.left > 0);
                 Keep { heard: heard.clone(), id }
             });
+            let seq = heard.seq;
             i.bursts.push_front(heard);
             i.bursts.truncate(LISTED);
-            keep
+            (seq, keep)
         })
     }
 
-    /// Hand a burst's IQ to the writer: `iq` begins `lead_samples` before the burst, at
-    /// `unix_ms`.
-    fn keep(&self, keep: Keep, unix_ms: u64, lead_samples: u32, iq: Vec<u8>, window: &Window) {
-        let (file, meta) = captures::names(&keep.id, window.spot_hz, window.channel_rate_hz);
-        let h = &keep.heard;
-        let kept = Kept {
-            id: keep.id.clone(),
-            unix_ms,
-            freq_hz: h.freq_hz,
-            width_hz: h.width_hz,
-            length_ms: h.length_ms,
-            on_ms: h.on_ms,
-            over_db: h.over_db,
-            level_dbfs: h.level_dbfs,
-            centre_hz: window.spot_hz,
-            sample_rate_hz: window.channel_rate_hz,
-            samples: (iq.len() / 4) as u64,
-            lead_samples,
-            file,
-            bytes: iq.len() as u64,
-            meta,
-        };
-        let radio = match window.gain_db {
-            Some(gain) => format!("Fishball scanner, AD9361: {}, {gain} dB of gain", window.describe()),
-            None => format!("a replayed capture: {}", window.describe()),
-        };
-        let sent = self.writer.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|tx| tx.send(Job { kept, iq, radio }).is_ok());
-        if !sent {
-            self.not_kept(&keep.id);
+    /// Hand an ended burst to the thread that reads and keeps it. Without that thread it is
+    /// neither read nor kept.
+    fn ended(&self, e: Ended) {
+        let keeping = e.keep.as_ref().map(|k| k.id.clone());
+        let sent = self.after.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|tx| tx.send(e).is_ok());
+        if let (false, Some(id)) = (sent, keeping) {
+            self.not_kept(&id);
         }
+    }
+
+    /// A decoder read burst `seq`: the burst says so, its emitter is the device's, and the
+    /// device has it as the last thing it said.
+    fn decoded(&self, seq: u64, reading: &Reading) {
+        self.change(|i| {
+            let Some(h) = i.bursts.iter_mut().find(|h| h.seq == seq) else { return };
+            h.reading = Some(reading.clone());
+            let h = h.clone();
+            let key = reading.device_key();
+            if let Some(e) = i.emitters.iter_mut().find(|e| e.id == h.emitter) {
+                e.device = Some(key.clone());
+            }
+            let at = match i.devices.iter().position(|d| d.key == key) {
+                Some(at) => at,
+                None => {
+                    if i.devices.len() >= DEVICES {
+                        if let Some(oldest) = (0..i.devices.len()).min_by_key(|&k| i.devices[k].last_unix_ms) {
+                            let gone = i.devices.remove(oldest);
+                            i.logs.remove(&gone.key);
+                        }
+                    }
+                    i.devices.push(Device {
+                        key: key.clone(),
+                        kind: reading.kind.clone(),
+                        model: reading.model.clone(),
+                        id: reading.id,
+                        channel: reading.channel,
+                        freq_hz: h.freq_hz,
+                        emitter: h.emitter,
+                        messages: 0,
+                        first_unix_ms: h.unix_ms,
+                        last_unix_ms: h.unix_ms,
+                        every_ms: None,
+                        over_db: h.over_db,
+                        latest: reading.clone(),
+                        recent: VecDeque::new(),
+                    });
+                    i.devices.len() - 1
+                }
+            };
+            let d = &mut i.devices[at];
+            d.messages += 1;
+            d.freq_hz = h.freq_hz;
+            d.emitter = h.emitter;
+            d.last_unix_ms = h.unix_ms;
+            d.over_db = h.over_db;
+            d.latest = reading.clone();
+            d.recent.push_back(h.unix_ms);
+            while d.recent.len() > RECENT {
+                d.recent.pop_front();
+            }
+            let times: Vec<u64> = d.recent.iter().copied().collect();
+            d.every_ms = median(times.windows(2).map(|w| w[1].saturating_sub(w[0]))).or(d.every_ms);
+            let log = i.logs.entry(key).or_default();
+            log.push_front(Said { seq, unix_ms: h.unix_ms, freq_hz: h.freq_hz, over_db: h.over_db, level_dbfs: h.level_dbfs, reading: reading.clone(), capture: h.capture });
+            log.truncate(LOGGED);
+        });
     }
 
     /// A capture was not written, or was deleted: its burst no longer names it.
     fn forget(&self, id: &str) {
-        self.change(|i| i.bursts.iter_mut().filter(|h| h.capture.as_deref() == Some(id)).for_each(|h| h.capture = None));
+        self.change(|i| {
+            i.bursts.iter_mut().filter(|h| h.capture.as_deref() == Some(id)).for_each(|h| h.capture = None);
+            i.logs.values_mut().flatten().filter(|s| s.capture.as_deref() == Some(id)).for_each(|s| s.capture = None);
+        });
     }
 
     fn not_kept(&self, id: &str) {
@@ -439,6 +567,8 @@ impl Shared {
         let i = self.lock();
         let mut emitters = i.emitters.clone();
         emitters.sort_by_key(|e| e.freq_hz);
+        let mut devices = i.devices.clone();
+        devices.sort_by(|a, b| a.key.cmp(&b.key));
         View {
             state: i.state,
             error: i.error.clone(),
@@ -447,12 +577,44 @@ impl Shared {
             floor_dbfs: i.floor_dbfs,
             counts: i.counts,
             emitters,
+            devices,
             bursts: i.bursts.iter().cloned().collect(),
             arm: i.arm,
             captures: self.captures.is_some(),
             rev: i.rev,
         }
     }
+}
+
+/// A capture as the writer takes it: the burst `keep` names, its samples from `e`, and what
+/// it said.
+fn job(keep: Keep, e: Ended, reading: Option<Reading>) -> Job {
+    let window = &e.window;
+    let (file, meta) = captures::names(&keep.id, window.spot_hz, window.channel_rate_hz);
+    let h = keep.heard;
+    let kept = Kept {
+        id: keep.id,
+        unix_ms: e.unix_ms,
+        freq_hz: h.freq_hz,
+        width_hz: h.width_hz,
+        length_ms: h.length_ms,
+        on_ms: h.on_ms,
+        over_db: h.over_db,
+        level_dbfs: h.level_dbfs,
+        centre_hz: window.spot_hz,
+        sample_rate_hz: window.channel_rate_hz,
+        samples: (e.iq.len() / 4) as u64,
+        lead_samples: e.lead_samples,
+        file,
+        bytes: e.iq.len() as u64,
+        meta,
+        reading,
+    };
+    let radio = match window.gain_db {
+        Some(gain) => format!("Fishball scanner, AD9361: {}, {gain} dB of gain", window.describe()),
+        None => format!("a replayed capture: {}", window.describe()),
+    };
+    Job { kept, iq: e.iq, radio }
 }
 
 /// Whether the card can take a capture now, or why not.
@@ -481,17 +643,24 @@ impl Default for Data {
 }
 
 impl Data {
-    /// The mode with its captures under `sd`, written by a thread of their own when `card` says
-    /// the card can take them.
+    /// The mode with its captures under `sd`. A thread of its own takes each burst that ended:
+    /// it has the decoders read it, and writes its capture when one was asked for and `card`
+    /// says the card can take it.
     pub fn new(sd: &std::path::Path, replay: Option<PathBuf>, card: CardCheck, log: Arc<EventLog>) -> Data {
         let captures = Arc::new(Captures::open(sd));
         let shared = Arc::new(Shared::new(Some(captures.clone())));
-        let (tx, rx) = mpsc::channel::<Job>();
+        let (tx, rx) = mpsc::channel::<Ended>();
         let state = shared.clone();
-        let spawned = std::thread::Builder::new().name("data-captures".into()).spawn(move || {
-            for job in rx {
-                let id = job.kept.id.clone();
-                match card().map_err(std::io::Error::other).and_then(|()| captures.keep(job)) {
+        let spawned = std::thread::Builder::new().name("data-bursts".into()).spawn(move || {
+            for mut e in rx {
+                let iq: Vec<Complex32> = e.iq.chunks_exact(4).map(|s| Complex32::new(f32::from(i16::from_le_bytes([s[0], s[1]])), f32::from(i16::from_le_bytes([s[2], s[3]])))).collect();
+                let reading = crate::protocol::ism::read(&iq, e.offset_hz);
+                if let Some(r) = &reading {
+                    state.decoded(e.seq, r);
+                }
+                let Some(keep) = e.keep.take() else { continue };
+                let id = keep.id.clone();
+                match card().map_err(std::io::Error::other).and_then(|()| captures.keep(job(keep, e, reading))) {
                     Ok(_) => state.count(|c| c.captures += 1),
                     Err(e) => {
                         log.radio("data", format!("capture {id} was not kept: {e}"));
@@ -501,8 +670,8 @@ impl Data {
             }
         });
         match spawned {
-            Ok(_) => *shared.writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx),
-            Err(e) => tracing::error!("the captures' thread did not start: {e}"),
+            Ok(_) => *shared.after.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx),
+            Err(e) => tracing::error!("the bursts' thread did not start: {e}"),
         }
         Data { radio: Default::default(), run: Default::default(), shared, replay }
     }
@@ -531,7 +700,7 @@ impl Data {
 
     pub fn summary(&self) -> Summary {
         let i = self.shared.lock();
-        Summary { state: i.state, error: i.error.clone(), window: i.window.as_ref().map(|w| w.name), spot_hz: i.window.as_ref().map(|w| w.spot_hz), emitters: i.emitters.len(), bursts: i.counts.bursts, arm_left: i.arm.map(|a| a.left) }
+        Summary { state: i.state, error: i.error.clone(), window: i.window.as_ref().map(|w| w.name), spot_hz: i.window.as_ref().map(|w| w.spot_hz), emitters: i.emitters.len(), devices: i.devices.len(), bursts: i.counts.bursts, arm_left: i.arm.map(|a| a.left) }
     }
 
     /// Keep the IQ of the next `count` bursts: any, or only those within `span_hz` / 2 of
@@ -560,6 +729,13 @@ impl Data {
 
     pub fn disarm(&self) {
         self.shared.change(|i| i.arm = None);
+    }
+
+    /// A device by its key, with the last things it said.
+    pub fn device(&self, key: &str) -> Option<DeviceLog> {
+        let i = self.shared.lock();
+        let device = i.devices.iter().find(|d| d.key == key)?.clone();
+        Some(DeviceLog { device, log: i.logs.get(key).map(|l| l.iter().cloned().collect()).unwrap_or_default() })
     }
 
     /// The captures on the card; none on a unit without the folder.
@@ -676,15 +852,16 @@ mod tests {
         assert!(data.arm(1, None, Some(500)).is_err());
         assert_eq!(data.arm(2, Some(433_880_000), None).unwrap(), Arm { left: 2, freq_hz: Some(433_880_000), span_hz: 20_000 });
         // Another device's burst is not kept; the sensor's next two are.
-        assert!(data.shared.heard(&w, &burst(-3_800.0, 747), 1_000_000).is_none());
-        let first = data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_354_000).expect("the first");
-        assert_eq!(first.id, "20261112T022554Z_0002");
+        assert!(data.shared.heard(&w, &burst(-3_800.0, 747), 1_000_000).1.is_none());
+        let (seq, first) = data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_354_000);
+        let first = first.expect("the first");
+        assert_eq!((seq, first.id.as_str()), (2, "20261112T022554Z_0002"));
         assert_eq!(data.view().arm, Some(Arm { left: 1, freq_hz: Some(433_880_000), span_hz: 20_000 }));
-        assert!(data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_384_000).is_some());
+        assert!(data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_384_000).1.is_some());
         assert_eq!(data.view().arm, None, "both kept");
-        assert!(data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_414_000).is_none());
-        // The file is written by the captures' thread.
-        data.shared.keep(first, 1_794_450_353_980, 5_000, vec![1; 4 * 108_000], &w);
+        assert!(data.shared.heard(&w, &burst(-39_850.0, 392), 1_794_450_414_000).1.is_none());
+        // The file is written by the bursts' thread.
+        data.shared.ended(Ended { seq, offset_hz: -39_850.0, iq: vec![1; 4 * 108_000], lead_samples: 5_000, unix_ms: 1_794_450_353_980, keep: Some(first), window: w.clone() });
         let waited = Instant::now();
         while data.view().counts.captures == 0 && waited.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(10));
@@ -697,6 +874,73 @@ mod tests {
         // Deleted, its burst no longer names it.
         assert!(data.delete_capture("20261112T022554Z_0002") && !data.delete_capture("20261112T022554Z_0002"));
         assert_eq!(data.view().bursts[2].capture, None);
+    }
+
+    /// The channel's samples of the sensor's burst (its message twice, 105 ms apart), as a
+    /// capture's bytes: 20 ms of noise either side.
+    fn sensor_burst(tenths: i32) -> Vec<u8> {
+        use crate::protocol::ism::oregon_v1::tests::{keying, message_of};
+        let once = keying(message_of(3, 1, tenths, false));
+        let mut twice = once.clone();
+        twice.push(105_000);
+        twice.extend(&once);
+        let iq = crate::protocol::ism::pulses::tests::keyed_burst(-39_850.0, 100.0, 20_000, &twice);
+        iq.iter().flat_map(|s| crate::protocol::ism::channel::to_i16(*s)).flat_map(i16::to_le_bytes).collect()
+    }
+
+    fn until(data: &Data, done: impl Fn(&View) -> bool) -> View {
+        let waited = Instant::now();
+        while !done(&data.view()) && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        data.view()
+    }
+
+    #[test]
+    fn a_burst_a_decoder_reads_is_a_device_s_with_what_it_said() {
+        let sd = tempfile::tempdir().unwrap();
+        let data = listening(Some(sd.path()));
+        let w = window();
+        const KEY: &str = "oregon_scientific_v1.3.1";
+        let say = |tenths: i32, unix_ms: u64| {
+            let (seq, keep) = data.shared.heard(&w, &burst(-39_850.0, 392), unix_ms);
+            data.shared.ended(Ended { seq, offset_hz: -39_850.0, iq: sensor_burst(tenths), lead_samples: 5_000, unix_ms: unix_ms - 20, keep, window: w.clone() });
+            seq
+        };
+        // The first is also kept: its capture says what it said.
+        data.arm(1, None, None).unwrap();
+        let first = say(159, 1_794_450_354_000);
+        let v = until(&data, |v| v.devices.len() == 1 && v.counts.captures == 1);
+        assert_eq!(v.devices.len(), 1, "{:?}", v.bursts);
+        let d = &v.devices[0];
+        assert_eq!((d.key.as_str(), d.kind.as_str(), d.model.as_str(), d.id, d.channel, d.messages, d.every_ms), (KEY, "weather", "Oregon Scientific v1", 3, Some(1), 1, None));
+        assert_eq!((d.freq_hz, d.emitter, d.first_unix_ms, d.over_db), (433_880_150, v.emitters[0].id, 1_794_450_354_000, 31.0));
+        assert_eq!((d.latest.temperature_c, d.latest.battery_low, d.latest.repeats), (Some(15.9), Some(false), 2));
+        assert_eq!(v.emitters[0].device.as_deref(), Some(KEY));
+        assert_eq!(v.bursts[0].reading.as_ref().and_then(|r| r.temperature_c), Some(15.9));
+        assert_eq!(data.summary().devices, 1);
+        let kept = &data.captures().unwrap().listing().items[0];
+        assert_eq!((kept.id.as_str(), kept.reading.as_ref().and_then(|r| r.temperature_c)), ("20261112T022554Z_0001", Some(15.9)));
+        // Thirty seconds on it is cooler: the device has the new reading, its interval, and
+        // both in its log, the newest first.
+        let second = say(145, 1_794_450_384_010);
+        let v = until(&data, |v| v.devices[0].messages == 2);
+        let d = &v.devices[0];
+        assert_eq!((d.messages, d.every_ms, d.last_unix_ms, d.latest.temperature_c), (2, Some(30_010), 1_794_450_384_010, Some(14.5)));
+        let log = data.device(KEY).expect("the device").log;
+        assert_eq!(log.iter().map(|s| (s.seq, s.reading.temperature_c, s.capture.as_deref())).collect::<Vec<_>>(), vec![(second, Some(14.5), None), (first, Some(15.9), Some("20261112T022554Z_0001"))]);
+        // A burst no decoder reads is no device's.
+        let (seq, keep) = data.shared.heard(&w, &burst(-3_800.0, 747), 1_794_450_390_000);
+        data.shared.ended(Ended { seq, offset_hz: -3_800.0, iq: vec![3; 4 * 50_000], lead_samples: 0, unix_ms: 1_794_450_390_000, keep, window: w.clone() });
+        let third = say(145, 1_794_450_414_020);
+        let v = until(&data, |v| v.devices[0].messages == 3);
+        assert_eq!((v.devices.len(), v.emitters.len()), (1, 2));
+        assert!(v.bursts.iter().find(|h| h.seq == seq).unwrap().reading.is_none() && v.emitters.iter().any(|e| e.device.is_none()));
+        assert!(v.bursts.iter().any(|h| h.seq == third && h.reading.is_some()));
+        assert!(data.device("oregon_scientific_v1.4.1").is_none());
+        // Its capture deleted, the log no longer names it.
+        assert!(data.delete_capture("20261112T022554Z_0001"));
+        assert!(data.device(KEY).unwrap().log.iter().all(|s| s.capture.is_none()));
     }
 
     #[test]
@@ -722,8 +966,8 @@ mod tests {
         let data = Data::new(sd.path(), None, Arc::new(|| Err("the card is absent".into())), log.clone());
         data.shared.listening(window());
         data.arm(1, None, None).unwrap();
-        let keep = data.shared.heard(&window(), &burst(0.0, 100), 1_794_450_354_000).unwrap();
-        data.shared.keep(keep, 1_794_450_354_000, 0, vec![0; 400], &window());
+        let (seq, keep) = data.shared.heard(&window(), &burst(0.0, 100), 1_794_450_354_000);
+        data.shared.ended(Ended { seq, offset_hz: 0.0, iq: vec![0; 400], lead_samples: 0, unix_ms: 1_794_450_354_000, keep, window: window() });
         let waited = Instant::now();
         while data.view().counts.capture_errors == 0 && waited.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(10));

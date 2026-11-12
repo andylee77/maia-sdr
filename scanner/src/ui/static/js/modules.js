@@ -20,7 +20,7 @@ import * as scannerSettings from './views/scanner_settings.js';
 import * as tvDiag from './views/tv_diag.js';
 import * as dataScan from './views/data_scan.js';
 import * as dataCaptures from './views/data_captures.js';
-import * as dataShell from './views/data_shell.js';
+import * as dataDevices from './views/data_devices.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
 import * as settings from './views/settings.js';
@@ -99,12 +99,12 @@ export const MODULES = [
     icon: 'pulse',
     pages: [
       { key: 'scan', label: 'Scan', view: dataScan },
-      { key: 'devices', label: 'Devices', view: dataShell.devices },
+      { key: 'devices', label: 'Devices', view: dataDevices },
       { key: 'captures', label: 'Captures', view: dataCaptures },
     ],
     line: dataLine,
     working: s => !!s.status.data && s.status.data.state === 'listening',
-    away: 'Data mode listens at 433.92 MHz for the devices that transmit nearby, and lists them by frequency. It listens only while it has the radio: these pages show what it last heard.',
+    away: 'Data mode listens at 433.92 MHz for the devices that transmit nearby, lists them by frequency and reads those it knows. It listens only while it has the radio: these pages show what it last heard.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

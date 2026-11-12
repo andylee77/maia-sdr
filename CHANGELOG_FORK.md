@@ -5,6 +5,28 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 110: The first decoder: Oregon Scientific version 1, and Devices
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** 109 heard Andy's sensor and read nothing on the unit. Asked "Decode your sensor on
+  the unit and show its temperature on the page next?", he answered "Yes, decode it". Record:
+  `doc/changes/110_oregon_v1_decoder.md`.
+- **The pulse front end and one decoder** (`protocol::ism::pulses`, `oregon_v1`): a burst
+  sliced into its pulses, and the Oregon Scientific version 1 message read from them (the
+  sensor's id and channel, its temperature, its battery), written from the protocol's facts.
+  Every burst that ends is read, on a thread of its own.
+- **Devices:** a burst a decoder reads is a device's, with what it last said and a log of its
+  last 200 readings (in memory). `GET /api/v1/data` has them, and
+  `GET /api/v1/data/devices/{key}` one with its log.
+- **The pages:** Devices is built as the study draws it (the table, and the picked device's
+  data log with its temperature as a line); Scan names a read emitter as its device; Captures
+  says what a kept burst said. **Temperatures are shown in the unit Settings picks** (109's
+  `units.temperature`): °F on unit A.
+- **Not held against rtl_433,** which is not on this PC: the checksum, the two copies in each
+  burst, and the PC tool's own reading of the same captures stand in.
+
 ## [2026-11-11] 109: Data mode listens at 433.92 MHz and keeps bursts' IQ
 
 **Branch:** fishball-p25 (local)

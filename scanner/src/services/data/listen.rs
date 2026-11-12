@@ -1,6 +1,7 @@
 //! Data mode listening: the radio parked on a window of the data bands, its raw IQ read from
 //! the capture ring as it fills, and a thread of its own that cuts the channel around the
-//! window's spot, finds the bursts in it and hands the armed ones' IQ to be kept.
+//! window's spot, finds the bursts in it and hands each on with its IQ, to be read by the
+//! decoders and kept when asked.
 //!
 //! The window is narrow (3 MSPS), so the capture ring is read whole, without a gap, and a
 //! burst's IQ comes from the same samples it was found in. When the reader falls behind or the
@@ -21,7 +22,7 @@ use anyhow::{Context, Result};
 use rustfft::num_complex::Complex32;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use super::{Shared, Window};
+use super::{Ended, Shared, Window};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::find_preset;
 use crate::protocol::ism::bursts::{Burst, Detector};
@@ -255,7 +256,11 @@ impl Kept {
     fn bytes(&self, from: u64, to: u64) -> (u64, Vec<u8>) {
         let from = from.max(self.first);
         let to = to.min(self.first + self.samples.len() as u64).max(from);
-        let bytes = self.samples.range((from - self.first) as usize..(to - self.first) as usize).flat_map(|s| [s[0].to_le_bytes(), s[1].to_le_bytes()].concat()).collect();
+        let mut bytes = Vec::with_capacity(4 * (to - from) as usize);
+        for s in self.samples.range((from - self.first) as usize..(to - self.first) as usize) {
+            bytes.extend_from_slice(&s[0].to_le_bytes());
+            bytes.extend_from_slice(&s[1].to_le_bytes());
+        }
         (from, bytes)
     }
 }
@@ -301,15 +306,13 @@ fn listen(rx: Receiver<Piece>, mut channel: Channel, window: Window, shared: Arc
     }
 }
 
-/// Tell of the bursts that ended, and hand on the IQ of those to keep. `at` gives a channel
-/// sample's AD9361 sample index.
+/// Tell of the bursts that ended, and hand each on with its IQ, to be read and kept. `at`
+/// gives a channel sample's AD9361 sample index.
 fn heard(shared: &Shared, window: &Window, clock: &Clock, kept: &Kept, bursts: &mut Vec<Burst>, at: impl Fn(u64) -> u64) {
     for b in bursts.drain(..) {
-        let unix_ms = clock.unix_ms(at(b.start));
-        let Some(keep) = shared.heard(window, &b, unix_ms) else { continue };
-        let from = b.start.saturating_sub(MARGIN_SAMPLES);
-        let (first, iq) = kept.bytes(from, b.end + MARGIN_SAMPLES);
-        shared.keep(keep, clock.unix_ms(at(first)), (b.start - first) as u32, iq, window);
+        let (seq, keep) = shared.heard(window, &b, clock.unix_ms(at(b.start)));
+        let (first, iq) = kept.bytes(b.start.saturating_sub(MARGIN_SAMPLES), b.end + MARGIN_SAMPLES);
+        shared.ended(Ended { seq, offset_hz: b.offset_hz, iq, lead_samples: (b.start - first) as u32, unix_ms: clock.unix_ms(at(first)), keep, window: window.clone() });
     }
 }
 

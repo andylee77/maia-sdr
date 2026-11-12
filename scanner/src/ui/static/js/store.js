@@ -34,6 +34,9 @@ export const store = {
   radioRev: 0,
   // The same for who may reach the radio (passwords, sessions, tokens).
   accessRev: 0,
+  // The units the pages show a reading in (the radio's Settings): { temperature }, `celsius`
+  // or `fahrenheit`.
+  units: { temperature: 'celsius' },
   // Who this browser is to the radio: { protected, level, via } (set by the shell at its start).
   session: null,
   connected: false,
@@ -82,6 +85,13 @@ async function readCalls() {
 async function readRecordings() {
   try {
     store.recordings = await api.recordings(RECENT, callsOf);
+    notify();
+  } catch { /* read again at the next change */ }
+}
+
+async function readUnits() {
+  try {
+    store.units = (await api.radio()).config.units;
     notify();
   } catch { /* read again at the next change */ }
 }
@@ -186,6 +196,7 @@ function receive(m) {
       setTraffic(m.traffic);
       readRecordings();
       readSystems();
+      readUnits();
       break;
     case 'status':
       setStatus(m.status);
@@ -234,6 +245,7 @@ function receive(m) {
         readRecordings();
       } else if (m.what === 'radio') {
         store.radioRev += 1;
+        readUnits();
         break;
       } else if (m.what === 'access') {
         store.accessRev += 1;

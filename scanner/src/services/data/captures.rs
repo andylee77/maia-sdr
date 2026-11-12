@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::ism::Reading;
 use crate::services::recordings::storage::write_durable;
 use crate::util::time::utc_fields;
 
@@ -46,6 +47,9 @@ pub struct Kept {
     pub file: String,
     pub bytes: u64,
     pub meta: String,
+    /// What the burst said, when a decoder read it.
+    #[serde(default)]
+    pub reading: Option<Reading>,
 }
 
 /// A capture to write: what it is, its samples, and the radio that took them.
@@ -263,6 +267,7 @@ mod tests {
                 file,
                 bytes: 0,
                 meta,
+                reading: None,
             },
             iq: vec![7; samples * 4],
             radio: "a test".into(),
@@ -303,7 +308,11 @@ mod tests {
         let sd = tempfile::tempdir().unwrap();
         let captures = Captures::open(sd.path());
         let first = captures.keep(job(T0, 1, 100)).unwrap();
-        let second = captures.keep(job(T0 + 86_400_000, 2, 200)).unwrap();
+        // One with what its burst said.
+        let mut read = job(T0 + 86_400_000, 2, 200);
+        read.kept.reading = Some(Reading { model: "Oregon Scientific v1".into(), kind: "weather".into(), id: 3, channel: Some(1), temperature_c: Some(14.5), battery_low: Some(false), repeats: 2 });
+        let second = captures.keep(read).unwrap();
+        assert_eq!(second.reading.as_ref().and_then(|r| r.temperature_c), Some(14.5));
         // A description without its samples is not listed.
         let orphan = captures.keep(job(T0 + 1000, 3, 50)).unwrap();
         std::fs::remove_file(captures.file(&orphan.file).unwrap()).unwrap();

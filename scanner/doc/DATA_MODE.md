@@ -10,7 +10,9 @@ Built so far, ahead of section 9's steps 0 and 1, which need the RTL-SDR and the
   `packet_data` rename);
 - a first slice of its steps 3 and 4 for one window (change 109, section 13): the mode listens
   at 433.92 MHz, lists the bursts and the emitters by frequency, and keeps the IQ of the next
-  bursts when asked. Section 13 also has what unit A was found to hear there.
+  bursts when asked. Section 13 also has what unit A was found to hear there;
+- the first of its step 5 (change 110, section 13): the pulse front end and the Oregon
+  Scientific version 1 decoder, with the Devices page for what it reads.
 
 ## 1. What the mode does
 
@@ -342,7 +344,7 @@ Each step is checked before the next starts.
 | 2 | **The mode.** `Mode::Data` and the lease, the `packet_data` rename, the three tabs empty, round trips through all three modes. **Built in 108** | Host tests as 080's; a mode round trip on A |
 | 3 | **Scan.** Band plan, scan and park, the burst detector, emitters by frequency with names, the data log per frequency, `/ws/spectrum` and the waterfall, the Scan tab. **Begun in 109** for one parked window: the burst detector, the emitters by frequency, the Scan tab without a waterfall (section 13) | A key-fob press is seen in its frame; a sensor's interval is right; a named emitter keeps its log. The ESP32-DIV sends bursts of known frequency, length and spacing, so the detector's times can be checked |
 | 4 | **Captures and raw IQ.** Per-burst cs16 and SigMF, armed captures, window snapshots, the Captures tab, `/ws/iq`. Then a day of captures on A: the corpus in `runs/data/`, decoded on the PC by `tools/rtl433_reference.py`. **Begun in 109:** per-burst cs16 and SigMF, armed captures, the Captures tab (section 13) | The corpus decodes with rtl_433 as live bursts do; it says which families to port first |
-| 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
+| 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices. **Begun in 110:** the envelope's slice, the Oregon Scientific version 1 decoder, devices and their last readings in memory, the Devices page (section 13) | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
 | 6 | **Later outputs.** NDJSON stream, MQTT with Home Assistant discovery, an rtl_tcp server | A sensor shows up in Home Assistant; SDR++ tunes a lane |
 | 7 | **Later, on evidence:** more families; other data protocols on the same machinery (POCSAG, APRS, AIS; ADS-B on a 2 MSPS stage-1-only lane); FPGA classifiers trained on the corpus | |
 
@@ -413,8 +415,8 @@ roadmap points there). For data mode:
 
 8. **Temperatures in °C or °F** (Andy, 2026-11-11: "make sure we have the output in °F ... well
    °C/°F in settings"). The radio's Settings has the unit (`units.temperature`, 109); the API's
-   own fields stay in °C, and every page that shows a temperature shows it in that unit. The
-   first to show one will be a decoded sensor's reading (step 5).
+   own fields stay in °C, and every page that shows a temperature shows it in that unit:
+   Devices, Scan and Captures do since 110.
 
 **Open:**
 
@@ -455,7 +457,11 @@ Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
 - "keep the IQ of the next N bursts", any or around a frequency: cs16 and SigMF under
   `data_captures/` on the card (`/api/v1/data/captures`), the newest 500 or 256 MB;
 - Scan (laid out as it was drawn: the strip, the map of bursts, "Heard in this window") and
-  Captures; `tools/data_captures.py`.
+  Captures; `tools/data_captures.py`;
+- since 110, each burst that ends sliced into its pulses and read by the decoders, on a thread
+  of its own (`protocol::ism::pulses`, `oregon_v1`): a read burst is a device's, with what it
+  last said and its last 200 readings in memory (`GET /api/v1/data/devices/{key}`), on Devices
+  as section 7 draws it, without the filters, the names and the log on the card.
 
 **Where it departs from sections 3 to 8:**
 
@@ -469,9 +475,11 @@ Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
 
 **What it showed for the steps to come:**
 
-- **The first decoder to port is Oregon Scientific version 1** (step 5): it is on the air every
-  30 s, and `tools/data_captures.py look --oregon-v1` reads it from a capture on the PC, which
-  gives a Rust decoder its test vectors. rtl_433 is not on this PC to hold it against.
+- **The first decoder is Oregon Scientific version 1** (110): the sensor is on the air every
+  30 s, and `tools/data_captures.py look --oregon-v1` reads it from a capture on the PC apart
+  from the Rust, which the unit's own reading is held against. Section 5's gate, a match with
+  rtl_433 on the corpus, is not met: rtl_433 is not on this PC. The decoder is hand-written;
+  the table-driven one of section 5 waits for a second device to share it with.
 - **Two devices within 10 kHz of each other that send at once are one burst** (the sensor and
   the device 8.4 kHz under it do, every few minutes): the pulse front end has to take a burst
   apart by frequency.

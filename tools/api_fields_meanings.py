@@ -9,6 +9,33 @@ null. NOT_JSON describes the GET routes that do not answer JSON.
 
 STRUCTS: dict[str, list[tuple[str, str]] | list] = {}
 
+STRUCTS["reading"] = [
+    ("model", "string", "The decoder's name for the device (`Oregon Scientific v1`, the one so far)."),
+    ("kind", "string", "What kind of device it is: `weather`."),
+    ("id", "number", "The device's id as its message gives it."),
+    ("channel", "number or null", "Its channel (a switch on the device); null for a device that has none."),
+    ("temperature_c", "number or null", "The temperature it sent, in °C whatever unit the pages show; null for a device that sends none."),
+    ("battery_low", "bool or null", "Its battery is low; null for a device that does not say."),
+    ("repeats", "number", "How many times the burst held the message (this sensor sends it twice)."),
+]
+
+STRUCTS["data_device"] = [
+    ("key", "string", "`<model>.<id>.<channel>` in lower case, for `GET /api/v1/data/devices/{key}`."),
+    ("kind", "string", "`weather`, so far."),
+    ("model", "string", "The decoder's name for it."),
+    ("id", "number", "Its id as its messages give it."),
+    ("channel", "number or null", "Its channel."),
+    ("freq_hz", "number", "Where its last burst was."),
+    ("emitter", "number", "The emitter there."),
+    ("messages", "number", "Bursts read as it since the scanner started."),
+    ("first_unix_ms", "number", "When its first read burst began."),
+    ("last_unix_ms", "number", "When its newest began."),
+    ("every_ms", "number or null", "From one of its bursts to the next: the median of its last 16; null until it was read twice."),
+    ("over_db", "number", "Its last burst's strongest bin over the floor."),
+    ("latest", "object", "What it last said."),
+    ("@latest", "reading"),
+]
+
 STRUCTS["tuning"] = [
     ("preset", "string or null", "The DDC preset of the receive window (`8M`, `12M`, `16M`)."),
     ("sample_rate_hz", "number", "The AD9361's sample rate."),
@@ -453,6 +480,7 @@ ROUTES: dict[str, list] = {
         ("data.window", "string or null", "The band plan's name for the window it listens to, or last did (`433`); null until it has listened."),
         ("data.spot_hz", "number or null", "The frequency it listens around, or last did; null until it has listened."),
         ("data.emitters", "number", "Emitters heard since the scanner started."),
+        ("data.devices", "number", "Devices the decoders have read since the scanner started."),
         ("data.bursts", "number", "Bursts heard since the scanner started."),
         ("data.arm_left", "number or null", "Bursts whose IQ is still to be kept; null when none is asked for."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
@@ -1083,6 +1111,10 @@ ROUTES: dict[str, list] = {
         ("emitters[].width_hz", "number", "The median of their `width_hz`."),
         ("emitters[].over_db", "number", "The median of their `over_db`."),
         ("emitters[].level_dbfs", "number", "The median of their `level_dbfs`."),
+        ("emitters[].device", "string or null", "The device its bursts were read as (its `key` among `devices`); null while no decoder has read one."),
+        ("devices", "array", "The devices the decoders have read, by their keys: a device is its bursts by what it is, wherever it is heard. Not kept across a restart."),
+        ("devices[]", "object", "One device."),
+        ("@devices[]", "data_device"),
         ("bursts", "array", "The newest 100 bursts, newest first. A burst is one transmission: a message and its repeats, until 200 ms pass without it."),
         ("bursts[]", "object", "One burst."),
         ("bursts[].seq", "number", "Its number since the scanner started."),
@@ -1095,6 +1127,8 @@ ROUTES: dict[str, list] = {
         ("bursts[].level_dbfs", "number", "Its power at its strongest millisecond, against the ADC's full scale."),
         ("bursts[].emitter", "number", "The emitter it is of."),
         ("bursts[].capture", "string or null", "The id of its IQ on the card, when it was kept."),
+        ("bursts[].reading", "object or null", "What it said, when a decoder read it (a moment after the burst is listed); null for a burst none reads."),
+        ("@bursts[].reading", "reading"),
         ("arm", "object or null", "The bursts whose IQ is to be kept; null when none is asked for."),
         ("arm.left", "number", "Bursts still to keep."),
         ("arm.freq_hz", "number or null", "Only bursts around this frequency; null: any burst."),
@@ -1125,6 +1159,22 @@ ROUTES: dict[str, list] = {
         ("items[].file", "string", "The samples' file, for `GET /api/v1/data/captures/{name}`: its name carries the centre and the rate."),
         ("items[].bytes", "number", "Its size."),
         ("items[].meta", "string", "The description's file (SigMF)."),
+        ("items[].reading", "object or null", "What the burst said, when a decoder read it; null otherwise (and for a capture kept before the scanner had decoders)."),
+        ("@items[].reading", "reading"),
+    ],
+    "/api/v1/data/devices/{key}": [
+        ("device", "object", "The device."),
+        ("@device", "data_device"),
+        ("log", "array", "The last 200 things it said, newest first; kept in memory since the scanner started."),
+        ("log[]", "object", "One burst read as it."),
+        ("log[].seq", "number", "The burst's number."),
+        ("log[].unix_ms", "number", "When it began."),
+        ("log[].freq_hz", "number", "Its centre."),
+        ("log[].over_db", "number", "Its strongest bin over the floor."),
+        ("log[].level_dbfs", "number", "Its power at its strongest millisecond, against the ADC's full scale."),
+        ("log[].reading", "object", "What it said."),
+        ("@log[].reading", "reading"),
+        ("log[].capture", "string or null", "The id of its IQ on the card, when it was kept."),
     ],
     "/api/v1/atsc/scan/channel/{n}": [
         ("number", "number", "The RF channel."),
@@ -1470,7 +1520,8 @@ NOT_JSON: dict[str, str] = {
         "little-endian 16-bit I and Q (`application/octet-stream`), the ADC's 12 bits in the upper 12, 20 ms before the "
         "burst and after it. `<id>_<centre>M_250k.sigmf-meta`: its SigMF description (`application/json`): the samples' "
         "type (`ci16_le`), rate, centre and time, and the burst as an annotation (its edges, and `fishball:burst`, the "
-        "capture as `GET /api/v1/data/captures` lists it). 404 for a name that is no capture's."
+        "capture as `GET /api/v1/data/captures` lists it, with what the burst said when a decoder read it). 404 for a name "
+        "that is no capture's."
     ),
     "/api/v1/files/history.sqlite": (
         "The history's SQLite database (`application/vnd.sqlite3`, an attachment named "

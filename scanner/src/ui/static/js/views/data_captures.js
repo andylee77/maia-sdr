@@ -4,8 +4,9 @@
 
 import { h, card, table, toast, setText, icon, iconButton } from '../dom.js';
 import { api } from '../api.js';
-import { want } from '../store.js';
+import { want, store } from '../store.js';
 import { mhz, bytes, num, dayTime } from '../format.js';
+import { readingText } from './data_parts.js';
 
 const FILE = '/api/v1/data/captures/';
 const plural = (n, one) => `${num(n)} ${one}${n === 1 ? '' : 's'}`;
@@ -16,8 +17,10 @@ function link(name, text, title) {
 
 export function mount(el) {
   let gone = false;
-  // The captures written when the list was last read.
+  // The captures written when the list was last read, the list, and the unit it is shown in.
   let written = null;
+  let listing = null;
+  let unit = store.units.temperature;
 
   const c = card('Captures');
   const totals = h('p', { class: 'card-note data-totals' });
@@ -25,7 +28,7 @@ export function mount(el) {
   c.body.append(
     totals,
     rows,
-    h('p', { class: 'card-note', text: 'A capture is a burst\'s IQ as the radio heard it: 250 kSPS, 16-bit I and Q (.cs16), 20 ms before the burst and after it, centred on the frequency in its name. The description (.sigmf-meta, SigMF) says when and where it was taken and what the burst was. On a PC: inspectrum and URH open the samples; rtl_433 reads them with -r.' }));
+    h('p', { class: 'card-note', text: 'A capture is a burst\'s IQ as the radio heard it: 250 kSPS, 16-bit I and Q (.cs16), 20 ms before the burst and after it, centred on the frequency in its name. The description (.sigmf-meta, SigMF) says when and where it was taken, what the burst was, and what it said when the radio read it. On a PC: inspectrum and URH open the samples; rtl_433 reads them with -r.' }));
   el.append(h('div', { class: 'data-page' },
     h('p', { class: 'card-note files-where' }, 'The IQ of bursts, kept when asked on ', h('a', { href: '#scan', text: 'Scan' }), ' ("Keep IQ"). The card keeps the newest of them.'),
     c.el));
@@ -42,11 +45,13 @@ export function mount(el) {
   function draw(l) {
     if (gone) return;
     setText(totals, l.count ? `${plural(l.count, 'capture')}, ${bytes(l.bytes)}; the newest ${num(l.max_count)} or ${bytes(l.max_bytes)} are kept.` : 'None yet.');
-    rows.replaceChildren(...(l.items.length ? [table(['Taken', 'Burst at', 'Length', 'Over the floor', 'Size', 'Files', ''], l.items.map(k => h('tr', null,
+    listing = l;
+    rows.replaceChildren(...(l.items.length ? [table(['Taken', 'Burst at', 'Length', 'Over the floor', 'Decoded', 'Size', 'Files', ''], l.items.map(k => h('tr', null,
       h('td', { class: 'num', title: k.id, text: dayTime(k.unix_ms) }),
       h('td', { class: 'num', text: mhz(k.freq_hz, 3) }),
       h('td', { class: 'num', text: `${num(k.length_ms)} ms` }),
       h('td', { class: 'num', text: `${k.over_db.toFixed(1)} dB` }),
+      h('td', { text: k.reading ? `${k.reading.model}: ${readingText(k.reading)}` : '' }),
       h('td', { class: 'num', text: bytes(k.bytes) }),
       h('td', { class: 'data-files' }, link(k.file, 'IQ', k.file), link(k.meta, 'Description', k.meta)),
       h('td', { class: 'files-get' }, iconButton('trash', 'Delete this capture', { onclick: () => remove(k) })))))] : []));
@@ -70,7 +75,13 @@ export function mount(el) {
   read();
 
   return {
-    update() {},
+    // A temperature follows the unit the radio's Settings picks.
+    update(s) {
+      if (s.units.temperature !== unit && listing) {
+        unit = s.units.temperature;
+        draw(listing);
+      }
+    },
     unmount() {
       gone = true;
       stop();

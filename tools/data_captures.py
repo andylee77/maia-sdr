@@ -15,10 +15,12 @@ scanner in data mode first and gives the radio back after: no call is followed m
 
 `look` says what a capture holds: its burst's pulses and gaps and its carrier's offset; with
 `--oregon-v1`, whether it is an Oregon Scientific version 1 message, and what it says. That is a
-check of the capture on the PC, not the scanner's decoder (which is not built).
+reading of the capture on the PC, apart from the scanner's own decoder: `keep --oregon-v1` holds
+what the scanner read of each burst against it.
 
 Prints one JSON object; exits 0 when all is as asked, 1 when not (a capture missing or not what
-the list says, `--oregon-v1` finding no message), 3 when the scanner refused.
+the list says, `--oregon-v1` finding no message or another than the scanner read), 3 when the
+scanner refused.
 """
 
 import argparse
@@ -64,7 +66,8 @@ def summary(view):
         "floor_dbfs": view["floor_dbfs"],
         "counts": view["counts"],
         "arm": view["arm"],
-        "emitters": [{k: e[k] for k in ("freq_hz", "bursts", "every_ms", "length_ms", "over_db", "level_dbfs")} for e in view["emitters"]],
+        "emitters": [{k: e[k] for k in ("freq_hz", "bursts", "every_ms", "length_ms", "over_db", "level_dbfs", "device")} for e in view["emitters"]],
+        "devices": [{k: d[k] for k in ("key", "model", "id", "channel", "freq_hz", "messages", "every_ms", "latest")} for d in view["devices"]],
     }
 
 
@@ -214,7 +217,7 @@ def fetch(base, kept, out_dir):
         problems.append("the description does not describe the samples")
     if ours["id"] != kept["id"] or ours["freq_hz"] != kept["freq_hz"]:
         problems.append("the description's burst is not the list's")
-    got.update(file=str(data), bytes=data.stat().st_size, problems=problems, ok=not problems)
+    got.update(file=str(data), bytes=data.stat().st_size, problems=problems, ok=not problems, reading=ours.get("reading"))
     return got
 
 
@@ -268,6 +271,16 @@ def keep(base, args, out_dir):
                 if args.oregon_v1 and not got["look"]["oregon_v1"]:
                     got["ok"] = False
                     got["problems"].append("no Oregon Scientific version 1 message in it")
+                elif args.oregon_v1:
+                    # What the scanner read of the burst is what the look reads of its capture.
+                    seen, read = got["look"]["oregon_v1"][0], got["reading"]
+                    if not read:
+                        got["ok"] = False
+                        got["problems"].append("the scanner did not read the burst; the look does")
+                    elif (read["id"], read["channel"], round(read["temperature_c"], 1), read["battery_low"]) != (seen["id"], seen["channel"], seen["temperature_c"], seen["battery_low"]) \
+                            or read["repeats"] != len(got["look"]["oregon_v1"]):
+                        got["ok"] = False
+                        got["problems"].append(f"the scanner read {read}, the look {got['look']['oregon_v1']}")
             ok = ok and got["ok"]
             result["captures"].append(got)
         if not ok and len(new) < args.count:

@@ -111,7 +111,7 @@ fn gcd(a: u64, b: u64) -> u64 {
 
 /// A Hamming-windowed low-pass of `n` taps, its cut-off (half its gain) at `cutoff` of the
 /// sample rate, with a gain of one at 0 Hz.
-fn low_pass(n: usize, cutoff: f64) -> Vec<f32> {
+pub(super) fn low_pass(n: usize, cutoff: f64) -> Vec<f32> {
     let mid = (n - 1) as f64 / 2.0;
     let taps: Vec<f64> = (0..n)
         .map(|i| {
