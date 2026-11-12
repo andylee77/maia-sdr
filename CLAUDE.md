@@ -162,7 +162,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-11-access2`: 096 to 106) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-11-ssh1`: 096 to 107) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** by key only since 107 (the image's key is this PC's `~/.ssh/id_ed25519`; the root

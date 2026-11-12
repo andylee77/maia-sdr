@@ -18,6 +18,8 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   its key; the root password still opens the serial consoles, for whoever has the unit in hand.
 - **Step 6 is built:** what the network reaches on a unit is the scanner's two ports, SSH by
   key, and libiio's port while it is switched on.
+- **The SD image `2026-11-11-ssh1`** is on unit A: its SSH offers `publickey` alone, a login by
+  key works, one without is refused; the scanner live on Clay as before.
 
 ## [2026-11-11] 106: The image builds again, and the SD image with 096 to 105
 
