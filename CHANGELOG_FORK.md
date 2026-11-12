@@ -18,6 +18,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **cargo resolves a dependency by the manifest's `rust-version`** (`scanner/.cargo/config.toml`),
   and a host test (`scanner/tests/image_rust.rs`) fails, naming them, when a package the unit's
   build compiles needs a newer Rust.
+- **The SD image `2026-11-11-access2`** (096 to 106; tezuka_fw 007 and 008) is on unit A: live
+  on Clay, open as before, HTTPS under the CA it already had, libiio off. The two firmware
+  paths an image was needed for are checked: the gadget built at start with libiio off, and,
+  after a restart with it kept on, with it on.
 
 ## [2026-11-11] 105: libiio's daemon off unless switched on
 

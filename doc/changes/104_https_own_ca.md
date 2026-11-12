@@ -2,10 +2,9 @@
 
 **Date:** 2026-11-11. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-11-https1`, with the
-firmware's new `S60scanner` put there by hand) over the SD image `2026-11-10-pages2`, which does
-not have it. Unit A's CA and certificate are on its flash and stay. The firmware's side is
-tezuka_fw's change 007, committed locally and not built into an image.
+**Status:** committed locally. In unit A's SD image since `2026-11-11-access2` (106), with the
+firmware's side, tezuka_fw's change 007. Unit A's CA and certificate are on its flash: they
+were made by this change's test build and the image went on using them.
 
 ## Why
 
@@ -222,5 +221,8 @@ See the status log for the counts.
     near its end, or after a start in 1970 (host tests);
   - the bench's own runs against a closed unit (its client was; `iiod` is not behind any of
     this);
-  - VLC with a token in a stream's address over HTTPS;
-  - the firmware's change in an image (tezuka_fw 007: no image was built).
+  - VLC with a token in a stream's address over HTTPS.
+- 2026-11-11: in the SD image `2026-11-11-access2` on unit A (106): the image's `S60scanner`
+  started the scanner with both ports, the old certificate script is gone from it, and HTTPS
+  verified against the CA saved before the image went on. Not checked there: an image built from
+  nothing, which has no `openssl` binary (this one's build kept the one it had).

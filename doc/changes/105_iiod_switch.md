@@ -2,10 +2,8 @@
 
 **Date:** 2026-11-11. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-11-iiod1`, with the
-firmware's `S23udc` and `iio-switch` put there by hand) over the SD image `2026-11-10-pages2`,
-which has neither. The firmware's side is tezuka_fw's change 008, committed locally and not
-built into an image.
+**Status:** committed locally. In unit A's SD image since `2026-11-11-access2` (106), with the
+firmware's side, tezuka_fw's change 008. Unit A's libiio is off, the choice kept off.
 
 ## Why
 
@@ -146,10 +144,14 @@ See the status log for the counts.
     `tool_pages.mjs` 27, `files_page.mjs` 9, `now_rail.mjs` 15;
   - left with libiio off, the choice kept off, the scanner live on Clay at 100 %, open as
     before; `scanner/doc/API_FIELDS.md` regenerated from A.
+- 2026-11-11: in the SD image `2026-11-11-access2` on unit A (106), **the gadget built at
+  start by the choice**, which the test build could not show:
+  - kept off, A started with no `iiod`, port 30431 refusing, and its gadget on the bus with the
+    network, storage and serial functions and no IIO function;
+  - kept on through the API and restarted, A started with `iiod` running and its gadget built
+    with the IIO function, and `iio_attr` read the board from the PC;
+  - `iiod_api.py --unit` 10 steps on the image's own scripts; then switched off and left so.
 - **Not checked:**
-  - **the gadget built at start by the choice** (on and off): no image was built, and A's
-    gadget was built by its image's script before the new one was copied there. It needs an
-    image on a unit;
   - **a host on the USB cable while it is switched**: A's USB port has power only and unit B
     was off. That is where the bench's own link to A is (192.168.2.1), and what the
     lost-answer handling is for: its logic is in the bench's host tests, not on a cable;

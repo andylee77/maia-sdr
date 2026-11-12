@@ -26,8 +26,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   it"); no browser has been tried with the CA installed, which is Andy's to do. libiio's
   daemon (`iiod`) is off unless switched on, in Settings, Access, and the bench switches it on
   when it needs it (105, `doc/changes/105_iiod_switch.md`; Q10, "Yes, build it"; the firmware's
-  `iio-switch`, tezuka_fw 008). Left of step 6: SSH, which is Andy's to say. 095's review of the
-  UI and its API:
+  `iio-switch`, tezuka_fw 008). Left of step 6: SSH, which is Andy's to say. 096 to 105 are in
+  unit A's SD image since 106 (`doc/changes/106_image_rust.md`, which also holds the scanner's
+  dependencies to the image's Rust). 095's review of the UI and its API:
   `doc/changes/095_structure_and_review.md` (what it fixed, and what is open by
   step).
 - **The radio core (079):** the gateware plan for every mode is in
@@ -160,7 +161,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-10-pages2`) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-11-access2`: 096 to 106) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:
