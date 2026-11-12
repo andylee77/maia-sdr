@@ -5,6 +5,38 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 113: The ADS-B decoder on the unit and the Aircraft page; a look at 978 MHz (UAT)
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** asked "Build the ADS-B decoder on the unit next?", Andy answered "Yes, build it";
+  and while it was built: "can we also add 978 MHz (Universal Access Transceiver / UAT)".
+  Record: `doc/changes/113_adsb_decoder.md`.
+- **The Aircraft module listens** (`protocol::adsb`, `services::adsb`): while it has the radio
+  it is at 1090 MHz with a 4 MSPS window and a fixed gain of 73 dB, the window read from the
+  capture ring, and a thread finds the Mode S messages in it: extended squitters and all-call
+  replies whose parity is right, no bit corrected. Read of a squitter: callsign and category,
+  altitude, speed, track and rate of climb, and the place (an even and an odd half together).
+- **Held against the PC, message for message.** The method is in whole numbers (each sample its
+  amplitude in sixteenths of the ADC's step), so `tools/adsb_look.py` and the scanner find the
+  same messages at the same samples: 3,325 and 2,618 in 112's two captures. Of four ways to
+  take a sample, that one lost nothing to floating point.
+- **The Aircraft page:** a table of the aircraft heard in the last minute, sorted by any
+  column's head. An aircraft is listed at its second message, since a few times an hour noise
+  passes the parity. No distances and no plot: the radio does not know where it is.
+- **On unit A:** 203 messages a second, 126 aircraft listed (93 with a place) in 40 s, no gap
+  and nothing dropped; the search's thread takes 60 % of one core.
+- **The API:** `GET /api/v1/adsb`, `status.adsb`, `adsb` on `/ws/live`.
+- **Tools:** `tools/adsb_listen.py` (watch a unit's module), `tools/adsb_look.py --messages`,
+  `tools/uat_look.py`.
+- **978 MHz (UAT): the antenna hears it.** Two captures read on the PC: 7 and 10 messages
+  whole from two small aircraft, with their places and altitudes; no ground station's uplink.
+  The radio hears 1090 or 978 MHz, not both, so UAT on the unit would be a choice of link or a
+  turn about. Its decoder is not built.
+- **Not in it:** UAT on the unit; the plot and distances; positions on the ground, squawks,
+  the other Mode S replies; any correction of a wrong bit; the Beast output.
+
 ## [2026-11-12] 112: An analog receiver (wide FM, narrow FM, AM) and the Aircraft module's shell
 
 **Branch:** fishball-p25 (local)

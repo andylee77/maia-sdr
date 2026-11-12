@@ -1,6 +1,7 @@
 //! `/api/v1`: the typed API the UI uses.
 
 pub mod activity;
+pub mod adsb;
 pub mod aliases;
 pub mod analog;
 pub mod atsc;

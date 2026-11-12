@@ -26,6 +26,8 @@ pub struct Status {
     pub data: crate::services::data::Summary,
     /// The analog receiver in a line.
     pub analog: crate::services::analog::Summary,
+    /// The aircraft module's listening in a line.
+    pub adsb: crate::services::adsb::Summary,
     pub live: LiveState,
     pub control: ControlStatus,
     pub lease: &'static str,
@@ -67,6 +69,7 @@ pub fn status(s: &AppState) -> Status {
         mode: s.modes.current(),
         data: s.data.summary(),
         analog: s.analog.summary(),
+        adsb: s.adsb.summary(),
         lease: s.lease.current().as_str(),
         tuning,
         clock: s.clock.status(),

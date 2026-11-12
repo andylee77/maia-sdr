@@ -490,6 +490,11 @@ ROUTES: dict[str, list] = {
         ("analog.freq_hz", "number", "The frequency it is tuned to."),
         ("analog.demod", "string", "How it is demodulated: `wfm`, `nfm` or `am`."),
         ("analog.open", "bool or null", "Audio passes (its squelch is open, or it has none); null while it does not listen, and from a tuning to another frequency until the meter has read there."),
+        ("adsb", "object", "The aircraft module in a line (`GET /api/v1/adsb` has the whole of it)."),
+        ("adsb.state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("adsb.error", "string or null", "Why it does not listen."),
+        ("adsb.aircraft", "number", "Aircraft listed: heard twice or more, the last time within a minute."),
+        ("adsb.messages_per_s", "number", "Messages whose parity was right, a second, over the last ten seconds."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
         ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below)."),
         ("live.to", "string, absent unless switching", "The site being made live."),
@@ -1087,6 +1092,41 @@ ROUTES: dict[str, list] = {
     "/api/v1/mode": [
         ("mode", "string", "`scanner`, `atsc`, `data`, `analog` or `adsb`."),
     ],
+    "/api/v1/adsb": [
+        ("rev", "number", "Moves when anything here changes: once a second while it listens, and when it starts or stops."),
+        ("state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("error", "string or null", "Why it does not listen."),
+        ("window", "object or null", "The radio's window while it listens; null otherwise."),
+        ("window.lo_hz", "number", "Its LO: 1090 MHz, where Mode S is sent."),
+        ("window.sample_rate_hz", "number", "Its sample rate: 4 MSPS, two samples to a pulse."),
+        ("window.gain_db", "number or null", "The receiver's gain, fixed at 73 dB; null for a replayed file."),
+        ("window.source", "string", "`radio`, or `replay` on a development host playing a capture in the radio's place."),
+        ("since_unix_ms", "number or null", "When it last began to listen."),
+        ("messages_per_s", "number", "Messages whose parity was right, a second: the mean of the last ten whole seconds."),
+        ("counts", "object", "Since the scanner started."),
+        ("counts.squitters", "number", "Extended squitters (formats 17 and 18: ADS-B) whose parity was right. No bit is corrected."),
+        ("counts.all_call", "number", "All-call replies (format 11) whose parity was right: an aircraft's address alone."),
+        ("counts.tried", "number", "Preambles found and read: most are noise, and a few thousand a second are checked against the parity, which one in 16.7 million passes by chance."),
+        ("counts.aircraft", "number", "Times an aircraft came to be listed (at its second message); one heard again after a minute's silence counts again."),
+        ("counts.gaps", "number", "Times the capture ring was read too late or the core lost words: the search began afresh, and a message on the air meanwhile is lost."),
+        ("counts.dropped", "number", "Blocks of the window (a megabyte, 66 ms) dropped because the search was behind."),
+        ("aircraft", "array", "The aircraft heard twice or more, the last time within a minute, by their addresses. One message alone lists none: it may be noise that passed the parity."),
+        ("aircraft[]", "object", "One aircraft, with what it last said of each thing."),
+        ("aircraft[].icao", "string", "Its 24-bit address, six hexadecimal digits."),
+        ("aircraft[].callsign", "string or null", "Its callsign (types 1 to 4), trimmed."),
+        ("aircraft[].category", "string or null", "Its category, a set and a number as `A3`; null when it gives none."),
+        ("aircraft[].altitude_ft", "number or null", "Its altitude by pressure, feet, where it is sent in steps of 25 ft (types 9 to 18)."),
+        ("aircraft[].speed_kt", "number or null", "Its speed over the ground, knots (type 19, its first two kinds)."),
+        ("aircraft[].track_deg", "number or null", "Its track over the ground, degrees from north."),
+        ("aircraft[].vertical_fpm", "number or null", "Its rate of climb, feet a minute; down is negative."),
+        ("aircraft[].lat", "number or null", "Its latitude, degrees north: from an even and an odd half of an airborne position heard within ten seconds of each other."),
+        ("aircraft[].lon", "number or null", "Its longitude, degrees east."),
+        ("aircraft[].position_unix_ms", "number or null", "When its place was last worked out."),
+        ("aircraft[].level_dbfs", "number", "Its last message's pulses against the ADC's full scale, dB. The gain is fixed, so it compares from one aircraft to another; the nearest clip, at 0 to 3."),
+        ("aircraft[].messages", "number", "Messages heard of it since it was first heard."),
+        ("aircraft[].first_unix_ms", "number", "When it was first heard."),
+        ("aircraft[].last_unix_ms", "number", "When it was last heard."),
+    ],
     "/api/v1/analog": [
         ("rev", "number", "Moves when anything here changes: at a tuning, when the squelch opens or shuts, and a few times a second with the meter while it listens."),
         ("state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
@@ -1509,7 +1549,7 @@ NOT_JSON: dict[str, str] = {
         "| `changed` | `what`: `radio`, `systems`, `hold`, `recordings` or `access` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "
-        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool, \"data\": bool, \"analog\": bool}` "
+        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool, \"data\": bool, \"analog\": bool, \"adsb\": bool}` "
         "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
         "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
@@ -1520,7 +1560,8 @@ NOT_JSON: dict[str, str] = {
         "| `atsc_live` | `live` (as `GET /api/v1/atsc/live`) | When it changed, each second at most. |\n"
         "| `files` | `download` (as `GET /api/v1/files`' `download`; null when none runs) | When it changed, each second at most. |\n"
         "| `data` | `data` (as `GET /api/v1/data`) | When its `rev` moved: at each burst, and once a second while it listens. |\n"
-        "| `analog` | `analog` (as `GET /api/v1/analog`) | When its `rev` moved: at a tuning, when the squelch opens or shuts, and four times a second with the meter while it listens. |"
+        "| `analog` | `analog` (as `GET /api/v1/analog`) | When its `rev` moved: at a tuning, when the squelch opens or shuts, and four times a second with the meter while it listens. |\n"
+        "| `adsb` | `adsb` (as `GET /api/v1/adsb`) | When its `rev` moved: once a second while it listens. |"
     ),
     "/ws/analog": (
         "A WebSocket. A text frame `{\"type\": \"format\", \"rate_hz\": 31250}` first; then, while the "

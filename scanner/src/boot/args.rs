@@ -41,6 +41,11 @@ pub struct Args {
     #[arg(long)]
     pub analog_replay: Option<PathBuf>,
 
+    /// A raw capture at 1090 MHz and 4 MSPS, played in the radio's place by the aircraft module
+    /// (a development host): its name gives its LO and rate, as `adsb_1090M_4000k.cs16`.
+    #[arg(long)]
+    pub adsb_replay: Option<PathBuf>,
+
     /// Receiver LO with no live site (Hz).
     #[arg(long)]
     pub rx_lo: Option<u64>,

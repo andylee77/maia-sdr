@@ -69,6 +69,7 @@ const ASSETS: &[Asset] = assets![
     "js/views/data_devices.js",
     "js/views/data_captures.js",
     "js/views/analog_listen.js",
+    "js/views/aircraft.js",
     "js/views/aircraft_shell.js",
     "js/views/diag_parts.js",
     "js/views/scanner_diag.js",

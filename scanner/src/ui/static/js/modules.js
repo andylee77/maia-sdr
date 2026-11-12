@@ -22,6 +22,7 @@ import * as dataScan from './views/data_scan.js';
 import * as dataCaptures from './views/data_captures.js';
 import * as dataDevices from './views/data_devices.js';
 import * as analogListen from './views/analog_listen.js';
+import * as aircraftList from './views/aircraft.js';
 import * as aircraft from './views/aircraft_shell.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
@@ -68,6 +69,15 @@ function analogLine(s) {
   if (a.state === 'starting') return 'starting…';
   if (a.state === 'error') return 'not listening: an error';
   return `${mhz(a.freq_hz)} ${ANALOG_KIND[a.demod]} · Scanner paused`;
+}
+
+// The Aircraft module's line: how many aircraft it hears. It listens only while it has the radio.
+function aircraftLine(s) {
+  const a = s.status.adsb;
+  if (!a || a.state === 'off') return 'not listening';
+  if (a.state === 'starting') return 'starting…';
+  if (a.state === 'error') return 'not listening: an error';
+  return `${a.aircraft} aircraft · ${Math.round(a.messages_per_s)} messages a second · Scanner paused`;
 }
 
 export const MODULES = [
@@ -136,12 +146,12 @@ export const MODULES = [
     label: 'Aircraft',
     icon: 'plane',
     pages: [
-      { key: 'aircraft', label: 'Aircraft', view: aircraft.aircraft },
+      { key: 'aircraft', label: 'Aircraft', view: aircraftList },
       { key: 'plot', label: 'Plot', view: aircraft.plot },
     ],
-    line: () => 'nothing listens yet · Scanner paused',
-    working: () => false,
-    away: 'The Aircraft module will show the aircraft that send their positions at 1090 MHz (ADS-B). So far it only takes the radio and gives it back.',
+    line: aircraftLine,
+    working: s => !!s.status.adsb && s.status.adsb.state === 'listening',
+    away: 'The Aircraft module lists the aircraft that send their positions at 1090 MHz (ADS-B). It listens only while it has the radio: an aircraft stays listed for a minute after it was last heard.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

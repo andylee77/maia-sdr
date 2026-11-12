@@ -733,9 +733,24 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* Data's Scan, as the module was drawn: the windows in a strip with what the mode is asked to do,
    the window as a map of its bursts (each a dash at its frequency, newest at the top), and the
    emitters heard in it. Captures is a card of its own. A table scrolls under its own header. */
-/* A module that is only its shell: each page says what it will hold. */
+/* A page that is only its shell: it says what it will hold. */
 .shell-page { max-width: 60em; }
 .shell-will { margin: 12px 0 0; }
+
+/* The aircraft heard: a table that scrolls under its own header, each column's head a button
+   that sorts by it. */
+.aircraft-page { display: grid; gap: var(--gap); grid-template-columns: minmax(0, 1fr); }
+.aircraft-table { max-height: 66vh; overflow: auto; }
+.aircraft-table .table th { position: sticky; top: 0; z-index: 1; background: var(--bg-raised); white-space: nowrap; }
+.aircraft-table .table td { white-space: nowrap; }
+.aircraft-table .table th.num, .aircraft-table .table td.num { text-align: right; }
+.aircraft-table .aircraft-icao { font-family: var(--mono); }
+.aircraft-sort { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.aircraft-sort:hover > span:first-child { color: var(--text); }
+th[aria-sort="ascending"] .aircraft-sort > span:first-child::after { content: " \2191"; }
+th[aria-sort="descending"] .aircraft-sort > span:first-child::after { content: " \2193"; }
+.aircraft-table + .dim { margin: 10px 0 0; }
+.aircraft-state.warn { color: var(--warn); }
 
 /* The analog receiver: the bands in the strip, the tuner with its frequency, controls and meter. */
 button.data-win { background: transparent; cursor: pointer; font: inherit; }

@@ -148,7 +148,7 @@ impl Modes {
                 persist(to, &d).await;
             }
             Mode::Adsb => {
-                d.adsb.enter(hold).await;
+                d.adsb.enter(hold, d.tuner.clone(), d.log.clone()).await;
                 self.mode.send_replace(to);
                 persist(to, &d).await;
             }

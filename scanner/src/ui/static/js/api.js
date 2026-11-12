@@ -124,6 +124,8 @@ export const api = {
   // The analog receiver: what it is tuned to and hears; and tuning it (`{freq_hz, demod,
   // squelch_db}`).
   analog: () => request('GET', '/api/v1/analog'),
+  // The aircraft module: its listening at 1090 MHz and the aircraft heard.
+  adsb: () => request('GET', '/api/v1/adsb'),
   analogTune: tuned => request('PUT', '/api/v1/analog/tune', tuned),
   // Data mode's listening: its state, window, emitters, newest bursts and what is armed.
   data: () => request('GET', '/api/v1/data'),

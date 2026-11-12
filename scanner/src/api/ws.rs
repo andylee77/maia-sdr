@@ -259,7 +259,7 @@ async fn analog_stream(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
-/// `window`, `crystal`, `atsc_live`, `files`, `data` and `analog` messages.
+/// `window`, `crystal`, `atsc_live`, `files`, `data`, `analog` and `adsb` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
     let Some(place) = Place::take() else { return too_many() };
     ws.on_upgrade(move |socket| async move {
@@ -304,6 +304,9 @@ struct Wants {
     data: bool,
     /// `analog`: the analog receiver (`analog`, as `GET /api/v1/analog`) when it changed.
     analog: bool,
+    /// `adsb`: the aircraft module (`adsb`, as `GET /api/v1/adsb`) when it changed: once a
+    /// second while it listens.
+    adsb: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -320,7 +323,7 @@ struct EventsWant {
 
 impl Wants {
     fn any(&self) -> bool {
-        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files || self.data || self.analog
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files || self.data || self.analog || self.adsb
     }
 }
 
@@ -338,6 +341,7 @@ struct Sent {
     files_text: String,
     data_rev: Option<u64>,
     analog_rev: Option<u64>,
+    adsb_rev: Option<u64>,
 }
 
 fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
@@ -398,6 +402,13 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         if sent.analog_rev != Some(view.rev) {
             sent.analog_rev = Some(view.rev);
             out.push(message("analog", "analog", view));
+        }
+    }
+    if w.adsb {
+        let view = s.adsb.view();
+        if sent.adsb_rev != Some(view.rev) {
+            sent.adsb_rev = Some(view.rev);
+            out.push(message("adsb", "adsb", view));
         }
     }
     if w.files && due(sent.files, FILES_EVERY, now) {

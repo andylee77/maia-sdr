@@ -86,10 +86,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   the radio: wide FM, narrow FM or AM, a squelch over the floor and a meter, its audio
   (31,250 Hz, mono) on `/ws/analog`, played by its Listen page. The window comes from the
   capture ring as Data's does, the LO half a megahertz above the frequency. The Aircraft module
-  (`Mode::Adsb`, `services::adsb`) is a shell: it takes the radio and gives it back, and its
-  pages say what they will hold. Unit A's antenna hears ADS-B (122 aircraft in a 12 s capture
-  at 1090 MHz, `tools/adsb_look.py`, which is the reference a decoder on the unit is to be held
-  against; dump1090's code is not used). Checks: `runs/ui_check/analog_listen.mjs` (on a unit,
+  (`Mode::Adsb`, `services::adsb`) was a shell in 112 and listens since 113 (below). Checks: `runs/ui_check/analog_listen.mjs` (on a unit,
   `--fm <MHz>` names a broadcast station; unit A hears 102.9); against the PC daemon start it
   with `--analog-replay <repo>/runs/analog/look_20261112/wx_163.05M_3000k.cs16` too. The
   receivers are held against unit A's captures with
@@ -98,6 +95,24 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   --seconds 10 --take-radio` tunes it and records what it plays (exit 1 when too little audio
   came; `--silent` for a channel that is to stay shut). AM has been checked with made signals
   only. Neither module is in an SD image yet.
+- **The ADS-B decoder (113, `doc/changes/113_adsb_decoder.md`; Andy: "Yes, build it"; the
+  roadmap's step 8):** while the Aircraft module has the radio it is at 1090 MHz with the `4M`
+  preset and a fixed gain of 73 dB, the window read from the capture ring, and a thread
+  (`adsb-listen`, 60 % of a core on unit A) finds the Mode S messages in it
+  (`protocol::adsb::mode_s`: extended squitters and all-call replies whose parity is right, no
+  bit corrected), reads them (`squitter`, `cpr`) and keeps the aircraft (`services::adsb`),
+  which the Aircraft page lists; Plot is not built (the radio does not know where it is). The
+  method is in whole numbers so that `tools/adsb_look.py` finds the same messages at the same
+  samples: `ADSB_CAPTURE_DIR=<repo>/runs/adsb/look_20261112 cargo test --release adsb::` holds
+  the scanner against the lists `tools/adsb_look.py FILE --messages` writes beside the
+  captures (`runs/` is not in git: write the lists again when the method changes). dump1090's
+  code is not used. Checks: `runs/ui_check/aircraft_page.mjs`; against the PC daemon start it
+  with `--adsb-replay <repo>/runs/adsb/look_20261112/adsb_g73_1090M_4000k.cs16` too. On a
+  unit, `tools/adsb_listen.py --host <unit> listen --seconds 40 --take-radio` says what came
+  and what it cost (exit 1 when no squitter came or a block was dropped). **978 MHz (UAT):**
+  Andy asked for it ("can we also add 978 MHz"); unit A's antenna hears its aircraft
+  (`tools/uat_look.py` on the two captures in `runs/adsb/look_20261112/`); the radio hears one
+  of the two links at a time; its decoder on the unit is not built.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan

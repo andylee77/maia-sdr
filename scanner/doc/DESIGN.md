@@ -197,6 +197,9 @@ scanner/src/         the fresh crate (D13)
                      devices keyed by pulse distance: an AcuRite 606TX, a Prologue sensor)
     analog.rs        the analog receivers: wide FM, narrow FM and AM, a 250 kSPS channel to
                      audio at 31,250 Hz, with the meter and the squelch over the floor
+    adsb/            what aircraft send at 1090 MHz: mode_s (the messages in a 4 MSPS window,
+                     taken when their parity is right), squitter (what one says), cpr (a
+                     whole position from two halves)
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -225,7 +228,9 @@ scanner/src/         the fresh crate (D13)
     analog/          the analog module: what it is tuned to, and listen (the window read from
                      the capture ring, the channel cut at the frequency, the receiver's audio
                      to its listeners)
-    adsb.rs          the aircraft module's shell: it holds the radio while its mode lasts
+    adsb/            the aircraft module: listen (the window at 1090 MHz read from the
+                     capture ring, the search's thread) and table (the aircraft heard, each
+                     with what it last said)
     data/            data mode: listen (the window read from the capture ring, the bursts and
                      the emitters), the devices the decoders read with their logs, captures
                      (bursts' IQ on the card, cs16 and SigMF)
@@ -241,7 +246,7 @@ scanner/src/         the fresh crate (D13)
   api/               one route table builds the router and doc/API.md; ApiError
     v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity,
                      packet_data, spectrum, survey, scan, events, iq, receivers, system, config,
-                     mode, atsc, data, analog, files
+                     mode, atsc, data, analog, adsb, files
     ws.rs            /ws/live, /ws/audio, /ws/analog, /ws/events
     legacy.rs        p25-httpd's routes the bench reads, in their old shape
   ui/                mod.rs and the static files (index.html, js/, css/)

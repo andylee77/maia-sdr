@@ -46,7 +46,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let live_site = config.state.value.live_site.clone();
     let mode = config.state.value.mode;
     let analog = Arc::new(crate::services::analog::Analog::new(config.state.value.analog, args.analog_replay.clone()));
-    let adsb = Arc::new(crate::services::adsb::Adsb::default());
+    let adsb = Arc::new(crate::services::adsb::Adsb::new(args.adsb_replay.clone()));
     let follow_data = config.radio.value.packet_data.follow;
     let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;
 

@@ -2,32 +2,45 @@
 """What a raw capture at 1090 MHz holds of Mode S: the extended squitters (ADS-B) and the short
 all-call replies with a good parity, and what the squitters say (no scanner needed).
 
-    adsb_look.py FILE.cs16 [--ratio 1.5]
+    adsb_look.py FILE.cs16 [--messages [LIST]]
 
 The capture is 16-bit little-endian I and Q at 4 MSPS with its LO at 1090 MHz, as `iio_readdev`
-takes it on a unit with the scanner stopped (doc/changes/112 has the commands). Prints how many
+takes it on a unit with the scanner stopped (doc/changes/113 has the commands). Prints how many
 messages have a good parity, how strong they are, and each aircraft heard: its address, its
 callsign, its altitudes, a position where an even and an odd half of one were both heard, and
 its speed.
+
+It finds the messages as the scanner does (scanner/src/protocol/adsb/mode_s.rs), sample for
+sample and in whole numbers, so the two can be held against each other: `--messages` writes
+each message with the sample its preamble begins at (to LIST, or beside the capture as
+FILE.messages), which is what the scanner's test reads (ADSB_CAPTURE_DIR).
 
 The facts it is written from: pulse-position keying at 1 Mbit/s; a preamble of four
 half-microsecond pulses starting 0, 1.0, 3.5 and 4.5 us in; 56 or 112 bits after 8 us, a pulse in
 a bit's first half a one; the first five bits the format (17 and 18: an extended squitter, 112
 bits; 11: an all-call reply, 56 bits); the last 24 bits a parity by the generator 0xFFF409, which
-leaves nothing over a squitter's whole message; a squitter's bits 9 to 32 the aircraft's
-address, 33 to 88 its message, whose first five bits are its type (1 to 4: a callsign of eight
-six-bit characters; 9 to 18: an altitude and half a position; 19: a velocity). dump1090 is the
-reference such a reader is to be held against; none of its code is here.
+leaves nothing over a whole message; a squitter's bits 9 to 32 the aircraft's address, 33 to 88
+its message, whose first five bits are its type (1 to 4: a callsign of eight six-bit characters;
+9 to 18: an altitude and half a position; 19: a velocity). dump1090 is the reference such a
+reader is to be held against; none of its code is here.
+
+The method: each sample as its amplitude in sixteenths of the ADC's step; a preamble where the
+eight samples of its pulses hold more than a third of its 32 samples' sum (their mean one and a
+half times the others'), at the sample where they hold the most; each bit by which of its halves
+holds more; no bit corrected; the same message found again within 200 samples is one.
 """
 
 import argparse
 import math
 import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import numpy as np
 
 CHARS = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ#####_###############0123456789######"
+RATE = 4_000_000
+SPAN = 32 + 112 * 4
 TABLE = []
 for i in range(256):
     c = i << 16
@@ -46,10 +59,19 @@ def parity(data):
     return crc
 
 
+def amplitude(block):
+    """Each sample's amplitude in sixteenths of the ADC's step, a whole number."""
+    i = np.clip(block[:, 0].astype(np.int64), -2048, 2048)
+    q = np.clip(block[:, 1].astype(np.int64), -2048, 2048)
+    return np.floor(np.sqrt((i * i + q * q).astype(np.float32)) * np.float32(16) + np.float32(0.5)).astype(np.int64)
+
+
 def nl(lat):
     """The number of longitude zones at a latitude."""
+    if lat == 0:
+        return 59
     if abs(lat) >= 87:
-        return 1
+        return 1 if abs(lat) > 87 else 2
     a = 1 - math.cos(math.pi / 30)
     b = math.cos(math.pi / 180 * abs(lat)) ** 2
     return int(math.floor(2 * math.pi / math.acos(1 - a / b)))
@@ -73,79 +95,86 @@ def position(even, odd, newest_odd):
     return lat, lon - 360 if lon >= 180 else lon
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("file")
-    ap.add_argument("--rate", type=int, default=4_000_000, help="the capture's sample rate: 4 MSPS is what this reads")
-    ap.add_argument("--ratio", type=float, default=1.5, help="a preamble's pulses over what is between them, in amplitude")
-    a = ap.parse_args()
-    if a.rate != 4_000_000:
-        raise SystemExit("written for 4 MSPS: four samples a microsecond")
-
-    raw = np.memmap(a.file, dtype="<i2", mode="r").reshape(-1, 2)
+def messages(raw):
+    """Every message in the capture: (sample, bytes, its pulses over the rest in dB, its pulses'
+    amplitude), the long and the short ones, and how many preambles were read. Every sample but
+    the first, and the last that leave no room for a long message, is tried once."""
     total = raw.shape[0]
-    chunk, lap = 4_000_000, 600
-    peak = 0
-    clipped = 0
-    floor = []
-    long_msgs, short_msgs = [], []
-    tried = 0
+    chunk = RATE
+    long_msgs, short_msgs, tried, floor = [], [], 0, []
     for start in range(0, total, chunk):
-        block = np.asarray(raw[start:start + chunk + lap]).astype(np.float32)
-        peak = max(peak, int(np.abs(block).max()))
-        clipped += int((np.abs(block) >= 2047).sum())
-        i, q = block[:, 0] - block[:, 0].mean(), block[:, 1] - block[:, 1].mean()
-        m = np.sqrt(i * i + q * q)
-        floor.append(float(np.median(m)))
-        n = m.size - 520
-        if n <= 0:
+        lo = max(start - 1, 0)
+        p = amplitude(np.asarray(raw[lo:start + chunk + SPAN]))
+        first = start - lo if start else 1
+        last = min(p.size - SPAN, first + chunk - (0 if start else 1))
+        if last <= first:
             break
-        pair = m[:-1] + m[1:]
-        pulses = pair[0:n] + pair[4:n + 4] + pair[14:n + 14] + pair[18:n + 18]
-        csum = np.concatenate(([0.0], np.cumsum(m, dtype=np.float64)))
-        window = (csum[32:n + 32] - csum[0:n]).astype(np.float32)
-        quiet = window - pulses
-        hit = (pulses / 8 > a.ratio * quiet / 24) & (pulses >= np.roll(pulses, 1)) & (pulses > np.roll(pulses, -1))
-        hit[0] = hit[-1] = False
-        at = np.flatnonzero(hit)
-        at = at[at < min(chunk, n)]
+        floor.append(float(np.median(p)) / 16)
+        pair = p[:-1] + p[1:]
+        hi = last + 1
+        pulses = pair[0:hi + 1] + pair[4:hi + 5] + pair[14:hi + 15] + pair[18:hi + 19]
+        csum = np.concatenate(([0], np.cumsum(p)))
+        window = csum[32:hi + 33] - csum[0:hi + 1]
+        n = np.arange(first, last)
+        at = n[(3 * pulses[n] > window[n]) & (pulses[n] >= pulses[n - 1]) & (pulses[n] > pulses[n + 1])]
         tried += at.size
         if not at.size:
             continue
         # Each bit: its first half against its second.
         k = np.arange(112) * 4 + 32
-        first = m[at[:, None] + k] + m[at[:, None] + k + 1]
-        second = m[at[:, None] + k + 2] + m[at[:, None] + k + 3]
-        bits = (first > second).astype(np.uint8)
-        data = np.packbits(bits, axis=1)
+        ones = (p[at[:, None] + k] + p[at[:, None] + k + 1]) > (p[at[:, None] + k + 2] + p[at[:, None] + k + 3])
+        data = np.packbits(ones.astype(np.uint8), axis=1)
         df = data[:, 0] >> 3
-        strength = (pulses[at] / 8) / np.maximum(quiet[at] / 24, 1e-6)
-        whole = (parity(data[:, :11]) == ((data[:, 11].astype(np.uint32) << 16) | (data[:, 12].astype(np.uint32) << 8) | data[:, 13])) & ((df == 17) | (df == 18))
-        for row in np.flatnonzero(whole):
-            long_msgs.append(((start + int(at[row])) / a.rate, bytes(data[row, :14]), float(strength[row]), float(pulses[at[row]] / 8)))
-        short = (parity(data[:, :4]) == ((data[:, 4].astype(np.uint32) << 16) | (data[:, 5].astype(np.uint32) << 8) | data[:, 6])) & (df == 11)
-        for row in np.flatnonzero(short):
-            short_msgs.append(((start + int(at[row])) / a.rate, bytes(data[row, :7])))
+        over = 20 * np.log10(3 * pulses[at] / np.maximum(window[at] - pulses[at], 1))
+        level = pulses[at] / 8 / 16
+        for row in np.flatnonzero((parity(data[:, :14]) == 0) & ((df == 17) | (df == 18))):
+            long_msgs.append((lo + int(at[row]), bytes(data[row, :14]), float(over[row]), float(level[row])))
+        for row in np.flatnonzero((parity(data[:, :7]) == 0) & (df == 11)):
+            short_msgs.append((lo + int(at[row]), bytes(data[row, :7]), float(over[row]), float(level[row])))
 
     # The same message is found at neighbouring samples: one a time.
     def single(msgs):
         out = []
         for msg in sorted(msgs):
-            if not out or msg[1] != out[-1][1] or msg[0] - out[-1][0] > 50e-6:
+            if not out or msg[1] != out[-1][1] or msg[0] - out[-1][0] > 200:
                 out.append(msg)
         return out
 
-    long_msgs, short_msgs = single(long_msgs), single(short_msgs)
+    return single(long_msgs), single(short_msgs), tried, float(np.median(floor)) if floor else 0.0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("file")
+    ap.add_argument("--rate", type=int, default=RATE, help="the capture's sample rate: 4 MSPS is what this reads")
+    ap.add_argument("--messages", nargs="?", const=True, help="write each message with its sample: to this file, or beside the capture as FILE.messages")
+    a = ap.parse_args()
+    if a.rate != RATE:
+        raise SystemExit("written for 4 MSPS: four samples a microsecond")
+
+    raw = np.memmap(a.file, dtype="<i2", mode="r").reshape(-1, 2)
+    total = raw.shape[0]
+    peak = max(int(np.abs(raw[s:s + RATE]).max()) for s in range(0, total, RATE))
+    clipped = sum(int((np.abs(raw[s:s + RATE].astype(np.int32)) >= 2047).sum()) for s in range(0, total, RATE))
+    long_msgs, short_msgs, tried, noise = messages(raw)
     seconds = total / a.rate
-    noise = float(np.median(floor))
     print(f"{a.file.replace(chr(92), '/').rsplit('/', 1)[-1]}: {seconds:.1f} s at {a.rate / 1e6:g} MSPS; the largest sample {peak} of 2047, {clipped} at full scale; median amplitude {noise:.1f}")
     print(f"  preambles tried {tried:,}; extended squitters with a good parity {len(long_msgs)} ({len(long_msgs) / seconds:.1f} a second); all-call replies with a good parity {len(short_msgs)}")
+    if a.messages:
+        listed = Path(a.file).with_suffix(".messages") if a.messages is True else Path(a.messages)
+        with open(listed, "w", encoding="ascii", newline="\n") as f:
+            for at, msg, _, _ in sorted(long_msgs + short_msgs):
+                f.write(f"{at} {msg.hex()}\n")
+        print(f"  wrote {listed}")
     if not long_msgs:
         return 0
     amp = np.array([m[3] for m in long_msgs])
     print(f"  their pulses over the median amplitude: weakest {20 * np.log10(amp.min() / noise):.1f} dB, median {20 * np.log10(np.median(amp) / noise):.1f} dB, strongest {20 * np.log10(amp.max() / noise):.1f} dB")
     by = defaultdict(lambda: {"n": 0, "types": Counter(), "callsign": None, "alt": [], "even": None, "odd": None, "pos": None, "speed": None})
-    for t, msg, _, _ in long_msgs:
+    for at, msg, _, _ in short_msgs:
+        by[msg[1:4].hex().upper()]["n"] += 1
+    for at, msg, _, _ in long_msgs:
+        t = at / a.rate
         icao = msg[1:4].hex().upper()
         me = int.from_bytes(msg[4:11], "big")
         tc = me >> 51
@@ -169,7 +198,8 @@ def main():
             ew, ns = ((me >> 32) & 0x3FF) - 1, ((me >> 21) & 0x3FF) - 1
             if ew >= 0 and ns >= 0:
                 p["speed"] = round(math.hypot(ew, ns))
-    print(f"  aircraft {len(by)}:")
+    twice = sum(1 for p in by.values() if p["n"] >= 2)
+    print(f"  aircraft {len(by)}, {twice} of them heard twice or more, {sum(1 for p in by.values() if p['pos'])} with a position:")
     for icao, p in sorted(by.items(), key=lambda kv: -kv[1]["n"]):
         alt = f"{min(p['alt']):,} to {max(p['alt']):,} ft" if p["alt"] else "-"
         pos = f"{p['pos'][0]:.2f}, {p['pos'][1]:.2f}" if p["pos"] else "-"

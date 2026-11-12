@@ -105,7 +105,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`, `analog`, `adsb`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv`, `data`, `analog` and `aircraft`; `js/modules.js` maps them to the modes. `adsb` is the mode alone so far (112): nothing listens in it |
+| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`, `analog`, `adsb`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv`, `data`, `analog` and `aircraft`; `js/modules.js` maps them to the modes. `adsb` listens at 1090 MHz since 113 |
 | `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Watch (play and stop; the state itself is pushed on `/ws/live` as `atsc_live` since 091) | Stop has no notion of who else is on the stream: Watch stops the receiver only when the pushed `viewers` is at most 1 |
 | `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP; after a restart, the last scan that finished (092) | UI Channels and Watch; `tools/atsc_check.py` | Nothing says a scan came back from before a restart, or how old the antenna's state is: only its `finished_unix_ms` |
 | `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | Not kept across a restart: 404 until the next scan |
@@ -126,6 +126,12 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `PUT`/`DELETE /api/v1/data/arm` | Keep the IQ of the next bursts (`count`, `freq_hz`, `span_hz`), or no more | UI Scan's "Keep IQ", each emitter's Keep and a device's "Keep next" (within 3 kHz); the tool | By frequency only: a device's is asked for at the frequency it was last heard on |
 | `GET /api/v1/data/captures` | The bursts' IQ kept on the card, newest first | UI Data's Captures; the tool | Listed from the files' descriptions at start, not in the history's database; no paging (500 at most) |
 | `GET`/`DELETE /api/v1/data/captures/{name}` | One of a capture's two files (`.cs16`, `.sigmf-meta`); delete a capture by its id | UI Captures; the tool | The two verbs take different things at `{name}`: a file's name to read, the capture's id to delete |
+
+## The aircraft module
+
+| Route | Carries | Used by | Missing or wrong |
+|-------|---------|---------|------------------|
+| `GET /api/v1/adsb` | The module: its state, the window (1090 MHz, 4 MSPS, the gain), the messages a second, the counts, and the aircraft heard twice or more in the last minute, each with what it last said | UI Aircraft (pushed on `/ws/live` as `adsb`, once a second); `tools/adsb_listen.py` | The whole list each second, however little changed (107 aircraft are 30 kB). No distance or bearing: the radio does not know where it is. In memory: gone at a restart. The gain is fixed and nothing sets it. No route for one aircraft or its track |
 
 ## The analog receiver
 
