@@ -1,0 +1,5 @@
+# A dependency is resolved to the newest version the manifest's rust-version can build: that is
+# the Rust of the Tezuka image build, older than a PC's, and without this a new dependency takes
+# versions the image cannot compile.
+[resolver]
+incompatible-rust-versions = "fallback"

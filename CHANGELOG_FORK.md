@@ -5,6 +5,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 106: The image builds again, and the SD image with 096 to 105
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the first image build since 094 failed. `time` 0.3.55, which 104's certificate
+  library brought in, needs Rust 1.88; the Tezuka image builds with Rust 1.86. A PC's Rust is
+  newer, so every check on the PC had passed. Record: `doc/changes/106_image_rust.md`.
+- **`Cargo.lock`** holds `time`, `time-core` and `num-conv` at the newest versions Rust 1.86
+  builds.
+- **cargo resolves a dependency by the manifest's `rust-version`** (`scanner/.cargo/config.toml`),
+  and a host test (`scanner/tests/image_rust.rs`) fails, naming them, when a package the unit's
+  build compiles needs a newer Rust.
+
 ## [2026-11-11] 105: libiio's daemon off unless switched on
 
 **Branch:** fishball-p25 (local)

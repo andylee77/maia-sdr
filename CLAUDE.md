@@ -104,7 +104,11 @@ Every commit builds and passes these, run from `scanner/`:
   PATH="$V/Scripts:$V/Lib/site-packages/ziglang:$PATH" cargo-zigbuild check --target armv7-unknown-linux-gnueabihf.2.31
   ```
 
-  The Tezuka toolchain rejects `///` on fn params and recently stabilised features.
+  The Tezuka toolchain rejects `///` on fn params and recently stabilised features: the image
+  builds with Rust 1.86 (`rust-version` in `scanner/Cargo.toml`), older than this PC's, which
+  runs the host tests and this check. A host test (`tests/image_rust.rs`, 106) holds every
+  dependency to it, and `scanner/.cargo/config.toml` has cargo pick versions it can build; the
+  scanner's own code is held to it only by the image build.
 - **DMR reference:** `DMR_CAPTURE_DIR=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/dmr cargo test --release dmr::`
   keeps 24,984+ of 24,996 lines matching SDRTrunk, and the follower test keeps the 20:57 call.
 - **P25 recordings,** when a receiver changes: the 313 SDRTrunk recordings decode as before
