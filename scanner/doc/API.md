@@ -28,7 +28,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal, live TV, the download running) |
 | GET | `/ws/events` | a text frame when a call opens or closes, a recording is saved or a call's alert tones are known |
 | GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged |
-| GET | `/api/v1/data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
+| GET | `/api/v1/packet_data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
 | GET | `/api/v1/activity/sites` | sites with history; where it is kept, its size and limits |
 | GET | `/api/v1/activity/summary` | calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`) |
 | GET | `/api/v1/activity/talkgroups` | talkgroups by time, with names (`limit`) |
@@ -89,8 +89,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/scan` | find the systems on the air (the live site pauses meanwhile) |
 | POST | `/api/v1/scan/cancel` | stop the scan |
 | POST | `/api/v1/scan/add` | add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent) |
-| GET | `/api/v1/mode` | the unit's mode: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV) |
-| PUT | `/api/v1/mode` | change mode (`mode`): ATSC mode has the radio to itself with the live site paused; scanner mode brings the site back with the configured gain; kept across restarts |
+| GET | `/api/v1/mode` | the unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands; so far the mode alone, with nothing listening) |
+| PUT | `/api/v1/mode` | change mode (`mode`): any mode but the scanner's has the radio to itself with the live site paused, and from one such mode to another the radio is handed on; scanner mode brings the site back with the configured gain; kept across restarts |
 | GET | `/api/v1/atsc/scan` | the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock); after a restart, the last scan that finished |
 | GET | `/api/v1/atsc/scan/channel/{n}` | one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm); not kept across a restart |
 | GET | `/api/v1/atsc/scan/options` | the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once |

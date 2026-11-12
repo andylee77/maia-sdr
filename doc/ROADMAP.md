@@ -74,7 +74,7 @@ What each goal needs from each layer, and where that layer stands.
 | RadioReference CSV import (`POST …/radioreference`, `/preview`) | **exists**, on the Aliases page (097) | G1, Aliases |
 | SDRTrunk playlist import and export | **exists** (098: `/api/v1/playlist`), held against SDRTrunk's own reader | G1, Aliases |
 | A system or a site added by hand | **decided** (UI_BRIEF), not built | G1 |
-| Modes: `scanner` and `atsc`. `Modes::set` assumes two, and `status.live.state: away` does not say which mode has the radio | **exists** for two; a third needs both fixed (`DATA_MODE.md` §8) | G3 |
+| Modes: `scanner`, `atsc` and `data`. A mode other than the scanner's holds the radio, and hands it on to the next; `status.mode` says who has it | **exists** (108). A new mode is a variant, its service's `enter` and `leave`, and a module in the pages' table | G3 |
 | What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | **exists** (101): the recordings as one ZIP archive of a selection, the history's database, a TV recording's file; one download at a time. Captures come with data mode | G1 |
 | Login, tokens, the sockets and the unit's other services | not built (see Security) | G1, G2 |
 | Listening on the unit itself: the two lanes mixed to an output, each lane's volume, the leveller, alerts-only listening | not built: all of it runs in the browser (`js/audio/`) | G2 |
@@ -95,7 +95,7 @@ What each goal needs from each layer, and where that layer stands.
 | Files: what is on the card, to download | **exists** (101), the radio's own, in the rail | G1 |
 | Login, and who is signed in | **exists** (102): the sign-in page, the header, the Access card in the radio's Settings | G1 |
 | The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
-| Data's module (Scan, Devices, Captures), a waterfall | **decided** (`DATA_MODE.md` §7), not built | G3 |
+| Data's module (Scan, Devices, Captures), a waterfall | The module and its three tabs **exist**, empty (108: the mode's shell). What they hold is **decided** (`DATA_MODE.md` §7), not built | G3 |
 | ADS-B's module | **open** (Q11) | G3 |
 | The handheld's face as a page: the prototype of the panel, and a remote control | **idea**; it follows Now's model | G2 |
 | A phone layout beyond the rail becoming a bottom bar | later (UI_BRIEF) | — |
@@ -280,7 +280,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 4 | **Settings and Diagnostics split:** done in 100. A module's own are tabs of it (Q5), the rail's two are the radio's own; a settings card saves its part and follows a change made elsewhere; the event log is kept by part | — |
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
 | 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on; in 107 SSH by key only. The step is built | Unit A's password is Andy's to set. The bench reading `/api/v1` so the legacy routes can go |
-| 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5) | The modes made general (three and more; who has the radio); the `packet_data` rename; wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
+| 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5). Begun in 108: the modes made general, the `packet_data` rename, and the mode's shell with its three tabs empty (the study's step 2) | Wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
 

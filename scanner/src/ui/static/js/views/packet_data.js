@@ -1,4 +1,4 @@
-// Activity's packet data, from /api/v1/data: the data channel, totals by kind, the radios
+// Activity's packet data, from /api/v1/packet_data: the data channel, totals by kind, the radios
 // with packet data and the recent packets. Network to radio only: radios transmit on the uplink,
 // which the receiver does not cover. Kept in memory since the last start.
 

@@ -55,6 +55,7 @@ pub struct AppState {
     /// The unit's mode, and ATSC mode's channel finder.
     pub modes: Arc<Modes>,
     pub atsc: Arc<Atsc>,
+    pub data: Arc<crate::services::data::Data>,
     /// The radio core's burst timing check (a diagnostic).
     pub burst: Arc<BurstCheck>,
     pub notices: Notices,

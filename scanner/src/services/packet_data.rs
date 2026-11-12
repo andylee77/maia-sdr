@@ -240,7 +240,7 @@ impl PacketData {
         let line = summary(&r);
         let new = self.state.lock().map(|mut d| d.add(r)).unwrap_or(false);
         if new {
-            self.log.system("data", line);
+            self.log.system("packet_data", line);
         }
     }
 

@@ -14,6 +14,7 @@ use crate::radio::lease::{Lease, RadioLease};
 use crate::radio::spectrum::SpectrumFrame;
 use crate::radio::tuner::{RadioHw, Readback, Tuner};
 use crate::services::events::EventLog;
+use crate::services::mode::Hold;
 
 /// On the air: (channel, ATSC 3.0, carrier to noise in dB, pilot offset in Hz).
 const AIR: &[(u8, bool, f64, f64)] =
@@ -109,7 +110,7 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
     let refused = atsc.start(req.clone(), tuner.clone(), log.clone()).unwrap_err();
     assert!(refused.to_string().contains("not in ATSC mode"), "{refused}");
     let lease = RadioLease::default();
-    atsc.enter(lease.take(Lease::Atsc).unwrap(), Some("clay".into())).await;
+    atsc.enter(Hold::new(lease.take(Lease::Mode).unwrap(), Some("clay".into()))).await;
     let id = atsc.start(req.clone(), tuner.clone(), log.clone()).unwrap();
     assert!(atsc.start(req, tuner.clone(), log.clone()).is_err(), "one scan at a time");
     let s = finished(&atsc).await;
@@ -138,7 +139,10 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
     assert!((peak_hz - (sp.pilot_hz as f64 + 10_100.0)).abs() < sp.bin_hz, "{peak_hz}");
     assert!(atsc.channel_spectrum(30).is_none(), "not read");
     // Leaving hands the radio back, with the site to bring back.
-    assert_eq!(atsc.leave().await.as_deref(), Some("clay"));
+    let hold = atsc.leave().await.expect("its hold comes back");
+    assert_eq!(hold.back_to.as_deref(), Some("clay"));
+    assert_eq!(lease.current(), Lease::Mode, "the radio is still held: another mode may take it over");
+    drop(hold);
     assert!(lease.is_normal());
 }
 
@@ -152,7 +156,7 @@ async fn a_finished_scan_is_the_last_scan_after_a_restart() {
     let atsc = Arc::new(Atsc::default());
     atsc.restore(path.clone());
     assert_eq!(atsc.state().state, "idle", "nothing kept yet");
-    atsc.enter(lease.take(Lease::Atsc).unwrap(), None).await;
+    atsc.enter(Hold::new(lease.take(Lease::Mode).unwrap(), None)).await;
     atsc.start(AtscRequest { channels: vec![18, 19, 25], frames: 2, identify: false, ..Default::default() }, tuner.clone(), log.clone()).unwrap();
     let done = finished(&atsc).await;
     assert_eq!(done.state, "done");
@@ -185,12 +189,12 @@ async fn leaving_atsc_mode_stops_a_scan_first() {
     let tuner = Arc::new(Tuner::new(Air::default(), 0.0));
     let log = Arc::new(EventLog::default());
     let lease = RadioLease::default();
-    atsc.enter(lease.take(Lease::Atsc).unwrap(), None).await;
+    atsc.enter(Hold::new(lease.take(Lease::Mode).unwrap(), None)).await;
     let req = AtscRequest { gain_db: Some(30), ..Default::default() };
     atsc.start(req.clone(), tuner.clone(), log.clone()).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(atsc.state().running());
-    assert_eq!(atsc.leave().await, None);
+    assert_eq!(atsc.leave().await.and_then(|hold| hold.back_to), None);
     let s = atsc.state();
     assert_eq!(s.state, "cancelled");
     assert!(s.found.len() < req.channels().len(), "{}", s.found.len());

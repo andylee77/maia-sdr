@@ -9,6 +9,7 @@ pub mod burst;
 pub mod clock;
 pub mod config;
 pub mod crystal;
+pub mod data;
 pub mod discovery;
 pub mod events;
 pub mod files;

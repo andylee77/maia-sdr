@@ -18,6 +18,7 @@ import * as watch from './views/watch.js';
 import * as scannerDiag from './views/scanner_diag.js';
 import * as scannerSettings from './views/scanner_settings.js';
 import * as tvDiag from './views/tv_diag.js';
+import * as dataShell from './views/data_shell.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
 import * as settings from './views/settings.js';
@@ -78,6 +79,20 @@ export const MODULES = [
     line: tvLine,
     working: () => true,
     away: 'These pages show what the last TV scan found. A scan or Play takes the radio.',
+  },
+  {
+    id: 'data',
+    mode: 'data',
+    label: 'Data',
+    icon: 'pulse',
+    pages: [
+      { key: 'scan', label: 'Scan', view: dataShell.scan },
+      { key: 'devices', label: 'Devices', view: dataShell.devices },
+      { key: 'captures', label: 'Captures', view: dataShell.captures },
+    ],
+    line: () => 'nothing listens yet',
+    working: () => false,
+    away: 'Data mode will watch the data bands (315, 345, 433.92 and 902 to 928 MHz) for the devices nearby. So far it only takes the radio: nothing listens in it yet.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

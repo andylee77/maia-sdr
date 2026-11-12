@@ -5,7 +5,7 @@ pub mod aliases;
 pub mod atsc;
 pub mod calls;
 pub mod config;
-pub mod data;
+pub mod packet_data;
 pub mod diag;
 pub mod events;
 pub mod files;

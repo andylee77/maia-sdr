@@ -3,8 +3,10 @@
 Andy, 2026-10-04: a third mode beside the scanner and ATSC TV, a data scanner and data capture
 mode. In it the unit watches the open-protocol data bands (315, 433.92 MHz and the like), finds
 the devices transmitting nearby and what protocols they use, logs and captures them, and streams
-their data. Unit A does this work. This is a study only: nothing is built and no code changes
-with it. Andy's decisions are in section 12.
+their data. Unit A does this work. This is the study, and Andy's decisions are in section 12.
+Built so far: section 9's step 2, the mode itself (change 108: the mode, the lease handed from
+mode to mode, the `packet_data` rename, the three tabs empty), ahead of its steps 0 and 1, which
+need the RTL-SDR and the bench.
 
 ## 1. What the mode does
 
@@ -333,7 +335,7 @@ Each step is checked before the next starts.
 |---|------|------|
 | 0 | **Ground truth, no unit code.** Andy's RTL-SDR on this PC runs rtl_433 for a day across the band plan (`-f` per band, `-H` to hop, `-F json`), as the HDHomeRun did for ATSC. Its indoor antenna gives a first look; for the comparison itself it shares unit A's antenna through a splitter, so a miss is the unit's and not the antenna's | A list of the devices really there, so `tools/data_check.py` can say what the unit finds, misses and adds |
 | 1 | **Wide lanes.** 250 kSPS and 1 MSPS presets; the lane reader at any rate | On the bench (B into A through the pads; Andy wires it) or over the air from the ESP32-DIV's CC1101 stepped across each lane: flat ±100 / ±350 kHz, alias rejection measured, no lost packets with three 1 MSPS lanes for an hour |
-| 2 | **The mode.** `Mode::Data` and the lease, the `packet_data` rename, the three tabs empty, round trips through all three modes | Host tests as 080's; a mode round trip on A |
+| 2 | **The mode.** `Mode::Data` and the lease, the `packet_data` rename, the three tabs empty, round trips through all three modes. **Built in 108** | Host tests as 080's; a mode round trip on A |
 | 3 | **Scan.** Band plan, scan and park, the burst detector, emitters by frequency with names, the data log per frequency, `/ws/spectrum` and the waterfall, the Scan tab | A key-fob press is seen in its frame; a sensor's interval is right; a named emitter keeps its log. The ESP32-DIV sends bursts of known frequency, length and spacing, so the detector's times can be checked |
 | 4 | **Captures and raw IQ.** Per-burst cs16 and SigMF, armed captures, window snapshots, the Captures tab, `/ws/iq`. Then a day of captures on A: the corpus in `runs/data/`, decoded on the PC by `tools/rtl433_reference.py` | The corpus decodes with rtl_433 as live bursts do; it says which families to port first |
 | 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
@@ -399,6 +401,11 @@ roadmap points there). For data mode:
      (step 4). The ground truth only answers what the unit misses.
    - **Test signals:** the ESP32-DIV's CC1101 sends known bursts. It can also replay captures of
      Andy's own devices, for the gates of steps 1, 3 and 5.
+   - **A device already on the air** (Andy, 2026-11-11): an Oregon Scientific outdoor
+     temperature sensor that unit A should hear. Sensors of that make send on 433.92 MHz, a
+     short burst every 40 to 60 s (the model decides which). It is there all day: a first look
+     at what unit A's antenna hears at 433 MHz, and a known emitter for the scan (step 3), the
+     captures (step 4) and a first decoder (step 5).
 
 **Open:**
 

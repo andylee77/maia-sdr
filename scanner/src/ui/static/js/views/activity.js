@@ -669,7 +669,7 @@ export function mount(host) {
           : api.activity(who === 'tg' ? 'talkgroups' : 'radios', query({ limit: WHO_ROWS })),
         tab === 'calls' ? api.activity('calls', query({ limit: st.callRows, ...f }))
           : tab === 'alerts' ? api.activity('alerts', query({ limit: st.alertRows, ...f }))
-            : api.data(site ? new URLSearchParams({ site }).toString() : ''),
+            : api.packetData(site ? new URLSearchParams({ site }).toString() : ''),
       ]);
       if (my !== seq) return;
       const totals = renderSummary(sum.summary, series.buckets);

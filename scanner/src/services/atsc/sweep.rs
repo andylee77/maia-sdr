@@ -19,11 +19,11 @@ use crate::hardware::presets::find_preset;
 use crate::protocol::atsc::spectrum::{measure, Kind};
 use crate::protocol::atsc::receiver::{identify, Identified};
 use crate::protocol::atsc::{windows, Channel};
-use crate::radio::lease::LeaseGuard;
 use crate::radio::tuner::{RadioHw, Tuner, TuningPlan};
 use crate::services::discovery::sweep::{grab, LO_SETTLE};
 use crate::services::discovery::{SWEEP_PRESET, SWEEP_RATE_HZ};
 use crate::services::events::EventLog;
+use crate::services::mode::Hold;
 use crate::util::time::unix_ms;
 
 /// The gain at which the spectrum's dB scale reads about dBm (`discovery::carriers`).
@@ -37,12 +37,6 @@ const IDENTIFY_PRESET: &str = "10M";
 const CAPTURE_SAMPLES: usize = 5_000_000;
 /// 8-VSB needs about 15 dB of carrier to noise; weaker channels are not tried.
 const IDENTIFY_MIN_DB: f32 = 15.0;
-
-/// ATSC mode's hold on the radio, and the site scanner mode brings back.
-struct Held {
-    _lease: LeaseGuard,
-    back_to: Option<String>,
-}
 
 /// One window of the last scan: its LO, its channels, and its frames averaged (dB per bin, about
 /// dBm).
@@ -60,7 +54,7 @@ pub struct Atsc {
     /// Where a finished scan is kept, and whether this binary may write the file (`restore`).
     keep: Mutex<Option<(PathBuf, bool)>>,
     /// The radio while ATSC mode lasts; a run or live TV holds this lock.
-    radio: Arc<tokio::sync::Mutex<Option<Held>>>,
+    radio: Arc<tokio::sync::Mutex<Option<Hold>>>,
     /// Scanner mode is coming back: no new run, and the running one stops.
     leaving: AtomicBool,
     /// Live TV (the radio core's 8-VSB block).
@@ -143,18 +137,18 @@ impl Atsc {
     }
 
     /// ATSC mode begins: the radio is this service's until `leave`.
-    pub async fn enter(&self, lease: LeaseGuard, back_to: Option<String>) {
-        *self.radio.lock().await = Some(Held { _lease: lease, back_to });
+    pub async fn enter(&self, hold: Hold) {
+        *self.radio.lock().await = Some(hold);
         self.leaving.store(false, Ordering::SeqCst);
     }
 
-    /// ATSC mode ends: a run and live TV stop, the radio is handed back. Returns the site to bring
-    /// back.
-    pub async fn leave(&self) -> Option<String> {
+    /// ATSC mode ends: a run and live TV stop. Its hold on the radio comes back, for the next
+    /// mode or the scanner.
+    pub async fn leave(&self) -> Option<Hold> {
         self.leaving.store(true, Ordering::SeqCst);
         self.cancel();
         self.live.stop().await;
-        self.radio.lock().await.take().and_then(|h| h.back_to)
+        self.radio.lock().await.take()
     }
 
     /// Live TV on RF `rf`: what played stops, and the radio goes to the block, its carrier loop
@@ -216,7 +210,7 @@ impl Atsc {
         Ok(id)
     }
 
-    async fn run<H: RadioHw>(self: Arc<Self>, id: u64, req: AtscRequest, radio: OwnedMutexGuard<Option<Held>>, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) {
+    async fn run<H: RadioHw>(self: Arc<Self>, id: u64, req: AtscRequest, radio: OwnedMutexGuard<Option<Hold>>, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) {
         let result = self.sweep(&req, &tuner, &log).await;
         drop(radio);
         let (summary, finished) = {

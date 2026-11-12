@@ -444,7 +444,7 @@ ROUTES: dict[str, list] = {
         ("build", "string", "The scanner's build tag."),
         ("uptime_s", "number", "Since the scanner started, s."),
         ("now_unix_ms", "number", "The board's clock."),
-        ("mode", "string", "What the unit is: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV, with the live site paused)."),
+        ("mode", "string", "The unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands; so far the mode alone). In any but the scanner's the live site is paused."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
         ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below)."),
         ("live.to", "string, absent unless switching", "The site being made live."),
@@ -461,7 +461,7 @@ ROUTES: dict[str, list] = {
         ("@live.tuning", "tuning"),
         ("control", "object", "The control channel decoder."),
         ("@control", "control"),
-        ("lease", "string", "Who has the radio: `normal`, `switching` (a site going live), `scan` or `atsc` (ATSC mode)."),
+        ("lease", "string", "What the radio is taken for: `normal` (the scanner's live site has it), `switching` (a site going live), `scan`, `diagnostic` or `mode` (a mode other than the scanner's: `mode` says which)."),
         ("tuning", "object", "The tuning."),
         ("@tuning", "tuning"),
         ("clock", "object", "The board clock."),
@@ -514,7 +514,7 @@ ROUTES: dict[str, list] = {
         ("lanes[].tg", "number or null", "The talkgroup it is held on; null: it follows what the aliases say."),
         ("lanes[].name", "string or null", "That talkgroup's name."),
     ],
-    "/api/v1/data": [
+    "/api/v1/packet_data": [
         ("site", "string or null", "The site the answer covers; null for every site."),
         ("data_channel_hz", "number or null", "The data channel the site announces."),
         ("pdus", "number", "Packet data units read."),
@@ -774,7 +774,7 @@ ROUTES: dict[str, list] = {
         ("@config", "radio_config"),
         ("state", "object", "What the radio keeps between runs."),
         ("state.version", "number", "The file's version."),
-        ("state.mode", "string", "The unit's mode at start: `scanner` or `atsc`."),
+        ("state.mode", "string", "The unit's mode at start: `scanner`, `atsc` or `data`."),
         ("state.live_site", "string or null", "The site made live at start."),
         ("state.crystal", "object or null", "The stored crystal correction."),
         ("state.crystal.ppm", "number", "The correction."),
@@ -1036,7 +1036,7 @@ ROUTES: dict[str, list] = {
         ("error", "string or null", "What went wrong."),
     ],
     "/api/v1/mode": [
-        ("mode", "string", "`scanner` or `atsc`."),
+        ("mode", "string", "`scanner`, `atsc` or `data`."),
     ],
     "/api/v1/atsc/scan/channel/{n}": [
         ("number", "number", "The RF channel."),

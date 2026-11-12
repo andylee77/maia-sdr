@@ -5,6 +5,23 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 108: The modes made general, and Data mode's shell
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** the roadmap's step 7, Data mode, begins with what the study calls its step 2. Asked
+  "Start the roadmap's step 7, Data mode, with making the modes general first?", Andy answered
+  "Yes, start it". Record: `doc/changes/108_modes_data_shell.md`.
+- **A change of mode no longer knows which two modes there are.** A mode other than the
+  scanner's holds the radio and gives its hold back when it is left; from one such mode to
+  another the hold is handed on, so the radio is never free between them. The lease's state is
+  `mode` (it was `atsc`), and `status.mode` says whose.
+- **Data mode exists as a shell:** `data` in the API, its module in the rail with the tabs Scan,
+  Devices and Captures, empty. It takes the radio and gives it back; nothing listens yet.
+- **Packet data takes its own name:** `GET /api/v1/packet_data` (it was `/api/v1/data`), and
+  the class `packet_data` in the scanner's log.
+
 ## [2026-11-11] 107: SSH by key only
 
 **Branch:** fishball-p25 (local)

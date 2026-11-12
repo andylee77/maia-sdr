@@ -81,19 +81,21 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let modes = Arc::new(Modes::default());
     let atsc = Arc::new(Atsc::default());
     atsc.restore(paths.tv_scan());
+    let data = Arc::new(crate::services::data::Data::default());
     match (mode, &live_site) {
-        (Mode::Atsc, _) => {
-            let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, config: &config, paths: &paths, log: &log };
-            if let Err(e) = modes.set(Mode::Atsc, live_site.clone(), deps).await {
-                tracing::error!("ATSC mode did not start: {e:#}");
-            }
-        }
         (Mode::Scanner, Some(site)) => {
             if let Err(e) = live.activate(site).await {
                 tracing::error!("site {site} did not go live: {e:#}");
             }
         }
         (Mode::Scanner, None) => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
+        // The unit was in another mode when it stopped: that mode has the radio again.
+        (other, _) => {
+            let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, config: &config, paths: &paths, log: &log };
+            if let Err(e) = modes.set(other, live_site.clone(), deps).await {
+                tracing::error!("{} mode did not start: {e:#}", other.label());
+            }
+        }
     }
     live.start_recentre();
 
@@ -155,6 +157,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         discovery,
         modes,
         atsc,
+        data,
         burst: Arc::default(),
         notices,
         heard: Default::default(),

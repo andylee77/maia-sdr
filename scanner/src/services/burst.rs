@@ -287,7 +287,7 @@ mod live {
         live: Arc<LiveSite<Hardware>>,
         tuner: Arc<RadioTuner>,
     ) -> Result<u64> {
-        let guard = lease.take(Lease::Diagnostic).context("the radio is busy (a scan, a switch or ATSC mode)")?;
+        let guard = lease.take(Lease::Diagnostic).context("the radio is busy (a scan, a switch or another mode)")?;
         let id = me.begin();
         let me = me.clone();
         tokio::spawn(async move { me.run(req, guard, live, tuner).await });

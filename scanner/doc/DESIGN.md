@@ -860,7 +860,7 @@ health (`status.control`) has the same fields for P25 and DMR. That retired p25-
 | `/api/v1/systems/{id}/sites/{site}`; `POST /api/v1/sites/{id}/activate`; `/sites/{id}/plan`, `/recentre`, `/learned` | `/api/site`, `/api/site/plan`, `/api/site/recentre` | UI |
 | `/api/v1/systems/{id}/aliases`, `/listening`, `/talkgroups/{tg}`; `/api/v1/hold` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI (not `/api/monitor`); bench `corpus_tests` (`/api/monitor`, mode C) |
 | `/api/v1/recordings...` | `/api/recordings...` | UI; tools `poll_recordings_persist`, `compare_sim_vs_board`, `audit`, `capture_session` |
-| `/api/v1/activity/*`, `/api/v1/data` | `/api/activity/*`, `/api/data` | UI |
+| `/api/v1/activity/*`, `/api/v1/packet_data` | `/api/activity/*`, `/api/data` | UI |
 | `/api/v1/scan` (GET, POST), `/scan/cancel`, `/scan/add` | `/api/discovery*` | UI |
 | `/api/v1/events`; typed `/ws/events` | `/api/log`, `/api/recent_tsbks`, `/api/dmr/messages` | UI; 8 tools use `/api/log`; `log_dmr.py` |
 | `/api/v1/receivers` (status; modulation choice) | `/api/modulation`, `/api/dmr` | UI; tool `retune_probe`; `log_dmr.py` |
@@ -1425,7 +1425,7 @@ From the brief:
       at most every ten minutes); Systems shows it under the live site.
     - **Neighbours, secondary control channels and the data channel** go into the site's learned
       state (`GET /api/v1/sites/{id}/learned`) and show on Systems.
-    - **Packet data** (`services::packet_data`, `GET /api/v1/data`, the Activity card): the
+    - **Packet data** (`services::packet_data`, `GET /api/v1/packet_data`, the Activity card): the
       control channel's PDUs, and the data channel's (below).
     - **`/ws/audio`:** p25-httpd's first framing (lane one, samples only) unless `?v=2`.
   - **Then the data channel:** as in p25-httpd, the last lane of a P25 site waits on the announced

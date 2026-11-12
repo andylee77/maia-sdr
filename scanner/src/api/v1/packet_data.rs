@@ -1,4 +1,4 @@
-//! `GET /api/v1/data`: packet data (`services::packet_data`) for a site (default the live one, `all`
+//! `GET /api/v1/packet_data`: packet data (`services::packet_data`) for a site (default the live one, `all`
 //! for every site): totals by kind, the radios with packet data and the recent records, newest
 //! first, with the radios' names; and the data channel the site announces.
 

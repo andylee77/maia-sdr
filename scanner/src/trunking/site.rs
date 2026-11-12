@@ -65,7 +65,8 @@ pub enum LiveState {
     Switching { to: String },
     /// A scan has the radio; the site it goes back to.
     Scanning { back_to: Option<String> },
-    /// Another mode (ATSC TV) has the radio; the site that comes back with the scanner.
+    /// Another mode has the radio (the unit's mode says which); the site that comes back with
+    /// the scanner.
     Away { back_to: Option<String> },
     Live(Box<Live>),
 }
@@ -236,12 +237,13 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         back_to
     }
 
-    /// Another mode takes the radio, as a scan does but for as long as the mode lasts.
-    /// `otherwise` is the site to come back to when none is live (at boot, the configured one).
-    pub async fn pause_for_mode(&self, otherwise: Option<String>) -> Option<String> {
+    /// Another mode (`mode`, as a person reads it) takes the radio, as a scan does but for as
+    /// long as that mode and those after it last. `otherwise` is the site to come back to when
+    /// none is live (at boot, the configured one).
+    pub async fn pause_for_mode(&self, mode: &str, otherwise: Option<String>) -> Option<String> {
         let back_to = self.pause(otherwise).await;
         self.state.send_replace(LiveState::Away { back_to: back_to.clone() });
-        self.log.system("site", "another mode has the radio: the live site is paused".to_string());
+        self.log.system("site", format!("{mode} mode has the radio: the live site is paused"));
         back_to
     }
 
@@ -718,8 +720,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atsc_mode_pauses_the_live_site_and_scanner_mode_brings_it_back() {
+    async fn another_mode_pauses_the_live_site_and_scanner_mode_brings_it_back() {
         use crate::services::atsc::sweep::Atsc;
+        use crate::services::data::Data;
         use crate::services::mode::{Deps, Mode, Modes};
 
         let dir = tempfile::tempdir().unwrap();
@@ -744,15 +747,17 @@ mod tests {
         let lease = RadioLease::default();
         let live = LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone(), receivers.clone(), trunking, vec![Lane::One], log.clone(), Default::default());
         live.activate("clay").await.unwrap();
-        let (modes, atsc) = (Modes::default(), Atsc::default());
-        let deps = || Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, config: &config, paths: &paths, log: &log };
+        let (modes, atsc, data) = (Modes::default(), Atsc::default(), Data::default());
+        let deps = || Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, config: &config, paths: &paths, log: &log };
+        let away = |state: LiveState| matches!(state, LiveState::Away { back_to } if back_to.as_deref() == Some("clay"));
 
         modes.set(Mode::Atsc, None, deps()).await.unwrap();
-        assert_eq!((modes.current(), lease.current()), (Mode::Atsc, Lease::Atsc));
-        assert!(matches!(live.state(), LiveState::Away { back_to } if back_to.as_deref() == Some("clay")));
+        assert_eq!((modes.current(), lease.current()), (Mode::Atsc, Lease::Mode));
+        assert!(away(live.state()));
         assert!(!receivers.status().running);
         assert!(live.activate("clay").await.is_err(), "the radio is ATSC mode's");
         assert_eq!(Config::load(&paths).unwrap().state.value.mode, Mode::Atsc, "kept for the next start");
+        assert!(log.since(0, 50, false, None).iter().any(|e| e.text == "ATSC TV mode has the radio: the live site is paused"), "the log names the mode");
 
         modes.set(Mode::Scanner, None, deps()).await.unwrap();
         assert!(lease.is_normal());
@@ -760,10 +765,43 @@ mod tests {
         assert!(receivers.status().running);
         assert_eq!(Config::load(&paths).unwrap().state.value.mode, Mode::Scanner);
 
-        // At a start in ATSC mode no site is live yet: the configured one comes back later.
+        // From one mode to another the radio is handed on: it is never free between them, so no
+        // scan or site switch can take it, and the site to come back to goes with it.
+        let mut held = lease.watch();
+        modes.set(Mode::Data, None, deps()).await.unwrap();
+        assert_eq!((modes.current(), lease.current()), (Mode::Data, Lease::Mode));
+        held.borrow_and_update();
+        for to in [Mode::Atsc, Mode::Data, Mode::Atsc] {
+            modes.set(to, None, deps()).await.unwrap();
+            assert_eq!((modes.current(), lease.current()), (to, Lease::Mode));
+            assert!(away(live.state()), "the scanner's site stays paused");
+            assert!(!held.has_changed().unwrap(), "the radio was never given up on the way to {to:?}");
+            assert_eq!(Config::load(&paths).unwrap().state.value.mode, to);
+        }
+        // A mode the unit is in already is no change.
+        modes.set(Mode::Atsc, None, deps()).await.unwrap();
+        assert!(!held.has_changed().unwrap());
+        // The scanner comes back from whichever mode had the radio last, with its site.
+        modes.set(Mode::Data, None, deps()).await.unwrap();
+        modes.set(Mode::Scanner, None, deps()).await.unwrap();
+        assert!(lease.is_normal());
+        assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
+        assert!(receivers.status().running);
+
+        // While a scan or a site switch has the radio no mode takes it, and nothing changes.
+        let scan = lease.take(Lease::Scan).unwrap();
+        let refused = modes.set(Mode::Data, None, deps()).await.unwrap_err();
+        assert!(refused.to_string().contains("the radio is busy"), "{refused}");
+        assert_eq!(modes.current(), Mode::Scanner);
+        assert!(matches!(live.state(), LiveState::Live(_)), "the site was not paused for a mode that did not start");
+        drop(scan);
+
+        // At a start in another mode no site is live yet: the configured one comes back later.
         live.stop("clay").await.unwrap();
-        modes.set(Mode::Atsc, Some("clay".into()), deps()).await.unwrap();
-        assert!(matches!(live.state(), LiveState::Away { back_to } if back_to.as_deref() == Some("clay")));
+        modes.set(Mode::Data, Some("clay".into()), deps()).await.unwrap();
+        assert!(away(live.state()));
+        modes.set(Mode::Scanner, None, deps()).await.unwrap();
+        assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
     }
 
     #[tokio::test]

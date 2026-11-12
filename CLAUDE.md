@@ -47,7 +47,13 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   any named channel live (085), or a recorded one without the block. H.262 (2000) and its corrigenda
   are in `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
-- **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
+- **Data mode (the roadmap's step 7, begun):** the study with Andy's decisions is
+  `scanner/doc/DATA_MODE.md`. Its step 2 is built (108, `doc/changes/108_modes_data_shell.md`):
+  the modes made general (a mode other than the scanner's holds the radio and hands it on to
+  the next), `Mode::Data` as a shell with its module and three empty tabs, and P25 packet
+  data's route renamed to `/api/v1/packet_data`. Its steps 0 and 1 wait for Andy (the RTL-SDR's
+  ground truth; the wide lanes on the bench). `runs/ui_check/data_mode.mjs` takes the radio
+  through the three modes on a page and gives it back.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan
