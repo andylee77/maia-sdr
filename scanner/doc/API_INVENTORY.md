@@ -75,7 +75,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 |-------|---------|---------|------------------|
 | `GET /api/v1/radio` | Presets; the radio configuration; stored state (live site, crystal); hardware; tuning; the radio core's readback (each lane's NCO, packets on or off, tag and counters; the ring; the sample and clip counts) | UI the radio's Board card; the Scanner's and the radio's Settings, read again at each `changed` (`what: radio`) | — |
 | `PUT /api/v1/radio/gain` | Gain mode and manual gain, applied at once | UI the Scanner's Settings | — |
-| `PUT /api/v1/radio/settings` | Any of: presets allowed, lanes, call timings, history limits; what is left out stays (a patch since 100) | UI the Scanner's Settings, a card a part | Lanes apply at the next start, not the next activation. Lane count isn't range-checked |
+| `PUT /api/v1/radio/settings` | Any of: presets allowed, lanes, call timings, history limits, and since 109 the units a reading is shown in (`units.temperature`); what is left out stays (a patch since 100) | UI the Scanner's Settings, a card a part | Lanes apply at the next start, not the next activation. Lane count isn't range-checked |
 | `PUT /api/v1/radio/clock` | Clock source | UI the radio's Settings | Same as legacy `PUT /api/ui/settings`. `{}` silently sets `site` |
 | `POST /api/v1/clock` | Set the board clock | UI the radio's Settings | Sits outside `/radio/`, unlike its sibling |
 | `GET`/`PUT /api/v1/radio/crystal`, `POST …/calibrate` | Crystal correction: applied, tracked, calibrated | UI the radio's Settings, Crystal card (then pushed on `/ws/live`) | The stored calibration is only in `/radio` `state.crystal` |
@@ -116,6 +116,15 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/files/history.sqlite` | The history's database as one consistent file: copied on the card first, sent, removed | UI Files; the tool | The answer starts when the copy is made (seconds for 200 MB). 503 without room for the copy |
 | `GET /api/v1/files/tv/{file}` | A TV recording's file (`rf<N>.ts`) as it is | UI Files; the tool | No byte ranges |
 | `GET /api/v1/atsc/stream/{rf}` | An RF channel's transport stream as it plays (`program`: one programme) | UI Watch (its picture and sound; its address and a playlist for VLC); VLC and other players | Live from the radio core's 8-VSB block (bake D) when it plays that channel, else its recording |
+
+## Data mode
+
+| Route | Carries | Used by | Missing or wrong |
+|-------|---------|---------|------------------|
+| `GET /api/v1/data` | Data mode's listening: its state, the window (433.92 MHz), the noise floor, the counts, the emitters by frequency, the newest 100 bursts, what is armed | UI Data's Scan (pushed on `/ws/live` as `data`); `tools/data_captures.py` | One window, with no setting for it or its gain. Nothing is kept across a restart: the data log and its tables are the study's step 3. No decode |
+| `PUT`/`DELETE /api/v1/data/arm` | Keep the IQ of the next bursts (`count`, `freq_hz`, `span_hz`), or no more | UI Scan's "Keep IQ" and each emitter's Keep; the tool | By frequency only: by device comes with the decoders |
+| `GET /api/v1/data/captures` | The bursts' IQ kept on the card, newest first | UI Data's Captures; the tool | Listed from the files' descriptions at start, not in the history's database; no paging (500 at most) |
+| `GET`/`DELETE /api/v1/data/captures/{name}` | One of a capture's two files (`.cs16`, `.sigmf-meta`); delete a capture by its id | UI Captures; the tool | The two verbs take different things at `{name}`: a file's name to read, the capture's id to delete |
 
 ## Configuration
 

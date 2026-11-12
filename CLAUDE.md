@@ -51,9 +51,20 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   `scanner/doc/DATA_MODE.md`. Its step 2 is built (108, `doc/changes/108_modes_data_shell.md`):
   the modes made general (a mode other than the scanner's holds the radio and hands it on to
   the next), `Mode::Data` as a shell with its module and three empty tabs, and P25 packet
-  data's route renamed to `/api/v1/packet_data`. Its steps 0 and 1 wait for Andy (the RTL-SDR's
-  ground truth; the wide lanes on the bench). `runs/ui_check/data_mode.mjs` takes the radio
-  through the three modes on a page and gives it back.
+  data's route renamed to `/api/v1/packet_data`. Since 109 (`doc/changes/109_data_listen.md`)
+  the mode listens while it has the radio: one window, 433.92 MHz, read whole from the capture
+  ring (`services::data`), a 250 kSPS channel cut in software and its bursts found
+  (`protocol::ism`), the emitters by frequency on Scan, and the IQ of the next bursts kept on
+  the card when asked (`data_captures/`, cs16 and SigMF; `tools/data_captures.py`). Nothing is
+  decoded on the unit. Its steps 0 and 1 wait for Andy (the RTL-SDR's ground truth; the wide
+  lanes on the bench). Andy's Oregon Scientific sensor (version 1, 433.880 MHz, every 30 s) is
+  the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the three modes) and
+  `data_listen.mjs` (the listening pages) take the radio and give it back; against the PC
+  daemon start it with `--data-replay <repo>/runs/data/look_20261112/look1_434.42M_2500k.cs16`
+  too, the radio's stand-in. The detector is held against unit A's first captures with
+  `DATA_CAPTURE_DIR=<repo>/runs/data/look_20261112 cargo test --release the_first_captures`.
+  Temperatures are shown in the unit Settings picks (`units.temperature`, Andy: "°C/°F in
+  settings"); no page shows one yet.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan

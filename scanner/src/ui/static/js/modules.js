@@ -18,6 +18,8 @@ import * as watch from './views/watch.js';
 import * as scannerDiag from './views/scanner_diag.js';
 import * as scannerSettings from './views/scanner_settings.js';
 import * as tvDiag from './views/tv_diag.js';
+import * as dataScan from './views/data_scan.js';
+import * as dataCaptures from './views/data_captures.js';
 import * as dataShell from './views/data_shell.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
@@ -44,6 +46,16 @@ function tvLine(s) {
   const t = channels.tally(a);
   const freq = `${t.frequencies} frequenc${t.frequencies === 1 ? 'y' : 'ies'}`;
   return t.channels ? `${freq} · ${t.channels} channel${t.channels === 1 ? '' : 's'}` : freq;
+}
+
+// Data's line: the window it listens to. It listens only while it has the radio, and the
+// scanner follows no call meanwhile.
+function dataLine(s) {
+  const d = s.status.data;
+  if (!d || d.state === 'off') return 'not listening';
+  if (d.state === 'starting') return 'starting…';
+  if (d.state === 'error') return 'not listening: an error';
+  return `${d.window} window · Scanner paused`;
 }
 
 export const MODULES = [
@@ -86,13 +98,13 @@ export const MODULES = [
     label: 'Data',
     icon: 'pulse',
     pages: [
-      { key: 'scan', label: 'Scan', view: dataShell.scan },
+      { key: 'scan', label: 'Scan', view: dataScan },
       { key: 'devices', label: 'Devices', view: dataShell.devices },
-      { key: 'captures', label: 'Captures', view: dataShell.captures },
+      { key: 'captures', label: 'Captures', view: dataCaptures },
     ],
-    line: () => 'nothing listens yet',
-    working: () => false,
-    away: 'Data mode will watch the data bands (315, 345, 433.92 and 902 to 928 MHz) for the devices nearby. So far it only takes the radio: nothing listens in it yet.',
+    line: dataLine,
+    working: s => !!s.status.data && s.status.data.state === 'listening',
+    away: 'Data mode listens at 433.92 MHz for the devices that transmit nearby, and lists them by frequency. It listens only while it has the radio: these pages show what it last heard.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

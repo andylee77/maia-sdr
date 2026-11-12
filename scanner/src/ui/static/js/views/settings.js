@@ -1,6 +1,6 @@
 // The radio's own settings (the rail's Settings): who may reach it (access.js), where its clock
-// comes from, the crystal's correction, and the configuration as a whole (export, import,
-// factory reset). What belongs to one module is among that module's tabs: the Scanner's settings
+// comes from, the crystal's correction, the units a reading is shown in, and the configuration
+// as a whole (export, import, factory reset). What belongs to one module is among that module's tabs: the Scanner's settings
 // are scanner_settings.js.
 
 import { h, toast, switchInput } from '../dom.js';
@@ -120,6 +120,34 @@ function crystalCard() {
   };
 }
 
+// The units the pages show a reading in.
+function unitsCard() {
+  const sec = section('Units');
+  const temperature = h('select', { class: 'input', 'aria-label': 'Temperature' },
+    h('option', { value: 'celsius', text: '°C' }), h('option', { value: 'fahrenheit', text: '°F' }));
+  // What the radio holds, to go back to when a pick is refused.
+  let kept = null;
+  temperature.addEventListener('change', async () => {
+    try {
+      await api.saveRadioSettings({ units: { temperature: temperature.value } });
+      kept = temperature.value;
+      toast('Units saved');
+    } catch (e) {
+      temperature.value = kept;
+      toast(e.message, true);
+    }
+  });
+  sec.body.append(row('Temperature', temperature,
+    'The unit the pages show a temperature in, saved as it is picked. The API\'s own fields stay in °C. No page shows a temperature yet: a sensor\'s decoded reading will be the first.'));
+  return {
+    el: sec.el,
+    show({ radio }) {
+      kept = radio.config.units.temperature;
+      temperature.value = kept;
+    },
+  };
+}
+
 // After an import or a reset the scanner restarts: reload once it is back (the store's socket
 // dropped and came back, or brings a status of less uptime than before).
 function reloadAfterRestart() {
@@ -192,8 +220,8 @@ export function mount(el) {
       const iiod = me.level === 'admin' ? await api.iiod().catch(() => null) : null;
       return { radio, crystal, me, access, certificate, iiod };
     },
-    build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), configCard()]],
+    build: (data, reload) => [[accessCard(reload)], [clockCard(), crystalCard(), unitsCard(), configCard()]],
     rev: s => `${s.radioRev}.${s.accessRev}`,
-    link: ['These are the radio\'s own: who may reach it, its clock, its crystal, its configuration. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
+    link: ['These are the radio\'s own: who may reach it, its clock, its crystal, its units, its configuration. The scanner\'s settings (its gain, recording, call timings, the history) are under ', h('a', { href: '#scanner-settings', text: 'Scanner, Settings' }), '.'],
   });
 }

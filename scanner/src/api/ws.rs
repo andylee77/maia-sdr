@@ -207,7 +207,7 @@ async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
-/// `window`, `crystal`, `atsc_live` and `files` messages.
+/// `window`, `crystal`, `atsc_live`, `files` and `data` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
     let Some(place) = Place::take() else { return too_many() };
     ws.on_upgrade(move |socket| async move {
@@ -248,6 +248,8 @@ struct Wants {
     /// `files`: the download running (`download`, as in `GET /api/v1/files`; null when none is)
     /// when it changed, looked at each second.
     files: bool,
+    /// `data`: data mode's listening (`data`, as `GET /api/v1/data`) when it changed.
+    data: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -264,7 +266,7 @@ struct EventsWant {
 
 impl Wants {
     fn any(&self) -> bool {
-        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files || self.data
     }
 }
 
@@ -280,6 +282,7 @@ struct Sent {
     atsc_live_text: String,
     files: Option<Instant>,
     files_text: String,
+    data_rev: Option<u64>,
 }
 
 fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
@@ -326,6 +329,13 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         if text != sent.atsc_live_text {
             sent.atsc_live_text = text.clone();
             out.push(text);
+        }
+    }
+    if w.data {
+        let view = s.data.view();
+        if sent.data_rev != Some(view.rev) {
+            sent.data_rev = Some(view.rev);
+            out.push(message("data", "data", view));
         }
     }
     if w.files && due(sent.files, FILES_EVERY, now) {

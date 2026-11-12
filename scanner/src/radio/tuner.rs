@@ -115,6 +115,17 @@ pub struct Capture {
     pub overflow: bool,
 }
 
+/// What one reading of a running capture found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureRun {
+    /// Sub-buffers handed over.
+    pub read: u32,
+    /// Sub-buffers the ring overwrote before they were read: the reader fell behind.
+    pub lapped: u32,
+    /// The core lost words since the capture began: its samples are no longer contiguous.
+    pub overflow: bool,
+}
+
 /// The crystal correction at an LO: commanding `LO + shift` puts the real LO on `LO`.
 pub fn lo_shift_hz(ppm: f64, lo_hz: u64) -> i64 {
     (-ppm * 1e-6 * lo_hz as f64).round() as i64
@@ -147,6 +158,22 @@ pub trait RadioHw: Send + Sync {
             let _ = samples;
             bail!("this radio has no IQ capture")
         }
+    }
+    /// Start the capture ring afresh, to be read as it fills (`capture_read`).
+    fn capture_begin(&self) -> impl Future<Output = Result<()>> + Send {
+        async { bail!("this radio has no IQ capture") }
+    }
+    /// The running capture's sub-buffers completed since the last reading, in order: each with
+    /// the AD9361 sample index of its first sample, as interleaved little-endian i16 I, Q.
+    fn capture_read(&self, each: &mut (dyn FnMut(u64, &[u8]) + Send)) -> impl Future<Output = CaptureRun> + Send {
+        async move {
+            let _ = each;
+            CaptureRun::default()
+        }
+    }
+    /// Stop the running capture.
+    fn capture_end(&self) -> impl Future<Output = ()> + Send {
+        async {}
     }
     /// The radio core has the 8-VSB block (live TV, doc/changes/085).
     fn vsb_present(&self) -> impl Future<Output = bool> + Send {

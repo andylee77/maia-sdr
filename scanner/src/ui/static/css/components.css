@@ -732,6 +732,41 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
    scrolls) beside the card, the history and TV; the download running across the top. ── */
 .data-shell { display: grid; gap: var(--gap); align-items: start; max-width: 760px; }
 .data-will { margin: 8px 0 0; }
+/* Data's Scan, as the module was drawn: the windows in a strip with what the mode is asked to do,
+   the window as a map of its bursts (each a dash at its frequency, newest at the top), and the
+   emitters heard in it. Captures is a card of its own. A table scrolls under its own header. */
+.data-page { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
+.data-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; padding: 12px 16px; }
+.data-wins, .data-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.data-win { display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.data-win span { font-family: var(--mono); font-size: 0.86em; }
+.data-win.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.data-state { color: var(--text-dim); font-size: 0.9em; }
+.data-state.warn { color: var(--warn); }
+.data-next { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9em; }
+.data-next .input.num { width: 4.6em; min-height: 30px; padding: 3px 8px; }
+.data-armed { font-size: 0.9em; }
+.data-map { padding: 14px 16px; }
+.data-map-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-bottom: 10px; }
+.data-map-head .spacer { flex: 1; }
+.data-key { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 0.88em; }
+.data-key i { width: 10px; height: 10px; border-radius: 2px; background: var(--warn); }
+.data-key i.kept { background: var(--accent); }
+.data-plot { position: relative; height: clamp(180px, 30vh, 300px); background: var(--bg-sunken); border-radius: 4px; overflow: hidden; }
+.data-field { position: absolute; inset: 0; }
+.data-spot { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-strong); }
+.data-dash { position: absolute; height: 4px; margin-top: -2px; border-radius: 2px; background: var(--warn); }
+.data-dash.kept { background: var(--accent); }
+.data-marks { position: relative; height: 1.5em; margin-top: 4px; font-family: var(--mono); font-size: 0.78em; color: var(--text-faint); }
+.data-marks span { position: absolute; transform: translateX(-50%); }
+.data-counts, .data-totals { margin: 0; }
+.data-counts { margin-top: 2px; }
+.data-totals { margin-bottom: 12px; }
+.data-table { max-height: 46vh; overflow: auto; }
+.data-table .table th { position: sticky; top: 0; z-index: 1; background: var(--bg-raised); }
+.data-table .data-mhz { font-family: var(--mono); }
+.data-table + .dim { margin: 10px 0 0; }
+.data-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .files { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
 .files-where { margin: 0; }
 @media (min-width: 1100px) {

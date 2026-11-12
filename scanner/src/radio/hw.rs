@@ -5,7 +5,7 @@
 //! writes it after the NCO, so the streams know which packets are of the new tuning.
 
 use super::streams::StreamSource;
-use super::tuner::{Capture, RadioHw, Readback};
+use super::tuner::{Capture, CaptureRun, RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::DdcPreset;
 use crate::radio::lane::Lane;
@@ -160,6 +160,21 @@ mod board {
             result?;
             out.samples.truncate(samples);
             Ok(out)
+        }
+
+        async fn capture_begin(&self) -> Result<()> {
+            self.core.lock().await.start_capture();
+            Ok(())
+        }
+
+        async fn capture_read(&self, each: &mut (dyn FnMut(u64, &[u8]) + Send)) -> CaptureRun {
+            let mut core = self.core.lock().await;
+            let read = core.read_capture(|index, bytes| each(index, bytes));
+            CaptureRun { read: read.read, lapped: read.lapped, overflow: core.capture_status().overflow }
+        }
+
+        async fn capture_end(&self) {
+            self.core.lock().await.stop_capture();
         }
 
         async fn readback(&self, sample_rate_hz: u32) -> Readback {

@@ -21,6 +21,7 @@ pub struct RadioConfig {
     pub clock: Clock,
     pub crystal: CrystalTracking,
     pub packet_data: PacketDataFollow,
+    pub units: Units,
 }
 
 /// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
@@ -66,8 +67,24 @@ impl Default for RadioConfig {
             clock: Clock::default(),
             crystal: CrystalTracking::default(),
             packet_data: PacketDataFollow::default(),
+            units: Units::default(),
         }
     }
+}
+
+/// The units the pages show a reading in. The API's own fields stay as they are named (`_c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Units {
+    pub temperature: Temperature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Temperature {
+    #[default]
+    Celsius,
+    Fahrenheit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

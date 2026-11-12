@@ -167,7 +167,8 @@ scanner/src/         the fresh crate (D13)
   radio/             the only way to move hardware
     tuner.rs         apply(TuningPlan), set_control, retune_lane, set_crystal_ppm; the crystal
                      LO shift; what each lane's NCO holds
-    lease.rs         Normal | Switching | Scan | Atsc (held while ATSC mode lasts)
+    lease.rs         Normal | Switching | Scan | Diagnostic | Mode (held while a mode other
+                     than the scanner's lasts)
     hw.rs            the board's RadioHw (a new tuning takes a new tag); on a development host
                      a stand-in with no radio
     lane.rs          the traffic lanes
@@ -189,6 +190,8 @@ scanner/src/         the fresh crate (D13)
                      receiver (demod, fec: trellis, deinterleaver, Reed-Solomon) and PSIP
                      (ts, psip) and its programs' streams (streams: codec, bitrate, format),
                      together in receiver: a capture to its station's names and contents
+    ism/             the data bands: channel (a 250 kSPS channel cut from the window's raw IQ)
+                     and bursts (the transmissions in it, broadband clicks left out)
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -211,7 +214,10 @@ scanner/src/         the fresh crate (D13)
     history/         schema v4, store, the writer
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
-    mode.rs          the unit's mode: the scanner or ATSC TV (holds the lease, pauses the site)
+    mode.rs          the unit's mode: the scanner, ATSC TV or data (a mode other than the
+                     scanner's holds the lease with the site paused, and hands it on)
+    data/            data mode: listen (the window read from the capture ring, the bursts and
+                     the emitters), captures (bursts' IQ on the card, cs16 and SigMF)
     atsc/            ATSC mode's TV scan, each channel's spectrum, and its station named;
                      the TV stream (a channel's recording served as it plays, one programme or all)
     clock/           site clock, internet time, the board clock
@@ -222,8 +228,9 @@ scanner/src/         the fresh crate (D13)
     iq.rs            the control channel's IQ as a WAV
     system.rs        the board's health: load, memory, CPU per thread, temperatures
   api/               one route table builds the router and doc/API.md; ApiError
-    v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity, data,
-                     spectrum, survey, scan, events, iq, receivers, system, config, mode, atsc
+    v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity,
+                     packet_data, spectrum, survey, scan, events, iq, receivers, system, config,
+                     mode, atsc, data, files
     ws.rs            /ws/live, /ws/audio, /ws/events
     legacy.rs        p25-httpd's routes the bench reads, in their old shape
   ui/                mod.rs and the static files (index.html, js/, css/)

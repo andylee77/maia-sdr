@@ -5,6 +5,31 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-11] 109: Data mode listens at 433.92 MHz and keeps bursts' IQ
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy has an Oregon Scientific outdoor temperature sensor that unit A should hear.
+  Asked "Have Data mode listen on 433.92 MHz and capture your Oregon sensor next?", he answered
+  "Yes, do that". Record: `doc/changes/109_data_listen.md`.
+- **A first look at what unit A hears there** (three 40 s raw captures, read on the PC): four
+  devices within 50 kHz of 433.92 MHz, one of them his sensor (Oregon Scientific version 1 at
+  433.880 MHz, every 30 s, decoded on the PC: channel 1, 15.9 °C), and about 130 broadband
+  clicks a second with peaks every 44.7 kHz.
+- **Data mode listens while it has the radio:** one window, 433.92 MHz, read whole from the
+  capture ring; a 250 kSPS channel cut in software; the bursts found in its spectrum, the
+  clicks left out. Scan lists the bursts and the emitters (the bursts of one frequency, with
+  how often each sends). Nothing is decoded on the unit.
+- **Captures:** "keep the IQ of the next N bursts", any or around a frequency; each is a
+  `.cs16` and a SigMF description on the card (`data_captures/`), listed and downloaded on
+  Captures. `tools/data_captures.py` asks for them, fetches them and looks at them.
+- **The API:** `GET /api/v1/data`, `PUT`/`DELETE /api/v1/data/arm`, `/api/v1/data/captures`,
+  `status.data`, and `data` on `/ws/live`.
+- **Temperatures in °C or °F** (Andy, as this was built: "°C/°F in settings"): the radio's
+  Settings has the unit (`units.temperature` in `PUT /api/v1/radio/settings`). No page shows a
+  temperature yet; the tool prints both.
+
 ## [2026-11-11] 108: The modes made general, and Data mode's shell
 
 **Branch:** fishball-p25 (local)

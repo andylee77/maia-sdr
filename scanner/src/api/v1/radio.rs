@@ -13,7 +13,7 @@ use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
 use crate::services::config::radio::{
-    Clock, CrystalTracking, Gain, GainMode, PacketDataFollow, RadioConfig, Recording, Storage, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+    Clock, CrystalTracking, Gain, GainMode, PacketDataFollow, RadioConfig, Recording, Storage, Temperature, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
 };
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
@@ -131,6 +131,13 @@ pub struct SettingsEdit {
     pub traffic_chains: Option<Option<u8>>,
     pub calls: Option<CallsEdit>,
     pub history: Option<HistoryEdit>,
+    pub units: Option<UnitsEdit>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UnitsEdit {
+    pub temperature: Option<Temperature>,
 }
 
 #[derive(Deserialize, Default)]
@@ -176,12 +183,15 @@ impl SettingsEdit {
                 return Err(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB"));
             }
         }
+        if let Some(units) = self.units {
+            c.units.temperature = units.temperature.unwrap_or(c.units.temperature);
+        }
         Ok(c)
     }
 }
 
-/// Keep the settings given. The history's limits apply at once; the presets and call timings at
-/// the next site activation; the lanes at the next start.
+/// Keep the settings given. The history's limits and the units apply at once; the presets and
+/// call timings at the next site activation; the lanes at the next start.
 pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<SettingsEdit>) -> ApiResult<RadioConfig> {
     let mut c = s.config.lock().await;
     let next = req.onto(c.radio.value.clone()).map_err(ApiError::bad_request)?;
@@ -286,5 +296,23 @@ mod tests {
         }
         assert!(serde_json::from_str::<SettingsEdit>(r#"{"gain": 3}"#).is_err(), "a field it has not is refused");
         assert!(serde_json::from_str::<SettingsEdit>(r#"{"calls": {"hang": 3}}"#).is_err());
+    }
+
+    #[test]
+    fn the_temperature_s_unit_is_a_setting_and_a_radio_from_before_it_has_celsius() {
+        let before = RadioConfig::default();
+        assert_eq!(before.units.temperature, Temperature::Celsius);
+        let edit = |c: &RadioConfig, json: &str| serde_json::from_str::<SettingsEdit>(json).unwrap().onto(c.clone()).unwrap();
+        let got = edit(&before, r#"{"units": {"temperature": "fahrenheit"}}"#);
+        assert_eq!(got.units.temperature, Temperature::Fahrenheit);
+        assert_eq!(RadioConfig { units: before.units, ..got.clone() }, before, "nothing else moved");
+        // Another setting leaves it, and so does an edit of the units that names none.
+        assert_eq!(edit(&got, r#"{"calls": {"hang_ms": 4500}}"#).units.temperature, Temperature::Fahrenheit);
+        assert_eq!(edit(&got, r#"{"units": {}}"#).units.temperature, Temperature::Fahrenheit);
+        assert_eq!(serde_json::to_value(got.units).unwrap(), serde_json::json!({ "temperature": "fahrenheit" }));
+        assert!(serde_json::from_str::<SettingsEdit>(r#"{"units": {"temperature": "kelvin"}}"#).is_err());
+        // A radio.json written before the setting was: the default.
+        let old: RadioConfig = serde_json::from_str(r#"{"version": 1, "gain": {"mode": "manual", "manual_db": 55}}"#).unwrap();
+        assert_eq!(old.units.temperature, Temperature::Celsius);
     }
 }

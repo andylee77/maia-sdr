@@ -4,9 +4,13 @@ Andy, 2026-10-04: a third mode beside the scanner and ATSC TV, a data scanner an
 mode. In it the unit watches the open-protocol data bands (315, 433.92 MHz and the like), finds
 the devices transmitting nearby and what protocols they use, logs and captures them, and streams
 their data. Unit A does this work. This is the study, and Andy's decisions are in section 12.
-Built so far: section 9's step 2, the mode itself (change 108: the mode, the lease handed from
-mode to mode, the `packet_data` rename, the three tabs empty), ahead of its steps 0 and 1, which
-need the RTL-SDR and the bench.
+Built so far, ahead of section 9's steps 0 and 1, which need the RTL-SDR and the bench:
+
+- its step 2, the mode itself (change 108: the mode, the lease handed from mode to mode, the
+  `packet_data` rename);
+- a first slice of its steps 3 and 4 for one window (change 109, section 13): the mode listens
+  at 433.92 MHz, lists the bursts and the emitters by frequency, and keeps the IQ of the next
+  bursts when asked. Section 13 also has what unit A was found to hear there.
 
 ## 1. What the mode does
 
@@ -336,8 +340,8 @@ Each step is checked before the next starts.
 | 0 | **Ground truth, no unit code.** Andy's RTL-SDR on this PC runs rtl_433 for a day across the band plan (`-f` per band, `-H` to hop, `-F json`), as the HDHomeRun did for ATSC. Its indoor antenna gives a first look; for the comparison itself it shares unit A's antenna through a splitter, so a miss is the unit's and not the antenna's | A list of the devices really there, so `tools/data_check.py` can say what the unit finds, misses and adds |
 | 1 | **Wide lanes.** 250 kSPS and 1 MSPS presets; the lane reader at any rate | On the bench (B into A through the pads; Andy wires it) or over the air from the ESP32-DIV's CC1101 stepped across each lane: flat ±100 / ±350 kHz, alias rejection measured, no lost packets with three 1 MSPS lanes for an hour |
 | 2 | **The mode.** `Mode::Data` and the lease, the `packet_data` rename, the three tabs empty, round trips through all three modes. **Built in 108** | Host tests as 080's; a mode round trip on A |
-| 3 | **Scan.** Band plan, scan and park, the burst detector, emitters by frequency with names, the data log per frequency, `/ws/spectrum` and the waterfall, the Scan tab | A key-fob press is seen in its frame; a sensor's interval is right; a named emitter keeps its log. The ESP32-DIV sends bursts of known frequency, length and spacing, so the detector's times can be checked |
-| 4 | **Captures and raw IQ.** Per-burst cs16 and SigMF, armed captures, window snapshots, the Captures tab, `/ws/iq`. Then a day of captures on A: the corpus in `runs/data/`, decoded on the PC by `tools/rtl433_reference.py` | The corpus decodes with rtl_433 as live bursts do; it says which families to port first |
+| 3 | **Scan.** Band plan, scan and park, the burst detector, emitters by frequency with names, the data log per frequency, `/ws/spectrum` and the waterfall, the Scan tab. **Begun in 109** for one parked window: the burst detector, the emitters by frequency, the Scan tab without a waterfall (section 13) | A key-fob press is seen in its frame; a sensor's interval is right; a named emitter keeps its log. The ESP32-DIV sends bursts of known frequency, length and spacing, so the detector's times can be checked |
+| 4 | **Captures and raw IQ.** Per-burst cs16 and SigMF, armed captures, window snapshots, the Captures tab, `/ws/iq`. Then a day of captures on A: the corpus in `runs/data/`, decoded on the PC by `tools/rtl433_reference.py`. **Begun in 109:** per-burst cs16 and SigMF, armed captures, the Captures tab (section 13) | The corpus decodes with rtl_433 as live bursts do; it says which families to port first |
 | 5 | **Decoders.** The pulse front end, the table-driven decoder, then hand-written decoders in the corpus's order; decoded devices in the data log and on Devices | Each decoder matches rtl_433 on the corpus and makes no false decodes on noise; CPU measured on A |
 | 6 | **Later outputs.** NDJSON stream, MQTT with Home Assistant discovery, an rtl_tcp server | A sensor shows up in Home Assistant; SDR++ tunes a lane |
 | 7 | **Later, on evidence:** more families; other data protocols on the same machinery (POCSAG, APRS, AIS; ADS-B on a 2 MSPS stage-1-only lane); FPGA classifiers trained on the corpus | |
@@ -407,8 +411,69 @@ roadmap points there). For data mode:
      at what unit A's antenna hears at 433 MHz, and a known emitter for the scan (step 3), the
      captures (step 4) and a first decoder (step 5).
 
+8. **Temperatures in °C or °F** (Andy, 2026-11-11: "make sure we have the output in °F ... well
+   °C/°F in settings"). The radio's Settings has the unit (`units.temperature`, 109); the API's
+   own fields stay in °C, and every page that shows a temperature shows it in that unit. The
+   first to show one will be a decoded sensor's reading (step 5).
+
 **Open:**
 
 - **The RTL-SDR's antenna for the comparison:** a splitter on unit A's antenna (same signal, about
   3.5 dB less to each), or its own outdoor antenna. With the indoor antenna, the two lists
   differ by antenna as well as by receiver.
+
+## 13. What is built, and what unit A hears at 433.92 MHz
+
+Change 109 (`doc/changes/109_data_listen.md` has the whole of it).
+
+**What unit A hears** (three 40 s captures of a 2.5 MSPS window, 2026-11-12 02:25 UTC, in
+`runs/data/look_20261112/`; then the scanner itself):
+
+| MHz | Over the floor | Every | What |
+|-----|----------------|-------|------|
+| 433.880 | 29 to 31 dB | 30.0 s | Andy's Oregon Scientific sensor, version 1: Manchester at 342 bits a second, 32 bits, twice in 392 ms. Decoded on the PC: id 3, channel 1 |
+| 433.916 | 44 dB | about 31 s | A 32-bit pulse-position message six times in 747 ms (0.53 ms pulses, gaps of 2.03 and 4.07 ms). Not identified |
+| 433.871 | 18 to 20 dB | about 53 s | Pulse position, about 36 bits, 780 ms. Not identified |
+| 433.924 | 12 to 15 dB | 16.0 s | Pulses of 0.1 to 0.3 ms. At the limit of detection. Not identified |
+
+- **The antenna question of section 10 is answered for 433 MHz:** the weakest of the four is
+  12 dB over a 3.9 kHz bin's floor, the strongest 44 dB, at a manual gain of 55 dB with nothing
+  clipping.
+- **Broadband clicks:** about 130 a second, 1 to 3 ms, 7 to 12 dB over the floor across the
+  whole window, with peaks every 44.7 kHz (a switching supply's mark; where it is, is not
+  known). 17 % of the milliseconds. The detector tells them from devices by what is outside a
+  device's own bins.
+- **A steady carrier** at 434.0318 MHz, unknown.
+
+**What is built** (one window, parked):
+
+- the mode listens while it has the radio: the `3M` preset at an LO of 434.42 MHz, the window
+  read whole from the capture ring, a 250 kSPS channel cut around 433.92 MHz in software
+  (`protocol::ism::channel`), the bursts found in its spectrum a millisecond at a time
+  (`protocol::ism::bursts`);
+- the bursts and the emitters by frequency, in memory (`GET /api/v1/data`, `/ws/live`'s `data`);
+- "keep the IQ of the next N bursts", any or around a frequency: cs16 and SigMF under
+  `data_captures/` on the card (`/api/v1/data/captures`), the newest 500 or 256 MB;
+- Scan (laid out as it was drawn: the strip, the map of bursts, "Heard in this window") and
+  Captures; `tools/data_captures.py`.
+
+**Where it departs from sections 3 to 8:**
+
+- **The IQ comes from the capture ring, not from wide lanes** (step 1, not done): a 3 MSPS
+  window is 12 MB a second, read without a gap, and costs 73 % of one A9 core, most of it the
+  channel's filter. The scan's 16 MSPS windows cannot be read so: they need the spectrometer's
+  burst detector and the wide lanes as sections 3 and 4 have them.
+- **Captures are listed from their descriptions,** not in the history's database.
+- **The AD9361 takes no rate under 2.083 MSPS** without its own filter: the `2M` preset cannot
+  be tuned, so a parked window is 3 MSPS or more.
+
+**What it showed for the steps to come:**
+
+- **The first decoder to port is Oregon Scientific version 1** (step 5): it is on the air every
+  30 s, and `tools/data_captures.py look --oregon-v1` reads it from a capture on the PC, which
+  gives a Rust decoder its test vectors. rtl_433 is not on this PC to hold it against.
+- **Two devices within 10 kHz of each other that send at once are one burst** (the sensor and
+  the device 8.4 kHz under it do, every few minutes): the pulse front end has to take a burst
+  apart by frequency.
+- **Hours of listening are not tried:** whether the capture ring is ever read too late over a
+  day is not known.

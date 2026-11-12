@@ -103,7 +103,7 @@ routes! {
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any, and each traffic lane's own";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
-    get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal, live TV, the download running)";
+    get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the live site's talkgroups, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal, live TV, the download running, data mode's listening)";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes, a recording is saved or a call's alert tones are known";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged";
     get "/api/v1/packet_data" => v1::packet_data::get, "packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`)";
@@ -130,7 +130,7 @@ routes! {
     post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, aliases, recordings, history or TV scan, default settings (the crystal calibration stays); the scanner restarts";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
-    put "/api/v1/radio/settings" => v1::radio::put_settings, "any of: the presets the planner may use (`presets_allowed`), the traffic lanes (`traffic_chains`, null: all), the call timings (`calls`) and the history's limits (`history`); what is left out stays as it is";
+    put "/api/v1/radio/settings" => v1::radio::put_settings, "any of: the presets the planner may use (`presets_allowed`), the traffic lanes (`traffic_chains`, null: all), the call timings (`calls`), the history's limits (`history`) and the units the pages show a reading in (`units`: `temperature`, `celsius` or `fahrenheit`); what is left out stays as it is";
     put "/api/v1/radio/clock" => v1::radio::put_clock, "where the board clock comes from: site, ntp or manual";
     put "/api/v1/radio/packet_data" => v1::radio::put_packet_data, "packet data followed or not (`follow`): followed, the last traffic lane of a site with a data channel waits there between calls; the live site follows the change at once";
     get "/api/v1/radio/crystal" => v1::radio::crystal, "the crystal correction: applied, calibrated and tracked";
@@ -167,8 +167,14 @@ routes! {
     post "/api/v1/scan" => v1::scan::start, "find the systems on the air (the live site pauses meanwhile)";
     post "/api/v1/scan/cancel" => v1::scan::cancel, "stop the scan";
     post "/api/v1/scan/add" => v1::scan::add, "add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent)";
-    get "/api/v1/mode" => v1::mode::get, "the unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands; so far the mode alone, with nothing listening)";
+    get "/api/v1/mode" => v1::mode::get, "the unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands: it listens at 433.92 MHz while it has the radio)";
     put "/api/v1/mode" => v1::mode::put, "change mode (`mode`): any mode but the scanner's has the radio to itself with the live site paused, and from one such mode to another the radio is handed on; scanner mode brings the site back with the configured gain; kept across restarts";
+    get "/api/v1/data" => v1::data::get, "data mode's listening: its state (`off` while another mode has the radio), the window it listens to (433.92 MHz, 90 kHz either side), the noise floor, the counts (bursts, the milliseconds left out as broadband clicks, the gaps), the emitters by frequency (bursts, how often, length, level), the newest 100 bursts and what is armed; not kept across a restart";
+    put "/api/v1/data/arm" => v1::data::put_arm, "keep the IQ of the next `count` bursts (1 to 100) on the card: any, or with `freq_hz` only those within `span_hz` / 2 of it (20 kHz when not given); refused while data mode does not listen";
+    delete "/api/v1/data/arm" => v1::data::delete_arm, "keep no more bursts";
+    get "/api/v1/data/captures" => v1::data::captures, "the bursts' IQ kept on the card (`data_captures`, the newest 500 or 256 MB), newest first: each one's time, the burst (frequency, width, length, level), its samples (centre, rate, count, those before the burst) and its two files' names";
+    get "/api/v1/data/captures/{name}" => v1::data::capture_file, "one of a capture's two files by its name: the samples (`.cs16`: 250 kSPS, little-endian 16-bit I and Q, full scale the ADC's, 20 ms either side of the burst) or their SigMF description (`.sigmf-meta`)";
+    delete "/api/v1/data/captures/{name}" => v1::data::delete_capture, "delete one capture by its `id`: both its files";
     get "/api/v1/atsc/scan" => v1::atsc::get, "the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock); after a restart, the last scan that finished";
     get "/api/v1/atsc/scan/channel/{n}" => v1::atsc::channel, "one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm); not kept across a restart";
     get "/api/v1/atsc/scan/options" => v1::atsc::options, "the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once";

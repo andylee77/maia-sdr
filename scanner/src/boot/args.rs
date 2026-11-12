@@ -31,6 +31,11 @@ pub struct Args {
     #[arg(long)]
     pub recordings_dir: Option<PathBuf>,
 
+    /// A raw capture of a window, played in the radio's place in data mode (a development
+    /// host): its name gives its LO and rate, as `look_434.42M_2500k.cs16`.
+    #[arg(long)]
+    pub data_replay: Option<PathBuf>,
+
     /// Receiver LO with no live site (Hz).
     #[arg(long)]
     pub rx_lo: Option<u64>,

@@ -24,7 +24,7 @@ use crate::services::history::History;
 use crate::services::clock::Clock;
 use crate::services::crystal::{self, Crystal};
 use crate::services::notices::Notices;
-use crate::services::recordings::storage::{self, StorageConfig};
+use crate::services::recordings::storage::{self, SdState, StorageConfig};
 use crate::services::recordings::{self, Policy, Recordings};
 use crate::services::config::{self, Paths};
 use crate::services::events::EventLog;
@@ -81,7 +81,15 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let modes = Arc::new(Modes::default());
     let atsc = Arc::new(Atsc::default());
     atsc.restore(paths.tv_scan());
-    let data = Arc::new(crate::services::data::Data::default());
+    let data = {
+        let (sd, replay, log, recordings) = (paths.sd.clone(), args.data_replay.clone(), log.clone(), recordings.clone());
+        let card: crate::services::data::CardCheck = Arc::new(move || match recordings.summary().sd_status.state {
+            SdState::Ok | SdState::Unknown | SdState::Failing => Ok(()),
+            other => Err(format!("the card is {}", other.as_str())),
+        });
+        // The captures on the card are listed from their descriptions: off the runtime.
+        Arc::new(tokio::task::spawn_blocking(move || crate::services::data::Data::new(&sd, replay, card, log)).await?)
+    };
     match (mode, &live_site) {
         (Mode::Scanner, Some(site)) => {
             if let Err(e) = live.activate(site).await {

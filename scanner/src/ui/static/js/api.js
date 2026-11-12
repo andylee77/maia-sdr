@@ -121,6 +121,14 @@ export const api = {
   lockRecording: (id, locked) => request('PUT', `/api/v1/recordings/${id}/lock`, { locked }),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
+  // Data mode's listening: its state, window, emitters, newest bursts and what is armed.
+  data: () => request('GET', '/api/v1/data'),
+  // Keep the IQ of the next `count` bursts: any, or only those near `freq_hz`.
+  dataArm: (count, freq_hz) => request('PUT', '/api/v1/data/arm', freq_hz ? { count, freq_hz } : { count }),
+  dataDisarm: () => request('DELETE', '/api/v1/data/arm'),
+  // The bursts' IQ kept on the card: { count, bytes, max_count, max_bytes, items }.
+  dataCaptures: () => request('GET', '/api/v1/data/captures'),
+  dataDeleteCapture: id => request('DELETE', `/api/v1/data/captures/${encodeURIComponent(id)}`),
   // What is on the card as files to take away; its recordings by spans of `span` minutes.
   files: span => request('GET', `/api/v1/files?span=${span}`),
   // How many recordings a selection (`q`: from, to, site, tg, unit, locked) takes, and their size.

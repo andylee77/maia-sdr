@@ -1,5 +1,5 @@
-//! The unit's mode: the scanner (P25 and DMR trunking), ATSC TV or data. A mode has the radio to
-//! itself. The scanner's is the radio's own: its live site follows calls, and a scan or a site
+//! The unit's mode: the scanner (P25 and DMR trunking), ATSC TV or data (which listens to the
+//! data bands as soon as it has the radio). A mode has the radio to itself. The scanner's is the radio's own: its live site follows calls, and a scan or a site
 //! switch borrows the radio from it. Any other mode takes the radio lease and keeps it while it
 //! lasts, with the live site paused; from one such mode to another the hold is handed on, so
 //! nothing else can take the radio between them. Back in scanner mode the receiver gain is the
@@ -60,12 +60,12 @@ impl Hold {
 pub struct Deps<'a, H> {
     pub lease: &'a RadioLease,
     pub live: &'a LiveSite<H>,
-    pub tuner: &'a Tuner<H>,
+    pub tuner: &'a Arc<Tuner<H>>,
     pub atsc: &'a Atsc,
     pub data: &'a Data,
     pub config: &'a Arc<Mutex<Config>>,
     pub paths: &'a Paths,
-    pub log: &'a EventLog,
+    pub log: &'a Arc<EventLog>,
 }
 
 pub struct Modes {
@@ -125,7 +125,8 @@ impl Modes {
                 persist(to, &d).await;
             }
             Mode::Data => {
-                d.data.enter(hold).await;
+                let gain_db = crate::services::data::gain_db(&d.config.lock().await.radio.value.gain);
+                d.data.enter(hold, d.tuner.clone(), gain_db, d.log.clone()).await;
                 self.mode.send_replace(to);
                 persist(to, &d).await;
             }

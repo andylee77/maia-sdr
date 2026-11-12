@@ -126,6 +126,8 @@ STRUCTS["radio_config"] = [
     ("crystal.anchor_hz", "number", "How far tracking may move from this run's calibration, Hz at the LO (0: no limit)."),
     ("packet_data", "object", "P25 packet data."),
     ("packet_data.follow", "bool", "The last traffic lane waits on the site's data channel between calls; false: no lane waits there."),
+    ("units", "object", "The units the pages show a reading in. The API's own fields stay as they are named."),
+    ("units.temperature", "string", "`celsius` or `fahrenheit`."),
 ]
 
 STRUCTS["window_plan"] = [
@@ -444,7 +446,15 @@ ROUTES: dict[str, list] = {
         ("build", "string", "The scanner's build tag."),
         ("uptime_s", "number", "Since the scanner started, s."),
         ("now_unix_ms", "number", "The board's clock."),
-        ("mode", "string", "The unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands; so far the mode alone). In any but the scanner's the live site is paused."),
+        ("mode", "string", "The unit's mode, which is who has the radio: `scanner` (P25 and DMR trunking), `atsc` (ATSC TV) or `data` (the data bands: it listens while it has the radio). In any but the scanner's the live site is paused."),
+        ("data", "object", "Data mode's listening in a line (`GET /api/v1/data` has the whole of it)."),
+        ("data.state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("data.error", "string or null", "Why it does not listen."),
+        ("data.window", "string or null", "The band plan's name for the window it listens to, or last did (`433`); null until it has listened."),
+        ("data.spot_hz", "number or null", "The frequency it listens around, or last did; null until it has listened."),
+        ("data.emitters", "number", "Emitters heard since the scanner started."),
+        ("data.bursts", "number", "Bursts heard since the scanner started."),
+        ("data.arm_left", "number or null", "Bursts whose IQ is still to be kept; null when none is asked for."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
         ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below)."),
         ("live.to", "string, absent unless switching", "The site being made live."),
@@ -1038,6 +1048,84 @@ ROUTES: dict[str, list] = {
     "/api/v1/mode": [
         ("mode", "string", "`scanner`, `atsc` or `data`."),
     ],
+    "/api/v1/data": [
+        ("state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("error", "string or null", "Why it does not listen."),
+        ("window", "object or null", "What it listens to, or last did; null until it has listened."),
+        ("window.name", "string", "The band plan's name for the window (`433`, the one so far)."),
+        ("window.spot_hz", "number", "The frequency listened around."),
+        ("window.low_hz", "number", "The lower edge of what is heard: 90 kHz under the spot."),
+        ("window.high_hz", "number", "The upper edge: 90 kHz over it."),
+        ("window.lo_hz", "number", "The radio's LO, half a megahertz above the spot (its DC spur outside what is heard)."),
+        ("window.sample_rate_hz", "number", "The AD9361's rate: the window is read whole from the capture ring."),
+        ("window.channel_rate_hz", "number", "The rate of the channel cut around the spot in software, and of a capture's samples."),
+        ("window.gain_db", "number or null", "The receiver's manual gain (the radio's own when that is manual, else 55 dB); null for a replayed file."),
+        ("window.source", "string", "`radio`, or `replay`: a raw capture's file in the radio's place (a development host)."),
+        ("since_unix_ms", "number or null", "When it last began to listen."),
+        ("floor_dbfs", "number or null", "The noise in what is heard (196 kHz), against the ADC's full scale; null in the first quarter second."),
+        ("counts", "object", "What was counted."),
+        ("counts.bursts", "number", "Bursts heard since the scanner started."),
+        ("counts.clicks", "number", "Milliseconds left out as broadband clicks (the channel rose all over, as from a switching supply) since it last began to listen."),
+        ("counts.slight", "number", "Bursts too short (under 8 ms on) or too thin to count, since it last began to listen."),
+        ("counts.gaps", "number", "Times the capture ring was read too late or the core lost words: the listening began afresh, and what was on the air meanwhile is lost."),
+        ("counts.dropped", "number", "Megabytes of the window dropped because the listening thread was behind."),
+        ("counts.captures", "number", "Captures written since the scanner started."),
+        ("counts.capture_errors", "number", "Captures that could not be written (the radio's log says why)."),
+        ("emitters", "array", "The bursts by frequency, lowest first: bursts within 3 kHz are one emitter's. Not kept across a restart."),
+        ("emitters[]", "object", "One emitter."),
+        ("emitters[].id", "number", "Its number since the scanner started."),
+        ("emitters[].freq_hz", "number", "Its frequency: it follows the device as it drifts."),
+        ("emitters[].bursts", "number", "Bursts heard of it."),
+        ("emitters[].first_unix_ms", "number", "When its first burst began."),
+        ("emitters[].last_unix_ms", "number", "When its newest began."),
+        ("emitters[].every_ms", "number or null", "From one burst's start to the next: the median of its last 16; null until it was heard twice."),
+        ("emitters[].length_ms", "number", "The median length of its last 16 bursts."),
+        ("emitters[].width_hz", "number", "The median of their `width_hz`."),
+        ("emitters[].over_db", "number", "The median of their `over_db`."),
+        ("emitters[].level_dbfs", "number", "The median of their `level_dbfs`."),
+        ("bursts", "array", "The newest 100 bursts, newest first. A burst is one transmission: a message and its repeats, until 200 ms pass without it."),
+        ("bursts[]", "object", "One burst."),
+        ("bursts[].seq", "number", "Its number since the scanner started."),
+        ("bursts[].unix_ms", "number", "When it began (to about 20 ms: the capture ring's samples are timed by when they are read)."),
+        ("bursts[].freq_hz", "number", "Its centre, by power."),
+        ("bursts[].width_hz", "number", "How wide it is 10 dB under its strongest bin, in whole 3.9 kHz bins."),
+        ("bursts[].length_ms", "number", "From its first to its last millisecond on."),
+        ("bursts[].on_ms", "number", "The time it was on between them."),
+        ("bursts[].over_db", "number", "Its strongest 3.9 kHz bin over that bin's floor, at its strongest millisecond."),
+        ("bursts[].level_dbfs", "number", "Its power at its strongest millisecond, against the ADC's full scale."),
+        ("bursts[].emitter", "number", "The emitter it is of."),
+        ("bursts[].capture", "string or null", "The id of its IQ on the card, when it was kept."),
+        ("arm", "object or null", "The bursts whose IQ is to be kept; null when none is asked for."),
+        ("arm.left", "number", "Bursts still to keep."),
+        ("arm.freq_hz", "number or null", "Only bursts around this frequency; null: any burst."),
+        ("arm.span_hz", "number", "How wide \"around\" is, edge to edge."),
+        ("captures", "bool", "Captures can be kept (false on a unit with no folder for them)."),
+        ("rev", "number", "Goes up with each change of the above; the counts that change all the time move it once a second."),
+    ],
+    "/api/v1/data/captures": [
+        ("dir", "string", "Where they are kept."),
+        ("count", "number", "Captures on the card."),
+        ("bytes", "number", "Their samples' size."),
+        ("max_count", "number", "The most kept: the oldest go."),
+        ("max_bytes", "number", "The most their samples may take."),
+        ("items", "array", "The captures, newest first."),
+        ("items[]", "object", "One capture: a burst's IQ and its description."),
+        ("items[].id", "string", "`<UTC time the burst began>_<the burst's number>`."),
+        ("items[].unix_ms", "number", "When its first sample was taken."),
+        ("items[].freq_hz", "number", "The burst's centre."),
+        ("items[].width_hz", "number", "The burst's width 10 dB down."),
+        ("items[].length_ms", "number", "The burst, from its first to its last millisecond on."),
+        ("items[].on_ms", "number", "The time it was on."),
+        ("items[].over_db", "number", "Its strongest bin over the floor."),
+        ("items[].level_dbfs", "number", "Its power at its strongest millisecond, against the ADC's full scale."),
+        ("items[].centre_hz", "number", "The samples' centre frequency."),
+        ("items[].sample_rate_hz", "number", "Their rate."),
+        ("items[].samples", "number", "How many there are (each 4 bytes)."),
+        ("items[].lead_samples", "number", "How many come before the burst (20 ms, less when the burst began the listening)."),
+        ("items[].file", "string", "The samples' file, for `GET /api/v1/data/captures/{name}`: its name carries the centre and the rate."),
+        ("items[].bytes", "number", "Its size."),
+        ("items[].meta", "string", "The description's file (SigMF)."),
+    ],
     "/api/v1/atsc/scan/channel/{n}": [
         ("number", "number", "The RF channel."),
         ("low_hz", "number", "Its lower edge."),
@@ -1327,7 +1415,7 @@ NOT_JSON: dict[str, str] = {
         "| `changed` | `what`: `radio`, `systems`, `hold`, `recordings` or `access` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "
-        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool}` "
+        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool, \"data\": bool}` "
         "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
         "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
@@ -1336,7 +1424,8 @@ NOT_JSON: dict[str, str] = {
         "| `window` | `window`: `plan` (as `GET /api/v1/sites/{id}/plan`, null with no site live) and `survey` (as `GET /api/v1/survey`) | Every 5 s. |\n"
         "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |\n"
         "| `atsc_live` | `live` (as `GET /api/v1/atsc/live`) | When it changed, each second at most. |\n"
-        "| `files` | `download` (as `GET /api/v1/files`' `download`; null when none runs) | When it changed, each second at most. |"
+        "| `files` | `download` (as `GET /api/v1/files`' `download`; null when none runs) | When it changed, each second at most. |\n"
+        "| `data` | `data` (as `GET /api/v1/data`) | When its `rev` moved: at each burst, and once a second while it listens. |"
     ),
     "/ws/events": (
         "A WebSocket of text frames, each a JSON object with `type`:\n\n"
@@ -1375,6 +1464,13 @@ NOT_JSON: dict[str, str] = {
         "be read any more is left out of both. The archive is made as it is sent (no "
         "`Content-Length`), with ZIP64 records when it has 65,535 files or more or passes 4 GiB. "
         "404 when the selection takes nothing; 409 while another download runs."
+    ),
+    "/api/v1/data/captures/{name}": (
+        "One of a capture's two files, as an attachment. `<id>_<centre>M_250k.cs16`: the burst's IQ at 250 kSPS as "
+        "little-endian 16-bit I and Q (`application/octet-stream`), the ADC's 12 bits in the upper 12, 20 ms before the "
+        "burst and after it. `<id>_<centre>M_250k.sigmf-meta`: its SigMF description (`application/json`): the samples' "
+        "type (`ci16_le`), rate, centre and time, and the burst as an annotation (its edges, and `fishball:burst`, the "
+        "capture as `GET /api/v1/data/captures` lists it). 404 for a name that is no capture's."
     ),
     "/api/v1/files/history.sqlite": (
         "The history's SQLite database (`application/vnd.sqlite3`, an attachment named "
