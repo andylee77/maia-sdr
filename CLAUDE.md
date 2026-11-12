@@ -61,7 +61,8 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   burst is a device's, on Devices with its last readings (in memory). A decoder is written
   from its protocol's facts, never from rtl_433's code; rtl_433 is the reference a decoder is
   to be held against and is not on this PC. Its steps 0 and 1 wait for Andy (the RTL-SDR's
-  ground truth; the wide lanes on the bench). Andy's Oregon Scientific sensor (version 1,
+  ground truth; the wide lanes on the bench). 108 to 110 are in unit A's SD image
+  (`2026-11-12-decode1`, its record in 110's). Andy's Oregon Scientific sensor (version 1,
   433.880 MHz, every 30 s, id 3 on channel 1) is the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the three modes) and
   `data_listen.mjs` (the listening pages) take the radio and give it back; against the PC
   daemon start it with `--data-replay <repo>/runs/data/look_20261112/look1_434.42M_2500k.cs16`
@@ -185,7 +186,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-11-ssh1`: 096 to 107) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-11-12-decode1`: 096 to 110) | The unit in use. On 2026-11-10 its feed was on the radio antenna, not the TV antenna (Andy): TV decodes poorly there (7 stations named, 16 on the directional), so ask him for the TV antenna before any TV reception work |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** by key only since 107 (the image's key is this PC's `~/.ssh/id_ed25519`; the root

@@ -2,8 +2,7 @@
 
 **Date:** 2026-11-12. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-12-decode1`) over the SD
-image `2026-11-11-ssh1`, which does not have it.
+**Status:** committed locally. In unit A's SD image, `2026-11-12-decode1`, with 108 and 109.
 
 ## Why
 
@@ -157,6 +156,50 @@ See the status log for the counts.
   - **left listening four minutes after the checks:** eight messages of the sensor's, every
     30.009 s, each read (one in a burst of 589 ms that also held the device 8.4 kHz under it),
     13.0 to 13.1 °C. A is back in scanner mode, live on Clay County at 100 %.
+- 2026-11-12: **the SD image `2026-11-12-decode1`** (fishball-p25 3af4679, tezuka_fw 2bcddb0,
+  the radio core 2.1.0) on unit A, its boot files also in `/mnt/sd/boot_new_decode1` (ssh1's in
+  `/mnt/sd/boot_new_ssh1`). Asked "Build an SD image with Data mode (108 to 110) for unit A
+  next?", Andy answered "Yes, build it". It is the first image with 108 to 110; the firmware is
+  ssh1's.
+  - **Built** in 4 min 33 s, the image's Rust 1.86 compiling the scanner in 3 min 13 s: the
+    code of 108 to 110, which only this PC's Rust had compiled, builds with the image's too.
+  - **Checked before installing** (the ramdisk read on the PC): the scanner carries the tag and
+    the marks of 108 to 110 (the decoder's model, the two threads' names, the device's route,
+    the Devices page, the captures' folder, packet data's route), none of which ssh1's scanner
+    has. SSH is as ssh1 had it: the server told to take no password, the key this PC's, in a
+    file of root's alone. Against ssh1's ramdisk nothing differs but the scanner and what
+    differs at every build: the root password's salted hash (the same scheme and digest; the
+    salt's length varies too, 11, 13, 8 and 10 characters in the last four images) and 16 bytes
+    of the USB drive's image. `BOOT.bin` differs in 6 bytes, U-Boot's build time, so the
+    bitstream is the same; the device tree and `uEnv.txt` are ssh1's; the kernel was built
+    again. The card's copies matched the build's sha256 before the reboot.
+  - **After the reboot** (asked at 10:47 UTC): live on Clay County 106 s after it was asked,
+    control decode 100 % at 40 messages a second. The binary on A is the image's (its sha256
+    the one read from the ramdisk). Open as before, libiio off and its choice kept off, the
+    temperature's unit still °F, the fourteen captures still on the card. HTTPS verified by the
+    CA file saved before the reboot and refused without it. SSH offers `publickey` alone; a
+    login by key works.
+  - **The gate from the image:** the same command exits 0 (`runs/data/gate_110_image.json`):
+    two captures 30 s apart, and the scanner's reading of each the same as the PC's reading of
+    its file: id 3, channel 1, 13.3 °C (55.9 °F), twice (the bytes `03 33 01 37`). The first of
+    them is a burst of 570 ms that also holds the device 8.4 kHz under the sensor. No gap, no
+    burst dropped, the radio given back.
+  - **The pages, A serving them:** `data_listen.mjs` 13 steps and `data_mode.mjs` 13; reads
+    only, over HTTP: `scanner_pages.mjs` 40, `tool_pages.mjs` 27, `files_page.mjs` 9,
+    `aliases_page.mjs` 9, `playlist_page.mjs --preview-only` 13; over HTTPS: `tool_pages.mjs`
+    27, `files_page.mjs` 9. `scanner/doc/API_FIELDS.md` regenerated from A.
+  - **`now_rail.mjs` 11 of 15, over HTTP and HTTPS:** its four steps that play a recording
+    found none to play. Now lists the calls since the scanner's start, and in the 40 minutes
+    after this reboot (to 11:27 UTC, before half past six in the morning there) no call was
+    recorded: one was followed, TG 300 at 10:57:49, and it carried no voice (the lane decoded
+    the site's four call terminations two seconds after the grant, so the lane hears; the 40
+    calls of that talkgroup before the reboot all had voice and a recording). Lane 2 decodes
+    the data channel's packets meanwhile. So no voice call has been recorded from this image
+    yet: none was sent on a talkgroup it follows.
+- **Seen and not changed:** a capture's description writes its 32-bit numbers with a 64-bit
+  number's digits (`"temperature_c": 13.300000190734863` for 13.3 °C; the levels likewise since
+  109): it is built as a JSON value, which holds every number as 64 bits. The API's list and
+  the pages give 13.3, and the number reads back as it was.
 - **Seen and not changed:** a fifth emitter at 433.970 MHz (three bursts of about 370 ms, 13 to
   14 dB over the floor) that the first look did not have: not looked at. Eight captures on A's
   card from 04:14 to 04:17 UTC that no check of mine asked for (asked from the page by another

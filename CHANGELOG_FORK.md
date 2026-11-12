@@ -26,6 +26,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   `units.temperature`): °F on unit A.
 - **Not held against rtl_433,** which is not on this PC: the checksum, the two copies in each
   burst, and the PC tool's own reading of the same captures stand in.
+- **The SD image `2026-11-12-decode1`** (108 to 110; tezuka_fw 2bcddb0, no firmware change) is
+  on unit A, on Andy's "Yes, build it": live on Clay County 106 s after the reboot, open as
+  before, and the sensor read from the image (13.3 °C, 55.9 °F, the scanner's reading the same
+  as the PC's of the same captures).
 
 ## [2026-11-11] 109: Data mode listens at 433.92 MHz and keeps bursts' IQ
 

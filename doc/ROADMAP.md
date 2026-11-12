@@ -12,7 +12,7 @@ How each item is marked:
 
 | Mark | Meaning |
 |------|---------|
-| **exists** | Built and on unit A's image (`2026-11-11-ssh1`) |
+| **exists** | Built and on unit A's image (`2026-11-12-decode1`) |
 | **decided** | Andy has said what he wants; not built |
 | **open** | Needs a decision; the question's number follows (Q1 …) |
 | **idea** | Written down, not scheduled |

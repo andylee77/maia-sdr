@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-11. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** committed locally. On unit A as a test build in RAM (`2026-11-11-modes1`) over the SD
-image `2026-11-11-ssh1`, which does not have it.
+**Status:** committed locally. In unit A's SD image, `2026-11-12-decode1`, since 2026-11-12
+(its record is in `110_oregon_v1_decoder.md`).
 
 ## Why
 
