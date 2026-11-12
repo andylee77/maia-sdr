@@ -68,7 +68,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   to be held against and is not on this PC. Its steps 0 and 1 wait for Andy (the RTL-SDR's
   ground truth; the wide lanes on the bench). 108 to 110 are in unit A's SD image
   (`2026-11-12-decode1`, its record in 110's). Andy's Oregon Scientific sensor (version 1,
-  433.880 MHz, every 30 s, id 3 on channel 1) is the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the three modes) and
+  433.880 MHz, every 30 s, id 3 on channel 1) is the known emitter. Checks: `runs/ui_check/data_mode.mjs` (the five modes) and
   `data_listen.mjs` (the listening pages) take the radio and give it back; against the PC
   daemon start it with `--data-replay <repo>/runs/data/look_20261112/look1_434.42M_2500k.cs16`
   too, the radio's stand-in. The detector and the decoder are held against unit A's captures
@@ -78,6 +78,26 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   capture; with `--freq 433916300 ... --decoded` or `--freq 433871200 ... --wait 130 --decoded`
   it holds the AcuRite's or the Prologue sensor's. Temperatures are shown in the unit Settings picks (`units.temperature`, Andy:
   "°C/°F in settings"; unit A's is °F); the API's fields stay in °C.
+- **The analog receiver and the Aircraft shell (112,
+  `doc/changes/112_analog_receiver_aircraft_shell.md`; Andy: "a radio section ... that plays
+  FM, Air, HAM WFM, NFM analog signals", and "are we able to decode any adsb signals with the
+  current antenna? add a skeleton for it"):** the Analog module (`Mode::Analog`,
+  `services::analog`, `protocol::analog`) is a receiver parked on one frequency while it has
+  the radio: wide FM, narrow FM or AM, a squelch over the floor and a meter, its audio
+  (31,250 Hz, mono) on `/ws/analog`, played by its Listen page. The window comes from the
+  capture ring as Data's does, the LO half a megahertz above the frequency. The Aircraft module
+  (`Mode::Adsb`, `services::adsb`) is a shell: it takes the radio and gives it back, and its
+  pages say what they will hold. Unit A's antenna hears ADS-B (122 aircraft in a 12 s capture
+  at 1090 MHz, `tools/adsb_look.py`, which is the reference a decoder on the unit is to be held
+  against; dump1090's code is not used). Checks: `runs/ui_check/analog_listen.mjs` (on a unit,
+  `--fm <MHz>` names a broadcast station; unit A hears 102.9); against the PC daemon start it
+  with `--analog-replay <repo>/runs/analog/look_20261112/wx_163.05M_3000k.cs16` too. The
+  receivers are held against unit A's captures with
+  `ANALOG_CAPTURE_DIR=<repo>/runs/analog/look_20261112 cargo test --release analog::`. On a
+  unit, `tools/analog_listen.py --host <unit> listen --mhz 162.55 --demod nfm --squelch 8
+  --seconds 10 --take-radio` tunes it and records what it plays (exit 1 when too little audio
+  came; `--silent` for a channel that is to stay shut). AM has been checked with made signals
+  only. Neither module is in an SD image yet.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan

@@ -20,10 +20,12 @@ pub struct Status {
     pub build: &'static str,
     pub uptime_s: u64,
     pub now_unix_ms: u64,
-    /// What the unit is: the scanner, ATSC TV or data.
+    /// What the unit is: the scanner, ATSC TV, data, the analog receiver or ADS-B.
     pub mode: Mode,
     /// Data mode's listening in a line.
     pub data: crate::services::data::Summary,
+    /// The analog receiver in a line.
+    pub analog: crate::services::analog::Summary,
     pub live: LiveState,
     pub control: ControlStatus,
     pub lease: &'static str,
@@ -64,6 +66,7 @@ pub fn status(s: &AppState) -> Status {
         control: s.receivers.status(),
         mode: s.modes.current(),
         data: s.data.summary(),
+        analog: s.analog.summary(),
         lease: s.lease.current().as_str(),
         tuning,
         clock: s.clock.status(),

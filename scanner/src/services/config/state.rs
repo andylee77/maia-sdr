@@ -1,5 +1,5 @@
 //! What the radio learns by itself, kept apart from the user's configuration:
-//! `state/radio.json` (mode, live site, crystal calibration) and `state/sites/<id>.json` (per site:
+//! `state/radio.json` (mode, live site, crystal calibration, the analog receiver's tuning) and `state/sites/<id>.json` (per site:
 //! channel plan, grant counts, encrypted talkgroups, what the site announces of its neighbours
 //! and other channels, and the DMR channels a lane heard name themselves).
 
@@ -19,11 +19,13 @@ pub struct RadioState {
     /// The site to bring up at boot (in scanner mode); `None` = no site yet.
     pub live_site: Option<String>,
     pub crystal: Option<Crystal>,
+    /// What the analog receiver was last tuned to.
+    pub analog: crate::services::analog::Tuned,
 }
 
 impl Default for RadioState {
     fn default() -> Self {
-        RadioState { version: VERSION, mode: Mode::Scanner, live_site: None, crystal: None }
+        RadioState { version: VERSION, mode: Mode::Scanner, live_site: None, crystal: None, analog: Default::default() }
     }
 }
 

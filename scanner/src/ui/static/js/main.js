@@ -14,6 +14,7 @@ import { mode, giveRadio, changingMode, onModeChanging } from './mode.js';
 import { player } from './audio/player.js';
 import { setRecordingVolume } from './audio/recording.js';
 import { tv } from './tv/player.js';
+import { analogPlayer } from './audio/analog.js';
 import { getPrefs, setPrefs, onPrefs } from './prefs.js';
 
 const $ = id => document.getElementById(id);
@@ -122,7 +123,7 @@ function openedText(open) {
 }
 
 // Live audio: the button starts and stops it, and a page load starts it again when it was on.
-// The volume (live audio, recordings and the TV's sound, up to full scale), the leveller, the
+// The volume (live audio, recordings, the TV's sound and the analog receiver's, up to full scale), the leveller, the
 // lanes apart on the two speakers and alerts-only listening are this browser's (prefs.js).
 $('listen').addEventListener('click', () => {
   const on = !player.playing;
@@ -134,6 +135,7 @@ $('vol').addEventListener('input', e => {
   player.setVolume(e.target.value / 100);
   setRecordingVolume(e.target.value / 100);
   tv.setVolume(e.target.value / 100);
+  analogPlayer.setVolume(e.target.value / 100);
 });
 $('vol').addEventListener('change', e => setPrefs({ volume: e.target.value / 100 }));
 $('norm').addEventListener('click', () => setPrefs({ normalize: !getPrefs().normalize }));
@@ -147,6 +149,7 @@ onPrefs(p => {
   player.setVolume(p.volume);
   setRecordingVolume(p.volume);
   tv.setVolume(p.volume);
+  analogPlayer.setVolume(p.volume);
   player.setNormalize(p.normalize);
   applySplit();
   p.lanes.forEach((l, i) => player.setLaneVolume(i, l.muted ? 0 : l.volume));

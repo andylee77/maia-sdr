@@ -5,6 +5,41 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 112: An analog receiver (wide FM, narrow FM, AM) and the Aircraft module's shell
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy: "can you add a radio section to the page that plays FM, Air, HAM WFM, NFM
+  analog signals and are we able to decode any adsb signals with the current antenna? add a
+  skeleton for it". Record: `doc/changes/112_analog_receiver_aircraft_shell.md`.
+- **ADS-B with unit A's antenna: yes.** Twelve seconds at 1090 MHz, read on the PC
+  (`tools/adsb_look.py`): 2,558 extended squitters with a good parity (213 a second) from 122
+  aircraft, 84 of them with a position, the farthest 221 km from the middle of the rest, at
+  1,375 to 45,000 ft. The scanner's own antenna and feed, nothing added for 1090 MHz.
+- **The Analog module** (`protocol::analog`, `services::analog`; the mode `analog`): while it
+  has the radio the unit is a receiver parked on one frequency, in wide FM (broadcast radio),
+  narrow FM (amateur and other two-way radio, weather radio) or AM (aircraft), with a squelch
+  over the floor for the narrow ones and a meter. The window is read from the capture ring as
+  Data mode reads it, the LO half a megahertz off the frequency; the audio is 31,250 Hz, mono,
+  on `/ws/analog`.
+- **Its page, Listen:** the bands as chips (FM broadcast, the air band, 2 m, marine, weather
+  radio, 70 cm), the frequency with its steps and a box to type one, the kind, the squelch, the
+  meter, and Listen, which takes the radio and plays in the browser.
+- **The Aircraft module's shell** (the mode `adsb`): it takes the radio and gives it back, and
+  its two pages, Aircraft and Plot, say what they will hold. The decoder is not built.
+- **The API:** `GET /api/v1/analog`, `PUT /api/v1/analog/tune`, `GET /ws/analog`;
+  `status.analog`; `analog` on `/ws/live`; the modes `analog` and `adsb`.
+- **Tools:** `tools/analog_listen.py` (tune a unit and record what it plays),
+  `tools/adsb_look.py` (what a 1090 MHz capture holds).
+- **Heard through it:** a broadcast station (its stereo pilot 61 dB over its surroundings) and
+  the weather channel on 162.550 MHz (its forecast, read back by Whisper), from captures and
+  then live on unit A, where 12 s play with no gap and the receiver's thread takes 75 % of one
+  core. **AM is checked with made signals only:** no voice was on the air in the air band while
+  it was watched.
+- **Not in it:** the ADS-B decoder; stereo; single sideband (so no HF, and the board does not
+  tune under 70 MHz); memories, a scan of a band, recording; a listener tuning.
+
 ## [2026-11-12] 111: Two more sensors read, by a table: an AcuRite 606TX and a Prologue sensor
 
 **Branch:** fishball-p25 (local)

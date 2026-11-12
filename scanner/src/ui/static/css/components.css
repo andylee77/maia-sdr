@@ -733,6 +733,32 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* Data's Scan, as the module was drawn: the windows in a strip with what the mode is asked to do,
    the window as a map of its bursts (each a dash at its frequency, newest at the top), and the
    emitters heard in it. Captures is a card of its own. A table scrolls under its own header. */
+/* A module that is only its shell: each page says what it will hold. */
+.shell-page { max-width: 60em; }
+.shell-will { margin: 12px 0 0; }
+
+/* The analog receiver: the bands in the strip, the tuner with its frequency, controls and meter. */
+button.data-win { background: transparent; cursor: pointer; font: inherit; }
+button.data-win:hover { border-color: var(--accent); color: var(--text); }
+.analog-tuner { padding: 18px 20px; }
+.analog-freq { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.analog-freq .btn { align-self: center; }
+.analog-up svg { transform: scaleX(-1); }
+.analog-mhz { font-family: var(--mono); font-size: 2.9em; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; line-height: 1.1; }
+.analog-unit { font-size: 1.1em; }
+.analog-kind { margin-left: 8px; }
+.analog-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 26px; margin-top: 16px; }
+.analog-entry, .analog-squelch-row { display: inline-flex; align-items: center; gap: 8px; }
+.analog-squelch { width: 11em; accent-color: var(--accent); }
+.analog-squelch-says { min-width: 7.5em; }
+.analog-level { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 18px; }
+.analog-meter { position: relative; flex: 1 1 18em; max-width: 34em; height: 12px; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
+.analog-fill { position: absolute; inset: 0 auto 0 0; background: var(--text-dim); transition: width 0.2s linear; }
+.analog-meter.open .analog-fill { background: var(--accent); }
+.analog-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); }
+.analog-meter-says { color: var(--text-dim); font-size: 0.9em; }
+.analog-state.warn { color: var(--warn); }
+
 .data-page { display: grid; gap: var(--gap); align-items: start; grid-template-columns: minmax(0, 1fr); }
 .data-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; padding: 12px 16px; }
 .data-wins, .data-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }

@@ -1,4 +1,5 @@
-//! `/api/v1/mode`: the unit's mode (`services::mode`): the scanner, ATSC TV or data.
+//! `/api/v1/mode`: the unit's mode (`services::mode`): the scanner, ATSC TV, data, the analog
+//! receiver or ADS-B.
 
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<ModeBody> {
 /// Change mode. Returns once the radio is the new mode's (into scanner mode: once the paused site
 /// is live again).
 pub async fn put(State(s): State<Arc<AppState>>, Json(b): Json<ModeBody>) -> ApiResult<ModeBody> {
-    let deps = Deps { lease: &s.lease, live: &s.live, tuner: &s.tuner, atsc: &s.atsc, data: &s.data, config: &s.config, paths: &s.paths, log: &s.log };
+    let deps = Deps { lease: &s.lease, live: &s.live, tuner: &s.tuner, atsc: &s.atsc, data: &s.data, analog: &s.analog, adsb: &s.adsb, config: &s.config, paths: &s.paths, log: &s.log };
     s.modes.set(b.mode, None, deps).await.map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(ModeBody { mode: s.modes.current() }))
 }

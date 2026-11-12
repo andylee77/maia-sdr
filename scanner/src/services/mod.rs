@@ -1,9 +1,11 @@
 //! Services around the radio: configuration, the event log, the call history and recordings,
 //! packet data, the scan that finds systems, the board clock, the crystal correction, the
-//! board's health, the unit's mode with ATSC TV's channel finder, and the radio core's burst
-//! timing check.
+//! board's health, the unit's mode with ATSC TV's channel finder, data mode's listening, the
+//! analog receiver, the aircraft module's shell, and the radio core's burst timing check.
 
 pub mod access;
+pub mod adsb;
+pub mod analog;
 pub mod atsc;
 pub mod burst;
 pub mod clock;

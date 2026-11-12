@@ -484,6 +484,12 @@ ROUTES: dict[str, list] = {
         ("data.devices", "number", "Devices the decoders have read since the scanner started."),
         ("data.bursts", "number", "Bursts heard since the scanner started."),
         ("data.arm_left", "number or null", "Bursts whose IQ is still to be kept; null when none is asked for."),
+        ("analog", "object", "The analog receiver in a line (`GET /api/v1/analog` has the whole of it)."),
+        ("analog.state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("analog.error", "string or null", "Why it does not listen."),
+        ("analog.freq_hz", "number", "The frequency it is tuned to."),
+        ("analog.demod", "string", "How it is demodulated: `wfm`, `nfm` or `am`."),
+        ("analog.open", "bool or null", "Audio passes (its squelch is open, or it has none); null while it does not listen, and from a tuning to another frequency until the meter has read there."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
         ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below)."),
         ("live.to", "string, absent unless switching", "The site being made live."),
@@ -813,7 +819,11 @@ ROUTES: dict[str, list] = {
         ("@config", "radio_config"),
         ("state", "object", "What the radio keeps between runs."),
         ("state.version", "number", "The file's version."),
-        ("state.mode", "string", "The unit's mode at start: `scanner`, `atsc` or `data`."),
+        ("state.mode", "string", "The unit's mode at start: `scanner`, `atsc`, `data`, `analog` or `adsb`."),
+        ("state.analog", "object", "What the analog receiver is tuned to (`GET /api/v1/analog`'s `tuned`), written five seconds after the last tuning."),
+        ("state.analog.freq_hz", "number", "The frequency."),
+        ("state.analog.demod", "string", "How it is demodulated: `wfm`, `nfm` or `am`."),
+        ("state.analog.squelch_db", "number or null", "Its squelch, dB over the floor; null for none."),
         ("state.live_site", "string or null", "The site made live at start."),
         ("state.crystal", "object or null", "The stored crystal correction."),
         ("state.crystal.ppm", "number", "The correction."),
@@ -1075,7 +1085,40 @@ ROUTES: dict[str, list] = {
         ("error", "string or null", "What went wrong."),
     ],
     "/api/v1/mode": [
-        ("mode", "string", "`scanner`, `atsc` or `data`."),
+        ("mode", "string", "`scanner`, `atsc`, `data`, `analog` or `adsb`."),
+    ],
+    "/api/v1/analog": [
+        ("rev", "number", "Moves when anything here changes: at a tuning, when the squelch opens or shuts, and a few times a second with the meter while it listens."),
+        ("state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
+        ("error", "string or null", "Why it does not listen."),
+        ("tuned", "object", "What the receiver is tuned to, kept across restarts. The body of `PUT /api/v1/analog/tune`."),
+        ("tuned.freq_hz", "number", "The frequency."),
+        ("tuned.demod", "string", "How it is demodulated: `wfm` (wide FM: broadcast radio), `nfm` (narrow FM: two-way radio, amateur repeaters, weather radio) or `am` (aircraft)."),
+        ("tuned.squelch_db", "number or null", "How far over the floor a carrier must be for audio to pass, 0 to 40; null for no squelch, which wide FM always has."),
+        ("window", "object or null", "The radio's window while it listens; null otherwise."),
+        ("window.lo_hz", "number", "Its LO: half a megahertz above the frequency, so the LO's own spur is outside what is heard."),
+        ("window.sample_rate_hz", "number", "Its sample rate."),
+        ("window.source", "string", "`radio`, or `replay` on a development host playing a capture in the radio's place."),
+        ("level", "object or null", "What the meter last read of the frequency tuned, 30 times a second; null while it does not listen, and from a tuning to another frequency until the radio is there and the meter has read."),
+        ("level.level_dbfs", "number", "The power within the receiver's width (the whole 200 kHz for wide FM, 15 kHz for narrow FM, 10 kHz for AM), dB of the ADC's full scale. The radio's own gain control is on, so it does not compare from one frequency to another."),
+        ("level.over_db", "number or null", "That power over the floor's in the same width, the floor being the median of the spectrum 20 to 85 kHz either side; null for wide FM, which fills its channel."),
+        ("level.open", "bool", "Audio passes: the squelch is open, or there is none."),
+        ("audio_hz", "number", "The sample rate of `/ws/analog`."),
+        ("listeners", "number", "Open `/ws/analog` connections."),
+        ("counts", "object", "Since the scanner started."),
+        ("counts.gaps", "number", "Times samples were lost between the radio and the receiver: the audio breaks there."),
+        ("counts.dropped", "number", "Blocks of the window dropped because the receiver was behind."),
+        ("counts.frames", "number", "Frames of audio made (20 ms each)."),
+        ("bands", "array", "The bands a page offers."),
+        ("bands[]", "object", "One band."),
+        ("bands[].id", "string", "Its short name."),
+        ("bands[].label", "string", "Its name on a page."),
+        ("bands[].low_hz", "number", "Its lowest channel."),
+        ("bands[].high_hz", "number", "Its highest."),
+        ("bands[].step_hz", "number", "From one channel to the next."),
+        ("bands[].demod", "string", "How its signals are demodulated."),
+        ("low_hz", "number", "The lowest frequency the radio tunes."),
+        ("high_hz", "number", "The highest."),
     ],
     "/api/v1/data": [
         ("state", "string", "`off` (another mode has the radio), `starting`, `listening` or `error`."),
@@ -1466,7 +1509,7 @@ NOT_JSON: dict[str, str] = {
         "| `changed` | `what`: `radio`, `systems`, `hold`, `recordings` or `access` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "
-        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool, \"data\": bool}` "
+        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool, \"part\": name}, \"radio\": bool, \"window\": bool, \"crystal\": bool, \"atsc_live\": bool, \"files\": bool, \"data\": bool, \"analog\": bool}` "
         "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
         "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
@@ -1476,7 +1519,14 @@ NOT_JSON: dict[str, str] = {
         "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |\n"
         "| `atsc_live` | `live` (as `GET /api/v1/atsc/live`) | When it changed, each second at most. |\n"
         "| `files` | `download` (as `GET /api/v1/files`' `download`; null when none runs) | When it changed, each second at most. |\n"
-        "| `data` | `data` (as `GET /api/v1/data`) | When its `rev` moved: at each burst, and once a second while it listens. |"
+        "| `data` | `data` (as `GET /api/v1/data`) | When its `rev` moved: at each burst, and once a second while it listens. |\n"
+        "| `analog` | `analog` (as `GET /api/v1/analog`) | When its `rev` moved: at a tuning, when the squelch opens or shuts, and four times a second with the meter while it listens. |"
+    ),
+    "/ws/analog": (
+        "A WebSocket. A text frame `{\"type\": \"format\", \"rate_hz\": 31250}` first; then, while the "
+        "receiver listens and its squelch is open, binary frames of 20 ms of mono 16-bit little-endian "
+        "audio at that rate (625 samples). Nothing comes while the squelch is shut or another mode has "
+        "the radio. A listener that falls behind gets `{\"type\": \"lag\", \"skipped\": n}`."
     ),
     "/ws/events": (
         "A WebSocket of text frames, each a JSON object with `type`:\n\n"

@@ -1,6 +1,7 @@
 //! The protocols, each behind its decoders: P25 Phase 1 and DMR Tier III; ATSC TV, found in the
-//! spectrum; and the data bands' bursts (`ism`).
+//! spectrum; the data bands' bursts (`ism`); and the analog receivers (`analog`).
 
+pub mod analog;
 pub mod atsc;
 pub mod dmr;
 pub mod events;

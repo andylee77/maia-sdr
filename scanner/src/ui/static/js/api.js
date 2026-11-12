@@ -121,6 +121,10 @@ export const api = {
   lockRecording: (id, locked) => request('PUT', `/api/v1/recordings/${id}/lock`, { locked }),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
+  // The analog receiver: what it is tuned to and hears; and tuning it (`{freq_hz, demod,
+  // squelch_db}`).
+  analog: () => request('GET', '/api/v1/analog'),
+  analogTune: tuned => request('PUT', '/api/v1/analog/tune', tuned),
   // Data mode's listening: its state, window, emitters, newest bursts and what is armed.
   data: () => request('GET', '/api/v1/data'),
   // Keep the IQ of the next `count` bursts: any, or only those within `span_hz` / 2 of

@@ -17,13 +17,15 @@ How each item is marked:
 | **open** | Needs a decision; the question's number follows (Q1 …) |
 | **idea** | Written down, not scheduled |
 
+111 and 112 are built and not in that image: unit A runs them as a test build in RAM.
+
 ## Goals
 
 | # | Goal | Andy's words |
 |---|------|--------------|
 | G1 | **A trunked monitoring station**, now. The radio has a control tuner and two traffic tuners; one screen runs it | "grounded into a trunked monitoring station that has 2 traffic tuners and allows easier control of what to listen, record, etc." |
 | G2 | **A stand-alone handheld**, later. The same radio with its own controls and speaker, no browser | "future builds as a stand alone handheld with a few knobs, buttons and speaker output and 3d printed shell" |
-| G3 | **More modes.** TV is one; data monitoring and ADS-B come next | "add the data monitoring mode, adsb mode, etc." |
+| G3 | **More modes.** TV is one; Data is begun (step 7); the analog receiver is built (112); ADS-B has its shell (step 8) | "add the data monitoring mode, adsb mode, etc." |
 
 What holds for every goal:
 
@@ -52,7 +54,7 @@ What each goal needs from each layer, and where that layer stands.
 | The 8-VSB receiver (core 2.1.0, bake D) | **exists** | G3, TV |
 | Bake A's burst-timing gate (`tools/burst_timing.py`) | waits for Andy's key fob or the ESP32-DIV | every later bake |
 | Wide lanes, 250 kSPS and 1 MSPS: new filter sets and a bench check, no bake (`DATA_MODE.md` §3) | **decided** | G3, Data |
-| A continuous stream of the window at 2 to 4 MSPS to the PS (the capture ring read without gaps, or a lane with only its first stage) | **open** (Q11): measured first | G3, ADS-B |
+| A continuous stream of the window at 2 to 4 MSPS to the PS (the capture ring read without gaps, or a lane with only its first stage) | **exists** at 3 MSPS: the capture ring read as it fills (109), without a gap in the runs on unit A; Data mode and the analog receiver (112) use it. Whether the A9 keeps up with ADS-B's preamble search on it is not measured | G3, ADS-B |
 | More than three lanes (bake B) | waits for a mode that needs them; two built designs to read first (`UPSTREAM_REVIEW.md` R5) | G1 on busier systems, Data |
 | The lanes' mixer holding a full-scale input: Maia's DDC wraps on one, and one more bit stops it (`UPSTREAM_REVIEW.md` R4) | with the next bake | G1 |
 | The two Vivado projects standing on their own, without upstream's `projects/pluto` design (`UPSTREAM_REVIEW.md` R3) | with the next bake | every bake |
@@ -74,7 +76,8 @@ What each goal needs from each layer, and where that layer stands.
 | RadioReference CSV import (`POST …/radioreference`, `/preview`) | **exists**, on the Aliases page (097) | G1, Aliases |
 | SDRTrunk playlist import and export | **exists** (098: `/api/v1/playlist`), held against SDRTrunk's own reader | G1, Aliases |
 | A system or a site added by hand | **decided** (UI_BRIEF), not built | G1 |
-| Modes: `scanner`, `atsc` and `data`. A mode other than the scanner's holds the radio, and hands it on to the next; `status.mode` says who has it | **exists** (108). A new mode is a variant, its service's `enter` and `leave`, and a module in the pages' table | G3 |
+| Modes: `scanner`, `atsc`, `data`, `analog` and `adsb`. A mode other than the scanner's holds the radio, and hands it on to the next; `status.mode` says who has it | **exists** (108; `analog` and `adsb` in 112). A new mode is a variant, its service's `enter` and `leave`, and a module in the pages' table | G3 |
+| An analog receiver: wide FM, narrow FM and AM on one frequency, a squelch and a meter, its audio on `/ws/analog` | **exists** (112): `GET /api/v1/analog`, `PUT /api/v1/analog/tune`. No memories, scan or recording | G3, Analog |
 | What is on the card as files to take away: recordings in bulk, the history, TV recordings, captures | **exists** (101): the recordings as one ZIP archive of a selection, the history's database, a TV recording's file; one download at a time. Captures come with data mode | G1 |
 | Login, tokens, the sockets and the unit's other services | not built (see Security) | G1, G2 |
 | Listening on the unit itself: the two lanes mixed to an output, each lane's volume, the leveller, alerts-only listening | not built: all of it runs in the browser (`js/audio/`) | G2 |
@@ -96,7 +99,8 @@ What each goal needs from each layer, and where that layer stands.
 | Login, and who is signed in | **exists** (102): the sign-in page, the header, the Access card in the radio's Settings | G1 |
 | The first-load welcome and radio check (UI_BRIEF) | **decided**, not built | G1 |
 | Data's module (Scan, Devices, Captures), a waterfall | **Scan and Captures exist for one window** (109): while it has the radio the mode listens at 433.92 MHz, lists the bursts and the emitters by frequency, and keeps the IQ of the next bursts when asked. **Devices exists** (110) for what the decoders read, three kinds of weather sensor so far (Oregon Scientific version 1; AcuRite 606TX and Prologue sensors by a table of such devices, 111): each device with what it last said (a temperature, in the unit Settings picks, and a humidity) and its last 200 readings, in memory. The band plan, the scan, the names, the data log on the card, the other decoders and the waterfall are **decided** (`DATA_MODE.md` §5 and §7), not built | G3 |
-| ADS-B's module | **open** (Q11) | G3 |
+| Analog's module (Listen) | **exists** (112): the bands, the frequency, the kind, the squelch, the meter, and the sound in the browser | G3 |
+| ADS-B's module (Aircraft) | **a shell** (112): in the rail, its two pages saying what they will hold | G3 |
 | The handheld's face as a page: the prototype of the panel, and a remote control | **idea**; it follows Now's model | G2 |
 | A phone layout beyond the rail becoming a bottom bar | later (UI_BRIEF) | — |
 
@@ -240,13 +244,35 @@ Andy's decisions are in `scanner/doc/DATA_MODE.md` §12; its steps and gates in 
 | Outputs | `/ws/live` and REST first; then NDJSON, MQTT, an rtl_tcp server | **decided** |
 | Decoders | In Rust, from the protocols' facts, checked against rtl_433 on the PC | **decided** |
 
-### ADS-B (new module)
+### Analog (new module)
 
-Nothing is decided beyond "add it" (Q11). What is known: 1090 MHz, 1 Mbit/s pulse-position
-frames of 56 or 112 µs, so it needs the window's samples at 2 MSPS or more without gaps, which no
-lane gives today. `DATA_MODE.md` §9 step 7 and 079's "Rates by mode" list it as a later use of a
-first-stage-only lane. dump1090 is the reference on the PC and, like rtl_433, is GPL: its facts
-are used, not its code.
+Andy, 2026-11-12: "a radio section to the page that plays FM, Air, HAM WFM, NFM analog signals".
+Built in 112 (`doc/changes/112_analog_receiver_aircraft_shell.md`).
+
+| Page | Feature | State |
+|------|---------|-------|
+| **Listen** | One frequency in wide FM, narrow FM or AM; the bands (FM broadcast, the air band, 2 m, marine, weather radio, 70 cm); a squelch and a meter; the sound in the browser | **exists** (112). AM is checked with made signals only |
+| | Memories; a scan of a band and the stations it found; recording; a waterfall | **idea** |
+| | Stereo and RDS; single sideband and CW | **idea**. The board does not tune under 70 MHz, so no HF |
+| | A lane for the narrow kinds, which would cost the A9 nothing | **idea** |
+
+### Aircraft (ADS-B, new module)
+
+**Unit A's antenna hears it** (112, a capture at 1090 MHz read on the PC by
+`tools/adsb_look.py`): in 12 s, 2,558 extended squitters with a good parity from 122 aircraft,
+84 with a position, out to about 220 km. The module is a shell since 112: the mode (`adsb`)
+takes the radio and gives it back, and its pages, Aircraft and Plot, say what they will hold.
+
+What the decoder needs: 1090 MHz, 1 Mbit/s pulse-position frames of 56 or 112 µs, so the
+window's samples at 2 MSPS or more without gaps. The capture ring read as it fills gives that
+at 3 MSPS (109). dump1090 is the reference on the PC and, like rtl_433, is GPL: its facts are
+used, not its code; `tools/adsb_look.py` is this project's own reading of a capture.
+
+| Page | Feature | State |
+|------|---------|-------|
+| **Aircraft** | Every aircraft heard: address, callsign, altitude, speed, heading, position, range, level, last heard | **decided** (Q11 as recommended; the page says so), not built |
+| **Plot** | The aircraft around the radio with range rings and tracks, no map from the Internet | **decided**, not built |
+| Outputs | The messages in the Beast format on a port, for tar1090 or Virtual Radar on a PC | **open** (Q11) |
 
 ### The whole radio's tools
 
@@ -282,7 +308,7 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 5 | **Files:** done in 101. The recordings as one ZIP archive made as it is sent, the history copied whole and consistent, a TV recording's file; the Files page and `tools/scanner_files.py`; the pace measured on unit A | — |
 | 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on; in 107 SSH by key only. The step is built | Unit A's password is Andy's to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5). Begun in 108: the modes made general, the `packet_data` rename, and the mode's shell (the study's step 2). 109: it listens at 433.92 MHz and keeps bursts' IQ, a first slice of the study's steps 3 and 4 for one window, begun with a look at what unit A hears there (four devices, Andy's Oregon Scientific sensor among them). 110: the first of step 5, the pulse front end and the Oregon Scientific version 1 decoder, with Devices showing the sensor's temperature. 111: the table-driven decoder with its first two rows, an AcuRite 606TX and a Prologue sensor: three of the four devices heard there are read, the fourth is not identified | Wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
-| 8 | **ADS-B** | Q11. Step 7's mode plumbing. First a capture at 1090 MHz from unit A decoded on the PC, to learn what its antenna hears; then the sample path it needs |
+| 8 | **ADS-B.** Begun in 112: the capture at 1090 MHz from unit A read on the PC (its antenna hears 122 aircraft in 12 s), and the module's shell. Next: the decoder on the unit (the preamble search on the capture ring's samples, its cost on the A9 measured first), then the table and the plot | Q11's rest (the Beast output). Where the unit is, for ranges: a setting, or the aircraft's own middle |
 | 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
 
 What step 5 added is behind 102's guard like everything else: on a unit with a password an
@@ -290,8 +316,8 @@ archive needs a listener's session or token.
 
 Not tied to a step, waiting on Andy:
 
-- **Pushes.** Nothing since 082 is on GitHub, in maia-sdr or tezuka_fw: this PC holds the only
-  copy of 083 to 095 (Q14).
+- **Pushes.** Both repositories are on GitHub through 111 (2026-11-12, Q14). What follows is
+  pushed when Andy says.
 - **Bake A's burst-timing gate:** one key-fob or ESP32-DIV burst (`tools/burst_timing.py`).
 - **The P25 replay corpus on the radio core:** needs the bench link wired (B into A).
 - **Unit B** needs the current image before anything runs on it.
@@ -377,12 +403,16 @@ Each has a recommendation first. Short answers are enough.
 
 - **Q11. ADS-B.** Recommended: a module of its own ("Aircraft"): a table of the aircraft heard and
   a plot with range rings, no map tiles from the Internet; its messages also served in the Beast
-  format on a port, for tar1090 or Virtual Radar on a PC. First a capture at 1090 MHz on unit A.
-  Is there a 1090 MHz antenna for A, or is it the scanner's?
-- **Q12. Which other modes are behind "etc.", and in what order?** Written down so far: NOAA
-  weather radio and other conventional FM channels (Clay Fire's pager channel on 154.205 MHz is
-  one), pagers (POCSAG), APRS, AIS, the 24-hour spectrum survey. Recommended: none before Data
-  and ADS-B run.
+  format on a port, for tar1090 or Virtual Radar on a PC. Andy, 2026-11-12: "are we able to
+  decode any adsb signals with the current antenna? add a skeleton for it". Answered by a
+  capture (112): yes, the scanner's own antenna hears 122 aircraft in 12 s, so no other antenna
+  is needed to begin. The skeleton is the module as recommended, its pages saying what they
+  will hold. Still open: the Beast output, and where the unit is (for ranges).
+- **Q12. Which other modes are behind "etc.", and in what order?** Andy, 2026-11-12, asked for
+  "a radio section ... that plays FM, Air, HAM WFM, NFM analog signals": built in 112 as the
+  Analog module, which also hears NOAA weather radio and other conventional FM channels (Clay
+  Fire's pager channel on 154.205 MHz is one). Written down and not asked for: pagers (POCSAG),
+  APRS, AIS, the 24-hour spectrum survey.
 
 **The handheld (step 9)**
 
@@ -392,8 +422,8 @@ Each has a recommendation first. Short answers are enough.
 
 **Housekeeping**
 
-- **Q14. Push now?** `fishball-p25` and tezuka_fw's `fishball-dev`, so 083 to 095 have a second
-  copy.
+- **Q14. Push now?** Answered 2026-11-12 ("I'd like to push both packages when ready"):
+  `fishball-p25` and tezuka_fw's `fishball-dev` pushed through 111 (`f8537e2`, `2bcddb0`).
 - **Q15. The upstream review's six questions** (`doc/UPSTREAM_REVIEW.md`, "Open questions for
   Andy"): whether `main` goes on mirroring F5OEO's frozen `main`; where the ADI HDL pick lives so
   that a fresh clone builds; the speed grade printed on the units' Zynqs; whether either unit is

@@ -1,5 +1,7 @@
-//! The unit's mode: the scanner (P25 and DMR trunking), ATSC TV or data (which listens to the
-//! data bands as soon as it has the radio). A mode has the radio to itself. The scanner's is the radio's own: its live site follows calls, and a scan or a site
+//! The unit's mode: the scanner (P25 and DMR trunking), ATSC TV, data (which listens to the
+//! data bands as soon as it has the radio), the analog receiver (which listens where it is
+//! tuned) or ADS-B (the aircraft module, a shell so far). A mode has the radio to itself. The
+//! scanner's is the radio's own: its live site follows calls, and a scan or a site
 //! switch borrows the radio from it. Any other mode takes the radio lease and keeps it while it
 //! lasts, with the live site paused; from one such mode to another the hold is handed on, so
 //! nothing else can take the radio between them. Back in scanner mode the receiver gain is the
@@ -19,6 +21,8 @@ use crate::boot::radio::gain_mode;
 use crate::radio::lease::{Lease, LeaseGuard, RadioLease};
 use crate::radio::streams::StreamSource;
 use crate::radio::tuner::{RadioHw, Tuner};
+use crate::services::adsb::Adsb;
+use crate::services::analog::Analog;
 use crate::services::atsc::sweep::Atsc;
 use crate::services::config::{self, Config, Paths};
 use crate::services::data::Data;
@@ -32,6 +36,8 @@ pub enum Mode {
     Scanner,
     Atsc,
     Data,
+    Analog,
+    Adsb,
 }
 
 impl Mode {
@@ -40,6 +46,8 @@ impl Mode {
             Mode::Scanner => "scanner",
             Mode::Atsc => "ATSC TV",
             Mode::Data => "data",
+            Mode::Analog => "analog",
+            Mode::Adsb => "ADS-B",
         }
     }
 }
@@ -63,6 +71,8 @@ pub struct Deps<'a, H> {
     pub tuner: &'a Arc<Tuner<H>>,
     pub atsc: &'a Atsc,
     pub data: &'a Data,
+    pub analog: &'a Analog,
+    pub adsb: &'a Adsb,
     pub config: &'a Arc<Mutex<Config>>,
     pub paths: &'a Paths,
     pub log: &'a Arc<EventLog>,
@@ -98,6 +108,8 @@ impl Modes {
             Mode::Scanner => None,
             Mode::Atsc => d.atsc.leave().await,
             Mode::Data => d.data.leave().await,
+            Mode::Analog => d.analog.leave().await,
+            Mode::Adsb => d.adsb.leave().await,
         };
         // The scanner has none to give: the radio is taken from it, and its site paused.
         let hold = match held {
@@ -130,6 +142,16 @@ impl Modes {
                 self.mode.send_replace(to);
                 persist(to, &d).await;
             }
+            Mode::Analog => {
+                d.analog.enter(hold, d.tuner.clone(), d.log.clone()).await;
+                self.mode.send_replace(to);
+                persist(to, &d).await;
+            }
+            Mode::Adsb => {
+                d.adsb.enter(hold).await;
+                self.mode.send_replace(to);
+                persist(to, &d).await;
+            }
         }
         d.log.radio("mode", format!("{} mode", to.label()));
         Ok(())
@@ -150,7 +172,7 @@ mod tests {
 
     #[test]
     fn a_mode_goes_by_its_name_in_the_api_and_on_the_flash() {
-        for (mode, name) in [(Mode::Scanner, "\"scanner\""), (Mode::Atsc, "\"atsc\""), (Mode::Data, "\"data\"")] {
+        for (mode, name) in [(Mode::Scanner, "\"scanner\""), (Mode::Atsc, "\"atsc\""), (Mode::Data, "\"data\""), (Mode::Analog, "\"analog\""), (Mode::Adsb, "\"adsb\"")] {
             assert_eq!(serde_json::to_string(&mode).unwrap(), name);
             assert_eq!(serde_json::from_str::<Mode>(name).unwrap(), mode);
         }

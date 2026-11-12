@@ -56,6 +56,9 @@ pub struct AppState {
     pub modes: Arc<Modes>,
     pub atsc: Arc<Atsc>,
     pub data: Arc<crate::services::data::Data>,
+    /// The analog receiver, and the aircraft module's shell.
+    pub analog: Arc<crate::services::analog::Analog>,
+    pub adsb: Arc<crate::services::adsb::Adsb>,
     /// The radio core's burst timing check (a diagnostic).
     pub burst: Arc<BurstCheck>,
     pub notices: Notices,

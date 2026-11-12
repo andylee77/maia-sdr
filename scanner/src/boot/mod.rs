@@ -45,6 +45,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let crystal_ppm = config.state.value.crystal.as_ref().map(|c| c.ppm).or(args.lo_ppm).unwrap_or(0.0);
     let live_site = config.state.value.live_site.clone();
     let mode = config.state.value.mode;
+    let analog = Arc::new(crate::services::analog::Analog::new(config.state.value.analog, args.analog_replay.clone()));
+    let adsb = Arc::new(crate::services::adsb::Adsb::default());
     let follow_data = config.radio.value.packet_data.follow;
     let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;
 
@@ -99,13 +101,14 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         (Mode::Scanner, None) => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
         // The unit was in another mode when it stopped: that mode has the radio again.
         (other, _) => {
-            let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, config: &config, paths: &paths, log: &log };
+            let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, analog: &analog, adsb: &adsb, config: &config, paths: &paths, log: &log };
             if let Err(e) = modes.set(other, live_site.clone(), deps).await {
                 tracing::error!("{} mode did not start: {e:#}", other.label());
             }
         }
     }
     live.start_recentre();
+    keep_tuning(analog.clone(), config.clone(), paths.clone());
 
     {
         let live = live.clone();
@@ -166,6 +169,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         modes,
         atsc,
         data,
+        analog,
+        adsb,
         burst: Arc::default(),
         notices,
         heard: Default::default(),
@@ -190,6 +195,29 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     state.history.flush(SHUTDOWN_FLUSH).await;
     state.live.save_learned().await;
     Ok(())
+}
+
+/// The analog receiver's tuning is kept on the flash once it has stayed the same for this long:
+/// a knob turned through a band writes once.
+const TUNING_SETTLED: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn keep_tuning(analog: Arc<crate::services::analog::Analog>, config: Arc<Mutex<config::Config>>, paths: Paths) {
+    tokio::spawn(async move {
+        let mut seen = analog.view().tuned;
+        loop {
+            tokio::time::sleep(TUNING_SETTLED).await;
+            let now = analog.view().tuned;
+            let settled = now == seen;
+            seen = now;
+            let mut c = config.lock().await;
+            if settled && c.state.value.analog != now {
+                c.state.value.analog = now;
+                if let Err(e) = config::save(&paths.radio_state(), &c.state) {
+                    tracing::warn!("the analog receiver's tuning not kept: {e:#}");
+                }
+            }
+        }
+    });
 }
 
 /// How long shutdown waits for the open recordings, the card writes and the history.

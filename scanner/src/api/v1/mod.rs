@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod aliases;
+pub mod analog;
 pub mod atsc;
 pub mod calls;
 pub mod config;

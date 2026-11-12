@@ -36,6 +36,11 @@ pub struct Args {
     #[arg(long)]
     pub data_replay: Option<PathBuf>,
 
+    /// A raw capture of a window, played in the radio's place by the analog receiver (a
+    /// development host): its name gives its LO and rate, as `wx_163.05M_3000k.cs16`.
+    #[arg(long)]
+    pub analog_replay: Option<PathBuf>,
+
     /// Receiver LO with no live site (Hz).
     #[arg(long)]
     pub rx_lo: Option<u64>,

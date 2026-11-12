@@ -12,6 +12,9 @@
 //!   call's audio an alert tone (`audio::alert`), `{"type":"alert","lane","tg","call_id","seq",
 //!   "kind","tones_hz","offset_ms"}`: its tone began `offset_ms` into the call's audio. A listener
 //!   that falls behind gets `{"type":"lag","skipped"}` and stays connected.
+//! - `/ws/analog`: the analog receiver's audio. A text frame `{"type":"format","rate_hz"}`, then
+//!   binary frames of 20 ms, 16-bit mono at that rate, while the receiver listens and its
+//!   squelch is open; `lag` as on `/ws/audio`.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -198,6 +201,55 @@ async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
     }
 }
 
+/// `/ws/analog`: the analog receiver's audio (`services::analog`).
+pub async fn analog(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
+    let Some(place) = Place::take() else { return too_many() };
+    ws.on_upgrade(move |socket| async move {
+        let _place = place;
+        analog_stream(socket, s, shown).await
+    })
+}
+
+async fn analog_stream(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
+    let (mut rx, _listener) = s.analog.listen();
+    let mut access = s.access.changes();
+    let (mut out, mut inbound) = socket.split();
+    let format = serde_json::json!({ "type": "format", "rate_hz": crate::protocol::analog::AUDIO_HZ });
+    if !send(&mut out, Message::Text(format.to_string().into())).await {
+        return;
+    }
+    loop {
+        tokio::select! {
+            frame = rx.recv() => match frame {
+                Ok(samples) => {
+                    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    if !send(&mut out, Message::Binary(bytes.into())).await {
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    let lag = serde_json::json!({ "type": "lag", "skipped": skipped });
+                    if !send(&mut out, Message::Text(lag.to_string().into())).await {
+                        break;
+                    }
+                }
+                Err(RecvError::Closed) => break,
+            },
+            // Driven so a closed tab is noticed while the squelch is shut.
+            msg = inbound.next() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            },
+            // Signed out, or its token revoked: no more audio.
+            changed = access.changed() => {
+                if changed.is_err() || !shown.still_known(&s.access) {
+                    break;
+                }
+            },
+        }
+    }
+}
+
 /// `/ws/live`: the radio's state as it changes, so a page shows it without asking. On connect a
 /// `snapshot` (status, calls, traffic, scan, atsc); then `status` once a second, `traffic` when a
 /// traffic channel changes, `call_opened` and `call_closed` with the call, `recording` with a
@@ -207,7 +259,7 @@ async fn notices(socket: WebSocket, s: Arc<AppState>, shown: Shown) {
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
-/// `window`, `crystal`, `atsc_live`, `files` and `data` messages.
+/// `window`, `crystal`, `atsc_live`, `files`, `data` and `analog` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>, Extension(shown): Extension<Shown>) -> Response {
     let Some(place) = Place::take() else { return too_many() };
     ws.on_upgrade(move |socket| async move {
@@ -250,6 +302,8 @@ struct Wants {
     files: bool,
     /// `data`: data mode's listening (`data`, as `GET /api/v1/data`) when it changed.
     data: bool,
+    /// `analog`: the analog receiver (`analog`, as `GET /api/v1/analog`) when it changed.
+    analog: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -266,7 +320,7 @@ struct EventsWant {
 
 impl Wants {
     fn any(&self) -> bool {
-        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files || self.data
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal || self.atsc_live || self.files || self.data || self.analog
     }
 }
 
@@ -283,6 +337,7 @@ struct Sent {
     files: Option<Instant>,
     files_text: String,
     data_rev: Option<u64>,
+    analog_rev: Option<u64>,
 }
 
 fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
@@ -336,6 +391,13 @@ async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
         if sent.data_rev != Some(view.rev) {
             sent.data_rev = Some(view.rev);
             out.push(message("data", "data", view));
+        }
+    }
+    if w.analog {
+        let view = s.analog.view();
+        if sent.analog_rev != Some(view.rev) {
+            sent.analog_rev = Some(view.rev);
+            out.push(message("analog", "analog", view));
         }
     }
     if w.files && due(sent.files, FILES_EVERY, now) {

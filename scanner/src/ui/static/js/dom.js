@@ -47,6 +47,8 @@ const ICONS = {
   scope: [['path', { d: 'M4 19V5M4 19h16M8 15l3-4 3 2 4-6' }]],
   pulse: [['path', { d: 'M3 16h3V8h4v8h4V8h4v8h3' }]],
   card: [['path', { d: 'M6 3h9l4 4v14H6zM9.5 6.5v3M12.5 6.5v3' }]],
+  radio: [['rect', { x: '3', y: '9', width: '18', height: '11', rx: '2' }], ['path', { d: 'M7 9l9-5.5M14.5 13h3.5M14.5 16h3.5' }], ['circle', { cx: '8.5', cy: '14.5', r: '2.5' }]],
+  plane: [['path', { d: 'M12 3c1 0 1.6 1.3 1.6 3v4l7.4 4.2v2l-7.4-2.2v4.2l2.2 1.6V21L12 20l-3.8 1v-1.2l2.2-1.6V14l-7.4 2.2v-2L10.4 10V6c0-1.7.6-3 1.6-3z' }]],
 };
 
 // `size` in px (16 in a line of text).

@@ -105,7 +105,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv` and `data`; `js/modules.js` maps them to the modes. `data` is the mode alone so far (108) |
+| `GET`/`PUT /api/v1/mode` | The unit's mode, which is who has the radio (`scanner`, `atsc`, `data`, `analog`, `adsb`); change it | UI shell: the notice's switch on a module the radio is not on, and Return to Scanner | The UI's modules are `scanner`, `tv`, `data`, `analog` and `aircraft`; `js/modules.js` maps them to the modes. `adsb` is the mode alone so far (112): nothing listens in it |
 | `GET`/`POST /api/v1/atsc/live`, `POST …/live/stop` | Live TV: whether the radio core has the 8-VSB block, the channel and the block's statistics; play an RF channel; stop | UI Watch (play and stop; the state itself is pushed on `/ws/live` as `atsc_live` since 091) | Stop has no notion of who else is on the stream: Watch stops the receiver only when the pushed `viewers` is at most 1 |
 | `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP; after a restart, the last scan that finished (092) | UI Channels and Watch; `tools/atsc_check.py` | Nothing says a scan came back from before a restart, or how old the antenna's state is: only its `finished_unix_ms` |
 | `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | Not kept across a restart: 404 until the next scan |
@@ -126,6 +126,14 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `PUT`/`DELETE /api/v1/data/arm` | Keep the IQ of the next bursts (`count`, `freq_hz`, `span_hz`), or no more | UI Scan's "Keep IQ", each emitter's Keep and a device's "Keep next" (within 3 kHz); the tool | By frequency only: a device's is asked for at the frequency it was last heard on |
 | `GET /api/v1/data/captures` | The bursts' IQ kept on the card, newest first | UI Data's Captures; the tool | Listed from the files' descriptions at start, not in the history's database; no paging (500 at most) |
 | `GET`/`DELETE /api/v1/data/captures/{name}` | One of a capture's two files (`.cs16`, `.sigmf-meta`); delete a capture by its id | UI Captures; the tool | The two verbs take different things at `{name}`: a file's name to read, the capture's id to delete |
+
+## The analog receiver
+
+| Route | Carries | Used by | Missing or wrong |
+|-------|---------|---------|------------------|
+| `GET /api/v1/analog` | The receiver: its state, what it is tuned to (frequency, kind, squelch), the window, the meter's last reading, the listeners, the counts, the bands a page offers | UI Analog's Listen (pushed on `/ws/live` as `analog`); `tools/analog_listen.py` | The level is of the ADC's full scale with the radio's own gain control on: it does not compare from one frequency to another, and nothing gives the gain. No memories |
+| `PUT /api/v1/analog/tune` | What to tune to, whole: `freq_hz`, `demod` (`wfm`, `nfm`, `am`), `squelch_db` (null: none) | UI Listen; the tool | An administrator's: a listener cannot turn the dial. No step or band in the request: the page works the frequency out |
+| `GET /ws/analog` | The audio: a `format` frame with the rate, then 20 ms frames of 16-bit mono while the squelch is open | UI Listen's player; the tool | Nothing says the squelch shut: the frames stop, and the state is on `/ws/live`. One rate (31,250 Hz), which a player resamples |
 
 ## Configuration
 

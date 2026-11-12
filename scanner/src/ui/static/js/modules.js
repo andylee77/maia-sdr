@@ -21,6 +21,8 @@ import * as tvDiag from './views/tv_diag.js';
 import * as dataScan from './views/data_scan.js';
 import * as dataCaptures from './views/data_captures.js';
 import * as dataDevices from './views/data_devices.js';
+import * as analogListen from './views/analog_listen.js';
+import * as aircraft from './views/aircraft_shell.js';
 import * as diag from './views/diagnostics.js';
 import * as files from './views/files.js';
 import * as settings from './views/settings.js';
@@ -56,6 +58,16 @@ function dataLine(s) {
   if (d.state === 'starting') return 'starting…';
   if (d.state === 'error') return 'not listening: an error';
   return `${d.window} window · Scanner paused`;
+}
+
+// The analog receiver's line: what it is tuned to. It listens only while it has the radio.
+const ANALOG_KIND = { wfm: 'WFM', nfm: 'NFM', am: 'AM' };
+function analogLine(s) {
+  const a = s.status.analog;
+  if (!a || a.state === 'off') return 'not listening';
+  if (a.state === 'starting') return 'starting…';
+  if (a.state === 'error') return 'not listening: an error';
+  return `${mhz(a.freq_hz)} ${ANALOG_KIND[a.demod]} · Scanner paused`;
 }
 
 export const MODULES = [
@@ -105,6 +117,31 @@ export const MODULES = [
     line: dataLine,
     working: s => !!s.status.data && s.status.data.state === 'listening',
     away: 'Data mode listens at 433.92 MHz for the devices that transmit nearby, lists them by frequency and reads those it knows. It listens only while it has the radio: these pages show what it last heard.',
+  },
+  {
+    id: 'analog',
+    mode: 'analog',
+    label: 'Analog',
+    icon: 'radio',
+    pages: [
+      { key: 'listen', label: 'Listen', view: analogListen },
+    ],
+    line: analogLine,
+    working: s => !!s.status.analog && s.status.analog.state === 'listening',
+    away: 'The analog receiver plays one frequency: broadcast FM, aircraft, amateur and other two-way radio, weather radio. It listens only while it has the radio; a frequency set meanwhile is where it listens next.',
+  },
+  {
+    id: 'aircraft',
+    mode: 'adsb',
+    label: 'Aircraft',
+    icon: 'plane',
+    pages: [
+      { key: 'aircraft', label: 'Aircraft', view: aircraft.aircraft },
+      { key: 'plot', label: 'Plot', view: aircraft.plot },
+    ],
+    line: () => 'nothing listens yet · Scanner paused',
+    working: () => false,
+    away: 'The Aircraft module will show the aircraft that send their positions at 1090 MHz (ADS-B). So far it only takes the radio and gives it back.',
   },
   { id: 'diag', label: 'Diagnostics', title: 'Radio diagnostics', icon: 'scope', pages: [{ key: 'diag', label: 'Diagnostics', view: diag, fill: true }] },
   { id: 'files', label: 'Files', icon: 'card', pages: [{ key: 'files', label: 'Files', view: files }] },

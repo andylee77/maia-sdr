@@ -748,7 +748,8 @@ mod tests {
         let live = LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone(), receivers.clone(), trunking, vec![Lane::One], log.clone(), Default::default());
         live.activate("clay").await.unwrap();
         let (modes, atsc, data) = (Modes::default(), Atsc::default(), Data::default());
-        let deps = || Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, config: &config, paths: &paths, log: &log };
+        let (analog, adsb) = (crate::services::analog::Analog::default(), crate::services::adsb::Adsb::default());
+        let deps = || Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, data: &data, analog: &analog, adsb: &adsb, config: &config, paths: &paths, log: &log };
         let away = |state: LiveState| matches!(state, LiveState::Away { back_to } if back_to.as_deref() == Some("clay"));
 
         modes.set(Mode::Atsc, None, deps()).await.unwrap();
@@ -771,7 +772,7 @@ mod tests {
         modes.set(Mode::Data, None, deps()).await.unwrap();
         assert_eq!((modes.current(), lease.current()), (Mode::Data, Lease::Mode));
         held.borrow_and_update();
-        for to in [Mode::Atsc, Mode::Data, Mode::Atsc] {
+        for to in [Mode::Atsc, Mode::Analog, Mode::Adsb, Mode::Data, Mode::Analog, Mode::Atsc] {
             modes.set(to, None, deps()).await.unwrap();
             assert_eq!((modes.current(), lease.current()), (to, Lease::Mode));
             assert!(away(live.state()), "the scanner's site stays paused");
