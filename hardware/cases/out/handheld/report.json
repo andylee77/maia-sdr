@@ -1,0 +1,70 @@
+{
+  "parts": {
+    "tub": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 78.01,
+      "size_mm": [
+        75.0,
+        34.6,
+        170.0
+      ],
+      "print_size_mm": [
+        75.0,
+        170.0,
+        34.6
+      ]
+    },
+    "cover": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 29.32,
+      "size_mm": [
+        75.0,
+        4.4,
+        170.0
+      ],
+      "print_size_mm": [
+        75.0,
+        170.0,
+        4.4
+      ]
+    }
+  },
+  "small_parts": {
+    "clamp_tab": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 0.12,
+      "size_mm": [
+        10.5,
+        6.0,
+        2.5
+      ],
+      "count": 8
+    },
+    "key_cap": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 0.2,
+      "size_mm": [
+        9.4,
+        7.4,
+        4.8
+      ],
+      "count": 4
+    },
+    "knob": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 1.95,
+      "size_mm": [
+        15.0,
+        15.0,
+        13.0
+      ],
+      "count": 2
+    }
+  },
+  "collisions": []
+}

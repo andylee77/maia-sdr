@@ -1,0 +1,111 @@
+{
+  "parts": {
+    "tray": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 143.07,
+      "size_mm": [
+        160.0,
+        137.0,
+        57.4
+      ],
+      "print_size_mm": [
+        160.0,
+        137.0,
+        57.4
+      ]
+    },
+    "panel": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 23.47,
+      "size_mm": [
+        160.0,
+        8.5,
+        57.4
+      ],
+      "print_size_mm": [
+        160.0,
+        57.4,
+        8.5
+      ]
+    },
+    "cover": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 58.47,
+      "size_mm": [
+        160.0,
+        140.0,
+        9.6
+      ],
+      "print_size_mm": [
+        160.0,
+        140.0,
+        9.6
+      ]
+    },
+    "bracket": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 107.13,
+      "size_mm": [
+        171.0,
+        136.0,
+        67.95
+      ],
+      "print_size_mm": [
+        171.0,
+        136.0,
+        67.95
+      ]
+    }
+  },
+  "small_parts": {
+    "clamp_tab": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 0.12,
+      "size_mm": [
+        10.5,
+        6.0,
+        2.5
+      ],
+      "count": 12
+    },
+    "key_cap": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 0.22,
+      "size_mm": [
+        9.4,
+        7.4,
+        5.4
+      ],
+      "count": 4
+    },
+    "dial": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 13.92,
+      "size_mm": [
+        34.0,
+        34.0,
+        16.0
+      ],
+      "count": 1
+    },
+    "knob": {
+      "valid": true,
+      "solids": 1,
+      "volume_cm3": 2.26,
+      "size_mm": [
+        16.0,
+        16.0,
+        13.0
+      ],
+      "count": 1
+    }
+  },
+  "collisions": []
+}

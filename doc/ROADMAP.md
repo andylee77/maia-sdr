@@ -175,6 +175,10 @@ What G1 and G2 need (Q7 to Q10, answered "as recommended" on 2026-11-11):
   one encoder, two buttons, two LEDs, and an I²S amplifier and speaker driven from the PL. It was
   written for p25-httpd (a `/api/panel` route, its own serial messages) and says "not a
   battery-powered portable (at least not in v1)".
+- **Drawn (117, `hardware/README.md`):** the wiring and two printed cases, a handheld and a
+  desk unit, around a Raspberry Pi Pico, a 2.0 inch LCD, two knobs, four soft keys, a battery
+  with its charger and the I²S amplifier. Paper and CAD only: nothing is wired, printed or
+  measured, and it changes `PANEL_ADDON_BOARD.md`'s controller, display and power.
 - **What G2 needs:** Q13 settles the hardware. Whatever it is, its actions are the API's
   operations (rule 2), and what its knob steps through is Now's talkgroup list (see "Now's model").
 
@@ -299,7 +303,7 @@ the same messages at the same samples as it does.
 | The display: the site, each tuner's talkgroup and radio, the selected talkgroup, signal, time | **idea** (`PANEL_ADDON_BOARD.md`; the roadmap's old "Handheld page") |
 | Knobs and buttons: the list, the volume; hold, skip, record, menu | follows Now's model |
 | The speaker: the unit's own listening path | not built (Capabilities) |
-| The shell, the power, the board | Q13 |
+| The shell, the power, the board | **drawn** (117, `hardware/`): a handheld and a desk unit, their wiring and parts; not built or measured |
 
 ## The order of work
 
@@ -315,15 +319,15 @@ Andy's order, with what each step needs first. A step starts when its questions 
 | 6 | **Access.** Done in 102: the passwords and the two levels, tokens, the guard on every route and socket, the sign-in page and the Access card, every tool and check on a token; in 103 the bounds; in 104 the unit's own CA and certificate and HTTPS as the one way in (Q9), the tools and the bench on it; in 105 `iiod` off unless switched on (Q10), the bench switching it on; in 107 SSH by key only. The step is built | Unit A's password is Andy's to set. The bench reading `/api/v1` so the legacy routes can go |
 | 7 | **Data mode** (`DATA_MODE.md` steps 0 to 5). Begun in 108: the modes made general, the `packet_data` rename, and the mode's shell (the study's step 2). 109: it listens at 433.92 MHz and keeps bursts' IQ, a first slice of the study's steps 3 and 4 for one window, begun with a look at what unit A hears there (four devices, Andy's Oregon Scientific sensor among them). 110: the first of step 5, the pulse front end and the Oregon Scientific version 1 decoder, with Devices showing the sensor's temperature. 111: the table-driven decoder with its first two rows, an AcuRite 606TX and a Prologue sensor: three of the four devices heard there are read, the fourth is not identified | Wide lanes proven on the bench (Andy wires B into A, or the ESP32-DIV); the RTL-SDR's ground truth (Andy); a waterfall |
 | 8 | **ADS-B.** Begun in 112: the capture at 1090 MHz from unit A read on the PC, and the module's shell. 113: the decoder on the unit, held against the PC's reading of the same captures message for message, and the Aircraft page's table; and a look at 978 MHz (UAT), which the antenna hears. 114: UAT read on the unit, and the link a setting: 1090 MHz, 978 MHz or both in turn. 115: the Map page. 116: where the radio is, as a setting, with each aircraft's distance and bearing and the map's range rings | The Beast output (Q11) |
-| 9 | **The handheld** | Q13. The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
+| 9 | **The handheld** | Its wiring and cases are drawn (117, `hardware/`). The unit's own listening path; the I²S block (a bake, with 079's gates); the panel's service; step 6's tokens. Its face as a page can come any time after step 2 |
 
 What step 5 added is behind 102's guard like everything else: on a unit with a password an
 archive needs a listener's session or token.
 
 Not tied to a step, waiting on Andy:
 
-- **Pushes.** Both repositories are on GitHub through 111 (2026-11-12, Q14). What follows is
-  pushed when Andy says.
+- **Pushes.** tezuka_fw is on GitHub through 009 and this repository through 116 and its
+  image's record (2026-11-12, Q14). What follows is pushed when Andy says.
 - **Bake A's burst-timing gate:** one key-fob or ESP32-DIV burst (`tools/burst_timing.py`).
 - **The P25 replay corpus on the radio core:** needs the bench link wired (B into A).
 - **Unit B** needs the current image before anything runs on it.
@@ -436,12 +440,17 @@ Each has a recommendation first. Short answers are enough.
 
 - **Q13. Is it the Fishball board with the panel add-on in a printed shell?** If so: battery or
   wall power; one encoder or two (the list and the volume); which buttons (recommended: Hold,
-  Skip, Menu).
+  Skip, Menu). Answered 2026-11-12 on the design in `hardware/`, as its README records ("the
+  design is good and matches intent. I can measure with caliper later to update as needed"): the board in a
+  printed case, a battery (two 18650 cells), two knobs, four soft keys, a power button and one
+  light, a 2.0 inch LCD, a Raspberry Pi Pico as the panel's controller; and a desk unit from
+  the same parts. Still open: a battery in the desk unit, and the measurements.
 
 **Housekeeping**
 
 - **Q14. Push now?** Answered 2026-11-12 ("I'd like to push both packages when ready"):
-  `fishball-p25` and tezuka_fw's `fishball-dev` pushed through 111 (`f8537e2`, `2bcddb0`).
+  `fishball-p25` and tezuka_fw's `fishball-dev` pushed through 111 (`f8537e2`, `2bcddb0`); and
+  that evening ("Yes, push") `fishball-p25` through 116 and its image's record (`17e1908`).
 - **Q15. The upstream review's six questions** (`doc/UPSTREAM_REVIEW.md`, "Open questions for
   Andy"): whether `main` goes on mirroring F5OEO's frozen `main`; where the ADI HDL pick lives so
   that a fresh clone builds; the speed grade printed on the units' Zynqs; whether either unit is

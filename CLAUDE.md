@@ -140,6 +140,13 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   the map marks the radio with range rings round it. A unit's place is Andy's to enter: the
   checks that need one (`aircraft_page.mjs`, `aircraft_map.mjs`) put a made one through the
   API and put back what the unit had. Never write a real place of his into the repository.
+- **The user guide (117, `doc/changes/117_user_guide_hardware.md`):** `doc/USER_GUIDE.md`, linked
+  from the README with the hardware design. Its pictures are taken from a unit by
+  `node runs/ui_check/guide_shots.mjs http://<unit>:8080 doc/guide/img` (`--only <names>` for
+  some), which gives the radio to each module in turn (about four minutes off the scanner) and
+  puts everything back. When a page changes, take its picture again and bring the guide's
+  words up to it. The pictures leave out the Access card (a unit's addresses, its CA, whether
+  it has a password) and show distances from a made place: keep it so.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`. The module rail and the new Now page are in
   (090, `doc/changes/090_module_rail_now.md`; modules in `scanner/src/ui/static/js/modules.js`),
   TV's Watch page with its three views (091, `doc/changes/091_tv_watch.md`), the last TV scan
@@ -177,7 +184,8 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
 | `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks, `scanner_files.py` (downloads of what is on a unit's card, checked) |
 | `runs/` | Gitignored run output and captures (`runs/dmr/` holds the DMR reference captures) |
-| `doc/` | `ROADMAP.md`, `CLEANUP_INVENTORY.md`; `doc/changes/NNN_*.md`, one per change |
+| `doc/` | `USER_GUIDE.md` (every page, with pictures in `doc/guide/img/`), `ROADMAP.md`, `CLEANUP_INVENTORY.md`; `doc/changes/NNN_*.md`, one per change |
+| `hardware/` | The handheld's and the desk unit's wiring and printed cases (FreeCAD scripts and their output; `hardware/README.md`). Paper and CAD only |
 | `maia-httpd/`, `maia-wasm/`, `maia-kmod/` | Upstream Maia; the unit uses `maia-kmod`'s rxbuffer driver for DMA |
 
 - **The radio core's registers, rings and frames:** 082's "The register map", "The rings", the

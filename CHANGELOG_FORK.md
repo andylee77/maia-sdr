@@ -5,6 +5,23 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-11-12] 117: A user guide with pictures, the README, and the hardware design
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Why:** Andy: "I'd like to update the github readme to include a user guide with images of
+  the different pages. I also created a radio wiring and case design that we can add to the
+  project and link from the main readme." Record: `doc/changes/117_user_guide_hardware.md`.
+- **`doc/USER_GUIDE.md`** (new): every page, with what it is for and how it is used, and a
+  picture of each taken from unit A (`doc/guide/img/`). The pictures leave out the Access card
+  and show the aircraft's distances from a made place; unit A has none.
+- **The README** says what the scanner is now (five modules, access by password) and links
+  the guide and the hardware design, with pictures of both.
+- **`hardware/`** (new): the wiring diagram and the two printed cases, a handheld and a desk
+  unit, as made at Andy's asking. Paper and CAD only: nothing wired, printed or measured.
+- Nothing in the scanner changes.
+
 ## [2026-11-12] 116: Where the radio is: distances, bearings and range rings
 
 **Branch:** fishball-p25 (local)
